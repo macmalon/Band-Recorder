@@ -271,11 +271,11 @@ private fun HomeScreen(
 
             HorizontalPager(
                 state = pagerState,
-                contentPadding = PaddingValues(horizontal = 78.dp),
-                pageSpacing = 14.dp,
+                contentPadding = PaddingValues(horizontal = 92.dp),
+                pageSpacing = 18.dp,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(210.dp)
+                    .height(190.dp)
             ) { page ->
                 val pageOffset = ((pagerState.currentPage - page) + pagerState.currentPageOffsetFraction)
                     .absoluteValue
@@ -354,8 +354,8 @@ private fun MainCarouselCard(
 
     Card(
         modifier = Modifier
-            .width(210.dp)
-            .height(168.dp),
+            .width(182.dp)
+            .height(142.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFFE6006F)),
         shape = cardShape
     ) {
@@ -379,6 +379,7 @@ private fun MainCarouselCard(
                 )
                 Text(
                     text = subtitle,
+                    fontSize = 12.sp,
                     textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.bodyMedium
                 )
