@@ -2,6 +2,9 @@ package com.bandrecorder.app
 
 import android.app.Application
 import android.content.Context
+import com.bandrecorder.core.audio.DspOutputMode
+import com.bandrecorder.core.audio.GlobalBalanceConfig
+import com.bandrecorder.core.audio.MixProfile
 
 enum class StorageLocation {
     DOWNLOADS,
@@ -15,7 +18,8 @@ data class AppSettings(
     val showAdvancedInternals: Boolean = false,
     val testDurationSec: Int = 5,
     val stereoModeRequested: Boolean = false,
-    val stereoChannelsSwapped: Boolean = false
+    val stereoChannelsSwapped: Boolean = false,
+    val globalBalanceConfig: GlobalBalanceConfig = GlobalBalanceConfig()
 )
 
 class AppSettingsStore(app: Application) {
@@ -31,6 +35,34 @@ class AppSettingsStore(app: Application) {
         val testDurationSec = prefs.getInt(KEY_TEST_DURATION_SEC, 5).coerceIn(5, 30)
         val stereoRequested = prefs.getBoolean(KEY_STEREO_MODE_REQUESTED, false)
         val stereoChannelsSwapped = prefs.getBoolean(KEY_STEREO_CHANNELS_SWAPPED, false)
+        val dspOutput = runCatching {
+            DspOutputMode.valueOf(
+                prefs.getString(KEY_DSP_OUTPUT_MODE, DspOutputMode.MONITORING_ONLY.name)
+                    ?: DspOutputMode.MONITORING_ONLY.name
+            )
+        }.getOrDefault(DspOutputMode.MONITORING_ONLY)
+        val profile = runCatching {
+            MixProfile.valueOf(
+                prefs.getString(KEY_MIX_PROFILE, MixProfile.ROCK_POP_BALANCED.name)
+                    ?: MixProfile.ROCK_POP_BALANCED.name
+            )
+        }.getOrDefault(MixProfile.ROCK_POP_BALANCED)
+        val globalBalanceConfig = GlobalBalanceConfig(
+            autoBalanceEnabled = prefs.getBoolean(KEY_AUTO_BALANCE, true),
+            compressionEnabled = prefs.getBoolean(KEY_COMPRESSOR, true),
+            deEsserEnabled = prefs.getBoolean(KEY_DE_ESSER, true),
+            dspOutputMode = dspOutput,
+            mixProfile = profile,
+            eqIntensity = prefs.getFloat(KEY_EQ_INTENSITY, 0.55f),
+            compIntensity = prefs.getFloat(KEY_COMP_INTENSITY, 0.4f),
+            deEsserIntensity = prefs.getFloat(KEY_DE_ESSER_INTENSITY, 0.45f),
+            compressorThresholdDb = prefs.getFloat(KEY_COMP_THRESHOLD_DB, -18f),
+            compressorRatio = prefs.getFloat(KEY_COMP_RATIO, 2.1f),
+            deEsserFrequencyHz = prefs.getFloat(KEY_DE_ESSER_FREQ_HZ, 6500f),
+            deEsserWidthHz = prefs.getFloat(KEY_DE_ESSER_WIDTH_HZ, 2800f),
+            limiterCeilingDb = prefs.getFloat(KEY_LIMITER_CEILING_DB, -1.5f),
+            outputTrimDb = prefs.getFloat(KEY_OUTPUT_TRIM_DB, 0f)
+        ).bounded()
         return AppSettings(
             storageLocation = storage,
             selectedMicId = micId,
@@ -38,7 +70,8 @@ class AppSettingsStore(app: Application) {
             showAdvancedInternals = showAdvanced,
             testDurationSec = testDurationSec,
             stereoModeRequested = stereoRequested,
-            stereoChannelsSwapped = stereoChannelsSwapped
+            stereoChannelsSwapped = stereoChannelsSwapped,
+            globalBalanceConfig = globalBalanceConfig
         )
     }
 
@@ -72,6 +105,26 @@ class AppSettingsStore(app: Application) {
         prefs.edit().putBoolean(KEY_STEREO_CHANNELS_SWAPPED, enabled).apply()
     }
 
+    fun setGlobalBalanceConfig(config: GlobalBalanceConfig) {
+        val bounded = config.bounded()
+        prefs.edit()
+            .putBoolean(KEY_AUTO_BALANCE, bounded.autoBalanceEnabled)
+            .putBoolean(KEY_COMPRESSOR, bounded.compressionEnabled)
+            .putBoolean(KEY_DE_ESSER, bounded.deEsserEnabled)
+            .putString(KEY_DSP_OUTPUT_MODE, bounded.dspOutputMode.name)
+            .putString(KEY_MIX_PROFILE, bounded.mixProfile.name)
+            .putFloat(KEY_EQ_INTENSITY, bounded.eqIntensity)
+            .putFloat(KEY_COMP_INTENSITY, bounded.compIntensity)
+            .putFloat(KEY_DE_ESSER_INTENSITY, bounded.deEsserIntensity)
+            .putFloat(KEY_COMP_THRESHOLD_DB, bounded.compressorThresholdDb)
+            .putFloat(KEY_COMP_RATIO, bounded.compressorRatio)
+            .putFloat(KEY_DE_ESSER_FREQ_HZ, bounded.deEsserFrequencyHz)
+            .putFloat(KEY_DE_ESSER_WIDTH_HZ, bounded.deEsserWidthHz)
+            .putFloat(KEY_LIMITER_CEILING_DB, bounded.limiterCeilingDb)
+            .putFloat(KEY_OUTPUT_TRIM_DB, bounded.outputTrimDb)
+            .apply()
+    }
+
     private companion object {
         const val KEY_STORAGE_LOCATION = "storage_location"
         const val KEY_MIC_ID = "selected_mic_id"
@@ -80,5 +133,19 @@ class AppSettingsStore(app: Application) {
         const val KEY_TEST_DURATION_SEC = "test_duration_sec"
         const val KEY_STEREO_MODE_REQUESTED = "stereo_mode_requested"
         const val KEY_STEREO_CHANNELS_SWAPPED = "stereo_channels_swapped"
+        const val KEY_AUTO_BALANCE = "global_auto_balance"
+        const val KEY_COMPRESSOR = "global_compression"
+        const val KEY_DE_ESSER = "global_de_esser"
+        const val KEY_DSP_OUTPUT_MODE = "global_dsp_output_mode"
+        const val KEY_MIX_PROFILE = "global_mix_profile"
+        const val KEY_EQ_INTENSITY = "global_eq_intensity"
+        const val KEY_COMP_INTENSITY = "global_comp_intensity"
+        const val KEY_DE_ESSER_INTENSITY = "global_de_esser_intensity"
+        const val KEY_COMP_THRESHOLD_DB = "global_comp_threshold_db"
+        const val KEY_COMP_RATIO = "global_comp_ratio"
+        const val KEY_DE_ESSER_FREQ_HZ = "global_de_esser_freq_hz"
+        const val KEY_DE_ESSER_WIDTH_HZ = "global_de_esser_width_hz"
+        const val KEY_LIMITER_CEILING_DB = "global_limiter_ceiling_db"
+        const val KEY_OUTPUT_TRIM_DB = "global_output_trim_db"
     }
 }

@@ -11,7 +11,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.bandrecorder.core.audio.CalibrationProgress
 import com.bandrecorder.core.audio.CalibrationResult
+import com.bandrecorder.core.audio.DspOutputMode
+import com.bandrecorder.core.audio.GlobalBalanceConfig
 import com.bandrecorder.core.audio.InputDiagnostics
+import com.bandrecorder.core.audio.MixProfile
 import com.bandrecorder.core.audio.StereoProbeResult
 import com.bandrecorder.core.audio.StereoWindowMeasurement
 import com.bandrecorder.core.audio.WavRecorderEngine
@@ -113,6 +116,15 @@ data class RecorderUiState(
     val inputPreferredDeviceSet: Boolean = false,
     val inputRoutedDevice: String = "Unknown",
     val inputProcessingSummary: String = "AGC/NS/AEC unknown",
+    val isGlobalDspAvailable: Boolean = true,
+    val isGlobalDspRunning: Boolean = false,
+    val isGlobalDspCpuGuardActive: Boolean = false,
+    val isNearClipping: Boolean = false,
+    val compGainReductionDb: Float = 0f,
+    val deEsserGainReductionDb: Float = 0f,
+    val globalDspLimiterHits: Int = 0,
+    val dspStatusMessage: String? = null,
+    val globalBalanceConfig: GlobalBalanceConfig = GlobalBalanceConfig(),
     val abTestResult: String? = null
 )
 
@@ -123,6 +135,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
     private var pendingTempFile: File? = null
     private var pendingDisplayName: String? = null
+    private var lastCpuGuardState: Boolean = false
 
     private val _uiState = MutableStateFlow(RecorderUiState())
     val uiState: StateFlow<RecorderUiState> = _uiState.asStateFlow()
@@ -138,6 +151,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 selectedTestDurationSec = normalizeDuration(settings.testDurationSec),
                 stereoModeRequested = settings.stereoModeRequested,
                 stereoChannelsSwapped = settings.stereoChannelsSwapped,
+                globalBalanceConfig = settings.globalBalanceConfig,
                 testHistory = loadHistory()
             )
         }
@@ -164,9 +178,31 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         } ?: it.inputRoutedDevice,
                         inputProcessingSummary = status.inputDiagnostics?.let { diag ->
                             "AGC=${diag.agcEnabled ?: "n/a"} NS=${diag.nsEnabled ?: "n/a"} AEC=${diag.aecEnabled ?: "n/a"}"
-                        } ?: it.inputProcessingSummary
+                        } ?: it.inputProcessingSummary,
+                        isGlobalDspAvailable = status.dspAvailable,
+                        isGlobalDspRunning = status.dspRunning,
+                        isGlobalDspCpuGuardActive = status.dspCpuGuardActive,
+                        isNearClipping = status.peakDb > -3f,
+                        compGainReductionDb = status.dspCompGainReductionDb,
+                        deEsserGainReductionDb = status.dspDeEsserGainReductionDb,
+                        globalDspLimiterHits = status.dspLimiterHits,
+                        dspStatusMessage = status.dspStatusMessage,
+                        globalBalanceConfig = if (status.isRecording) {
+                            it.globalBalanceConfig.copy(dspOutputMode = status.dspOutputMode).bounded()
+                        } else {
+                            it.globalBalanceConfig
+                        }
                     )
                 }
+                if (status.dspCpuGuardActive && !lastCpuGuardState && _uiState.value.diagnosticModeEnabled) {
+                    exportDiagnosticReport(
+                        event = "global_balance_runtime_guard_triggered",
+                        entry = null,
+                        recordingPath = _uiState.value.lastOutputPath,
+                        extraLines = buildGlobalDspDiagnosticLines()
+                    )
+                }
+                lastCpuGuardState = status.dspCpuGuardActive
             }
         }
     }
@@ -202,12 +238,56 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.update { it.copy(stereoChannelsSwapped = enabled) }
     }
 
+    fun setAutoBalance(enabled: Boolean) {
+        updateGlobalBalanceConfig { it.copy(autoBalanceEnabled = enabled) }
+    }
+
+    fun setCompression(enabled: Boolean) {
+        updateGlobalBalanceConfig { it.copy(compressionEnabled = enabled) }
+    }
+
+    fun setDeEsser(enabled: Boolean) {
+        updateGlobalBalanceConfig { it.copy(deEsserEnabled = enabled) }
+    }
+
+    fun setDspOutputMode(mode: DspOutputMode) {
+        updateGlobalBalanceConfig { it.copy(dspOutputMode = mode) }
+    }
+
+    fun setMixProfile(profile: MixProfile) {
+        updateGlobalBalanceConfig { it.copy(mixProfile = profile) }
+    }
+
+    fun updateAdvancedBalanceConfig(config: GlobalBalanceConfig) {
+        updateGlobalBalanceConfig { config }
+    }
+
+    fun resetBalanceProfile() {
+        updateGlobalBalanceConfig { GlobalBalanceConfig() }
+    }
+
     fun markAutoSetupPermissionDenied() {
         _uiState.update {
             it.copy(
                 isAutoMicScanRunning = false,
                 isAutoStereoProbeRunning = false,
                 autoMicSetupMessage = "Impossible de vérifier maintenant: permission micro manquante."
+            )
+        }
+    }
+
+    private fun updateGlobalBalanceConfig(transform: (GlobalBalanceConfig) -> GlobalBalanceConfig) {
+        val updated = transform(_uiState.value.globalBalanceConfig).bounded()
+        settingsStore.setGlobalBalanceConfig(updated)
+        _uiState.update {
+            it.copy(globalBalanceConfig = updated)
+        }
+        if (_uiState.value.diagnosticModeEnabled) {
+            exportDiagnosticReport(
+                event = "global_balance_config_changed",
+                entry = null,
+                recordingPath = _uiState.value.lastOutputPath,
+                extraLines = buildGlobalDspDiagnosticLines(updated)
             )
         }
     }
@@ -478,6 +558,34 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             base += "input.aec_enabled=${d.aecEnabled ?: "n/a"}"
         }
         return base
+    }
+
+    private fun buildGlobalDspDiagnosticLines(configOverride: GlobalBalanceConfig? = null): List<String> {
+        val state = _uiState.value
+        val cfg = (configOverride ?: state.globalBalanceConfig).bounded()
+        return listOf(
+            "global_dsp.enabled=${cfg.autoBalanceEnabled || cfg.compressionEnabled || cfg.deEsserEnabled}",
+            "global_dsp.auto_balance=${cfg.autoBalanceEnabled}",
+            "global_dsp.compression=${cfg.compressionEnabled}",
+            "global_dsp.de_esser=${cfg.deEsserEnabled}",
+            "global_dsp.output_mode=${cfg.dspOutputMode}",
+            "global_dsp.profile=${cfg.mixProfile}",
+            "global_dsp.eq_intensity=${cfg.eqIntensity}",
+            "global_dsp.comp_intensity=${cfg.compIntensity}",
+            "global_dsp.deesser_intensity=${cfg.deEsserIntensity}",
+            "global_dsp.comp_threshold_db=${cfg.compressorThresholdDb}",
+            "global_dsp.comp_ratio=${cfg.compressorRatio}",
+            "global_dsp.deesser_freq_hz=${cfg.deEsserFrequencyHz}",
+            "global_dsp.deesser_width_hz=${cfg.deEsserWidthHz}",
+            "global_dsp.limiter_ceiling_db=${cfg.limiterCeilingDb}",
+            "global_dsp.output_trim_db=${cfg.outputTrimDb}",
+            "global_dsp.running=${state.isGlobalDspRunning}",
+            "global_dsp.comp_gr_db=${state.compGainReductionDb}",
+            "global_dsp.deesser_gr_db=${state.deEsserGainReductionDb}",
+            "global_dsp.limiter_hits=${state.globalDspLimiterHits}",
+            "global_dsp.cpu_guard_state=${state.isGlobalDspCpuGuardActive}",
+            "global_dsp.status_message=${state.dspStatusMessage ?: ""}"
+        )
     }
 
     fun refreshMicrophones() {
@@ -805,7 +913,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     output,
                     preferredDevice = selectedMic,
                     requestedChannelCount = channels,
-                    swapStereoChannels = _uiState.value.stereoChannelsSwapped
+                    swapStereoChannels = _uiState.value.stereoChannelsSwapped,
+                    balanceConfig = _uiState.value.globalBalanceConfig
                 )
                 _uiState.update {
                     it.copy(
@@ -822,7 +931,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     output,
                     preferredDevice = selectedMic,
                     requestedChannelCount = channels,
-                    swapStereoChannels = _uiState.value.stereoChannelsSwapped
+                    swapStereoChannels = _uiState.value.stereoChannelsSwapped,
+                    balanceConfig = _uiState.value.globalBalanceConfig
                 )
                 _uiState.update {
                     it.copy(
@@ -987,6 +1097,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             appendLine("stereo_supported=${_uiState.value.stereoSupported}")
             appendLine("stereo_actual_channels=${_uiState.value.stereoActualChannels}")
             appendLine("stereo_probe_message=${_uiState.value.stereoProbeMessage}")
+            buildGlobalDspDiagnosticLines().forEach { appendLine(it) }
             appendLine("input_source=${_uiState.value.inputSourceLabel}")
             appendLine("input_preferred_device_set=${_uiState.value.inputPreferredDeviceSet}")
             appendLine("input_routed_device=${_uiState.value.inputRoutedDevice}")

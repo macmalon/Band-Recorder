@@ -33,6 +33,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -58,6 +59,9 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.bandrecorder.core.audio.DspOutputMode
+import com.bandrecorder.core.audio.GlobalBalanceConfig
+import com.bandrecorder.core.audio.MixProfile
 import kotlin.math.roundToInt
 
 private enum class PendingAction {
@@ -157,7 +161,14 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
             BalanceScreen(
                 ui = ui,
                 onBack = { navController.popBackStack() },
-                onRequestCalibrate = { requestAudioPermission(PendingAction.CALIBRATE) }
+                onRequestCalibrate = { requestAudioPermission(PendingAction.CALIBRATE) },
+                onSetAutoBalance = vm::setAutoBalance,
+                onSetCompression = vm::setCompression,
+                onSetDeEsser = vm::setDeEsser,
+                onSetDspOutputMode = vm::setDspOutputMode,
+                onSetMixProfile = vm::setMixProfile,
+                onUpdateAdvancedConfig = vm::updateAdvancedBalanceConfig,
+                onResetProfile = vm::resetBalanceProfile
             )
         }
         composable(AppRoute.MicSettings.route) {
@@ -336,7 +347,14 @@ private fun SmallActionButton(
 private fun BalanceScreen(
     ui: RecorderUiState,
     onBack: () -> Unit,
-    onRequestCalibrate: () -> Unit
+    onRequestCalibrate: () -> Unit,
+    onSetAutoBalance: (Boolean) -> Unit,
+    onSetCompression: (Boolean) -> Unit,
+    onSetDeEsser: (Boolean) -> Unit,
+    onSetDspOutputMode: (DspOutputMode) -> Unit,
+    onSetMixProfile: (MixProfile) -> Unit,
+    onUpdateAdvancedConfig: (GlobalBalanceConfig) -> Unit,
+    onResetProfile: () -> Unit
 ) {
     val vuProgress = ((ui.peakDb + 60f) / 60f).coerceIn(0f, 1f)
     val vuColor = when {
@@ -347,6 +365,8 @@ private fun BalanceScreen(
     val saturationAlert = ui.peakDb > -3f
     val lowLevelAlert = ui.rmsDb < -38f && ui.isRecording
     var section by remember { mutableStateOf(BalanceSection.GLOBAL) }
+    var advancedOpen by remember { mutableStateOf(false) }
+    val cfg = ui.globalBalanceConfig
 
     ScreenScaffold(title = "Balance", onBack = onBack) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -361,12 +381,151 @@ private fun BalanceScreen(
 
         when (section) {
             BalanceSection.GLOBAL -> {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0x22FFFFFF)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("Traitement live", fontWeight = FontWeight.Bold)
+                        Text(
+                            "Auto Balance ajuste le mix en temps réel pour une écoute claire sans saturation.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+
+                        ToggleRow(
+                            label = "Auto Balance",
+                            enabled = cfg.autoBalanceEnabled,
+                            onToggle = onSetAutoBalance
+                        )
+                        ToggleRow(
+                            label = "Compression légère",
+                            enabled = cfg.compressionEnabled,
+                            onToggle = onSetCompression
+                        )
+                        ToggleRow(
+                            label = "De-esser cymbales",
+                            enabled = cfg.deEsserEnabled,
+                            onToggle = onSetDeEsser
+                        )
+
+                        Text("Sortie DSP", fontWeight = FontWeight.SemiBold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (cfg.dspOutputMode == DspOutputMode.MONITORING_ONLY) {
+                                Button(onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_ONLY) }) { Text("Monitoring") }
+                                OutlinedButton(onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_AND_RECORDING) }) { Text("Monitoring+Fichier") }
+                            } else {
+                                OutlinedButton(onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_ONLY) }) { Text("Monitoring") }
+                                Button(onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_AND_RECORDING) }) { Text("Monitoring+Fichier") }
+                            }
+                        }
+
+                        val dspBadgeText = when {
+                            ui.isGlobalDspCpuGuardActive -> "CPU élevé"
+                            ui.isNearClipping -> "Risque saturation"
+                            ui.isGlobalDspRunning -> "Actif"
+                            else -> "Bypass"
+                        }
+                        val dspBadgeColor = when (dspBadgeText) {
+                            "Actif" -> Color(0xFF2E7D32)
+                            "Bypass" -> Color(0xFF546E7A)
+                            "CPU élevé" -> Color(0xFFFF9800)
+                            else -> Color(0xFFD32F2F)
+                        }
+                        Text("État DSP: $dspBadgeText", color = dspBadgeColor, fontWeight = FontWeight.Bold)
+                        ui.dspStatusMessage?.let { Text("Status moteur: $it", style = MaterialTheme.typography.bodySmall) }
+                        if (cfg.dspOutputMode == DspOutputMode.MONITORING_AND_RECORDING) {
+                            Text("Traitement imprimé dans le fichier.", style = MaterialTheme.typography.bodySmall, color = Color(0xFFB00020))
+                        }
+
+                        OutlinedButton(
+                            onClick = { advancedOpen = !advancedOpen },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(if (advancedOpen) "Masquer Avancé" else "Afficher Avancé")
+                        }
+
+                        if (advancedOpen) {
+                            Text("Profil cible", fontWeight = FontWeight.SemiBold)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = { onSetMixProfile(MixProfile.ROCK_POP_BALANCED) }) {
+                                    Text("Rock/Pop équilibré")
+                                }
+                                OutlinedButton(onClick = onResetProfile) {
+                                    Text("Reset profil")
+                                }
+                            }
+
+                            AdvancedConfigSlider(
+                                label = "EQ intensité",
+                                value = cfg.eqIntensity,
+                                range = 0f..1f,
+                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(eqIntensity = it)) }
+                            )
+                            AdvancedConfigSlider(
+                                label = "Comp intensité",
+                                value = cfg.compIntensity,
+                                range = 0f..1f,
+                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(compIntensity = it)) }
+                            )
+                            AdvancedConfigSlider(
+                                label = "De-esser intensité",
+                                value = cfg.deEsserIntensity,
+                                range = 0f..1f,
+                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(deEsserIntensity = it)) }
+                            )
+                            AdvancedConfigSlider(
+                                label = "Comp seuil (dB)",
+                                value = cfg.compressorThresholdDb,
+                                range = -40f..-6f,
+                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(compressorThresholdDb = it)) }
+                            )
+                            AdvancedConfigSlider(
+                                label = "Comp ratio",
+                                value = cfg.compressorRatio,
+                                range = 1.1f..6f,
+                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(compressorRatio = it)) }
+                            )
+                            AdvancedConfigSlider(
+                                label = "De-esser freq (Hz)",
+                                value = cfg.deEsserFrequencyHz,
+                                range = 3500f..11000f,
+                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(deEsserFrequencyHz = it)) }
+                            )
+                            AdvancedConfigSlider(
+                                label = "De-esser largeur (Hz)",
+                                value = cfg.deEsserWidthHz,
+                                range = 800f..6000f,
+                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(deEsserWidthHz = it)) }
+                            )
+                            AdvancedConfigSlider(
+                                label = "Limiteur (dB)",
+                                value = cfg.limiterCeilingDb,
+                                range = -6f..-0.2f,
+                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(limiterCeilingDb = it)) }
+                            )
+                            AdvancedConfigSlider(
+                                label = "Trim sortie (dB)",
+                                value = cfg.outputTrimDb,
+                                range = -12f..6f,
+                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(outputTrimDb = it)) }
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
                 Text("Status: ${ui.status}")
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text("RMS: ${"%.1f".format(ui.rmsDb)} dBFS")
                 Text("Peak: ${"%.1f".format(ui.peakDb)} dBFS")
                 Text("Headroom: ${"%.1f".format(ui.headroomDb)} dB")
+                Text("Comp GR: ${"%.1f".format(ui.compGainReductionDb)} dB")
+                Text("De-esser GR: ${"%.1f".format(ui.deEsserGainReductionDb)} dB")
+                Text("Limiter hits: ${ui.globalDspLimiterHits}")
                 Spacer(modifier = Modifier.height(6.dp))
 
                 Text("VU meter")
@@ -747,6 +906,55 @@ private fun GuidedStepCard(
                 fontWeight = FontWeight.Bold
             )
         }
+    }
+}
+
+@Composable
+private fun ToggleRow(
+    label: String,
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (enabled) {
+                Button(onClick = { onToggle(true) }) { Text("ON") }
+                OutlinedButton(onClick = { onToggle(false) }) { Text("OFF") }
+            } else {
+                OutlinedButton(onClick = { onToggle(true) }) { Text("ON") }
+                Button(onClick = { onToggle(false) }) { Text("OFF") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdvancedConfigSlider(
+    label: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    onValueChange: (Float) -> Unit
+) {
+    val display = if (range.endInclusive <= 1.2f) {
+        "%.2f".format(value)
+    } else {
+        "%.1f".format(value)
+    }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Text("$label: $display", style = MaterialTheme.typography.bodySmall)
+        Slider(
+            value = value.coerceIn(range.start, range.endInclusive),
+            onValueChange = onValueChange,
+            valueRange = range
+        )
     }
 }
 
