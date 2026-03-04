@@ -5,6 +5,9 @@ import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -41,20 +44,39 @@ data class RecordingStatus(
     val peakDb: Float = -90f,
     val headroomDb: Float = 90f,
     val elapsedMs: Long = 0L,
-    val outputPath: String? = null
+    val outputPath: String? = null,
+    val inputDiagnostics: InputDiagnostics? = null
+)
+
+data class InputDiagnostics(
+    val source: Int,
+    val sourceLabel: String,
+    val preferredDeviceSet: Boolean,
+    val routedDeviceId: Int?,
+    val routedDeviceType: Int?,
+    val routedDeviceTypeLabel: String?,
+    val routedDeviceAddress: String?,
+    val agcAvailable: Boolean,
+    val agcEnabled: Boolean?,
+    val nsAvailable: Boolean,
+    val nsEnabled: Boolean?,
+    val aecAvailable: Boolean,
+    val aecEnabled: Boolean?
 )
 
 data class StereoProbeResult(
     val supported: Boolean,
     val actualChannelCount: Int,
-    val message: String
+    val message: String,
+    val diagnostics: InputDiagnostics? = null
 )
 
 data class StereoWindowMeasurement(
     val leftRmsDb: Float,
     val rightRmsDb: Float,
     val actualChannelCount: Int,
-    val framesRead: Int
+    val framesRead: Int,
+    val diagnostics: InputDiagnostics? = null
 )
 
 class WavRecorderEngine {
@@ -67,6 +89,12 @@ class WavRecorderEngine {
     private var dataBytesWritten: Int = 0
     private var sampleRateHz: Int = 48_000
     private var channelCount: Int = 1
+    private var inputDiagnostics: InputDiagnostics? = null
+
+    private data class AudioRecordInit(
+        val record: AudioRecord,
+        val source: Int
+    )
 
     fun statusFlow(): StateFlow<RecordingStatus> = status.asStateFlow()
 
@@ -83,7 +111,8 @@ class WavRecorderEngine {
         if (minBuffer <= 0) return@withContext null
 
         val bufferSize = (minBuffer * 2).coerceAtLeast(4096)
-        val record = createAudioRecord(sampleRate, channelMask, encoding, bufferSize) ?: return@withContext null
+        val init = createAudioRecord(sampleRate, channelMask, encoding, bufferSize) ?: return@withContext null
+        val record = init.record
         if (preferredDevice != null) {
             runCatching { record.setPreferredDevice(preferredDevice) }
         }
@@ -145,8 +174,9 @@ class WavRecorderEngine {
             return@withContext StereoProbeResult(false, 1, "Stereo min buffer unsupported")
         }
         val bufferSize = (minBuffer * 2).coerceAtLeast(4096)
-        val record = createAudioRecord(sampleRate, channelMask, encoding, bufferSize)
+        val init = createAudioRecord(sampleRate, channelMask, encoding, bufferSize)
             ?: return@withContext StereoProbeResult(false, 1, "Stereo AudioRecord init failed")
+        val record = init.record
 
         val preferredSet = if (preferredDevice != null) {
             runCatching { record.setPreferredDevice(preferredDevice) }.getOrDefault(false)
@@ -234,9 +264,15 @@ class WavRecorderEngine {
             StereoProbeResult(false, max(actual, 1), "Stereo probe failed: ${it.message ?: "unknown error"}")
         }
 
+        val diagnostics = buildInputDiagnostics(
+            record = record,
+            source = init.source,
+            preferredSet = preferredSet
+        )
+
         runCatching { record.stop() }
         record.release()
-        result
+        result.copy(diagnostics = diagnostics)
     }
 
     @SuppressLint("MissingPermission")
@@ -251,7 +287,8 @@ class WavRecorderEngine {
         if (minBuffer <= 0) return@withContext null
 
         val bufferSize = (minBuffer * 2).coerceAtLeast(4096)
-        val record = createAudioRecord(sampleRate, channelMask, encoding, bufferSize) ?: return@withContext null
+        val init = createAudioRecord(sampleRate, channelMask, encoding, bufferSize) ?: return@withContext null
+        val record = init.record
         if (preferredDevice != null) {
             runCatching { record.setPreferredDevice(preferredDevice) }
         }
@@ -266,6 +303,7 @@ class WavRecorderEngine {
         var framesRead = 0
         var leftSumSquares = 0.0
         var rightSumSquares = 0.0
+        var diagnostics: InputDiagnostics? = null
 
         record.startRecording()
         try {
@@ -285,6 +323,11 @@ class WavRecorderEngine {
                 }
             }
         } finally {
+            diagnostics = buildInputDiagnostics(
+                record = record,
+                source = init.source,
+                preferredSet = preferredDevice != null
+            )
             runCatching { record.stop() }
             record.release()
         }
@@ -296,7 +339,8 @@ class WavRecorderEngine {
             leftRmsDb = leftRmsDb,
             rightRmsDb = rightRmsDb,
             actualChannelCount = actual,
-            framesRead = framesRead
+            framesRead = framesRead,
+            diagnostics = diagnostics
         )
     }
 
@@ -316,7 +360,8 @@ class WavRecorderEngine {
         if (minBuffer <= 0) return
 
         val bufferSize = (minBuffer * 2).coerceAtLeast(4096)
-        val record = createAudioRecord(sampleRate, channelMask, encoding, bufferSize) ?: return
+        val init = createAudioRecord(sampleRate, channelMask, encoding, bufferSize) ?: return
+        val record = init.record
         if (preferredDevice != null) {
             runCatching { record.setPreferredDevice(preferredDevice) }
         }
@@ -326,6 +371,11 @@ class WavRecorderEngine {
         sampleRateHz = sampleRate
         channelCount = channels
         dataBytesWritten = 0
+        inputDiagnostics = buildInputDiagnostics(
+            record = record,
+            source = init.source,
+            preferredSet = preferredDevice != null
+        )
 
         val stream = FileOutputStream(output)
         stream.write(ByteArray(44))
@@ -334,7 +384,11 @@ class WavRecorderEngine {
         record.startRecording()
         val startMs = System.currentTimeMillis()
 
-        status.value = RecordingStatus(isRecording = true, outputPath = output.absolutePath)
+        status.value = RecordingStatus(
+            isRecording = true,
+            outputPath = output.absolutePath,
+            inputDiagnostics = inputDiagnostics
+        )
 
         recordJob = scope.launch {
             val shorts = ShortArray(bufferSize / 2)
@@ -353,7 +407,8 @@ class WavRecorderEngine {
                         peakDb = level.peakDb,
                         headroomDb = level.headroomDb,
                         elapsedMs = elapsed,
-                        outputPath = output.absolutePath
+                        outputPath = output.absolutePath,
+                        inputDiagnostics = inputDiagnostics
                     )
 
                     var bi = 0
@@ -379,7 +434,8 @@ class WavRecorderEngine {
                     peakDb = levelOrDefault(status.value.peakDb),
                     headroomDb = levelOrDefault(status.value.headroomDb),
                     elapsedMs = status.value.elapsedMs,
-                    outputPath = output.absolutePath
+                    outputPath = output.absolutePath,
+                    inputDiagnostics = inputDiagnostics
                 )
             }
         }
@@ -397,11 +453,11 @@ class WavRecorderEngine {
         channelMask: Int,
         encoding: Int,
         bufferSize: Int
-    ): AudioRecord? {
+    ): AudioRecordInit? {
         val sources = listOf(MediaRecorder.AudioSource.UNPROCESSED, MediaRecorder.AudioSource.MIC)
         for (source in sources) {
             val record = AudioRecord(source, sampleRate, channelMask, encoding, bufferSize)
-            if (record.state == AudioRecord.STATE_INITIALIZED) return record
+            if (record.state == AudioRecord.STATE_INITIALIZED) return AudioRecordInit(record, source)
             record.release()
         }
         return null
@@ -428,6 +484,72 @@ class WavRecorderEngine {
     private fun rmsDbFromSumSquares(sumSquares: Double, sampleCount: Int): Float {
         val rms = sqrt((sumSquares / sampleCount.coerceAtLeast(1)).coerceAtLeast(1e-12))
         return (20.0 * log10(rms.coerceAtLeast(1e-6))).toFloat()
+    }
+
+    private fun buildInputDiagnostics(
+        record: AudioRecord,
+        source: Int,
+        preferredSet: Boolean
+    ): InputDiagnostics {
+        val routed = runCatching { record.routedDevice }.getOrNull()
+        val sessionId = runCatching { record.audioSessionId }.getOrDefault(0)
+
+        val agcAvailable = AutomaticGainControl.isAvailable()
+        val nsAvailable = NoiseSuppressor.isAvailable()
+        val aecAvailable = AcousticEchoCanceler.isAvailable()
+
+        val agcEnabled = effectEnabled(sessionId, agcAvailable) { AutomaticGainControl.create(sessionId) }
+        val nsEnabled = effectEnabled(sessionId, nsAvailable) { NoiseSuppressor.create(sessionId) }
+        val aecEnabled = effectEnabled(sessionId, aecAvailable) { AcousticEchoCanceler.create(sessionId) }
+
+        return InputDiagnostics(
+            source = source,
+            sourceLabel = sourceLabel(source),
+            preferredDeviceSet = preferredSet,
+            routedDeviceId = routed?.id,
+            routedDeviceType = routed?.type,
+            routedDeviceTypeLabel = routed?.type?.let { deviceTypeLabel(it) },
+            routedDeviceAddress = routed?.address?.takeIf { it.isNotBlank() },
+            agcAvailable = agcAvailable,
+            agcEnabled = agcEnabled,
+            nsAvailable = nsAvailable,
+            nsEnabled = nsEnabled,
+            aecAvailable = aecAvailable,
+            aecEnabled = aecEnabled
+        )
+    }
+
+    private fun <T : android.media.audiofx.AudioEffect> effectEnabled(
+        sessionId: Int,
+        available: Boolean,
+        creator: () -> T?
+    ): Boolean? {
+        if (!available || sessionId <= 0) return null
+        return runCatching {
+            creator()?.let { effect ->
+                val enabled = effect.enabled
+                effect.release()
+                enabled
+            }
+        }.getOrNull()
+    }
+
+    private fun sourceLabel(source: Int): String = when (source) {
+        MediaRecorder.AudioSource.UNPROCESSED -> "UNPROCESSED"
+        MediaRecorder.AudioSource.MIC -> "MIC"
+        else -> "source_$source"
+    }
+
+    private fun deviceTypeLabel(type: Int): String = when (type) {
+        AudioDeviceInfo.TYPE_BUILTIN_MIC -> "BUILTIN_MIC"
+        AudioDeviceInfo.TYPE_TELEPHONY -> "TELEPHONY"
+        AudioDeviceInfo.TYPE_REMOTE_SUBMIX -> "REMOTE_SUBMIX"
+        AudioDeviceInfo.TYPE_WIRED_HEADSET -> "WIRED_HEADSET"
+        AudioDeviceInfo.TYPE_USB_DEVICE -> "USB_DEVICE"
+        AudioDeviceInfo.TYPE_USB_HEADSET -> "USB_HEADSET"
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "BLUETOOTH_SCO"
+        AudioDeviceInfo.TYPE_BLE_HEADSET -> "BLE_HEADSET"
+        else -> "TYPE_$type"
     }
 
     private fun finalizeWavHeader(file: File, dataSize: Int, sampleRate: Int, channels: Int) {

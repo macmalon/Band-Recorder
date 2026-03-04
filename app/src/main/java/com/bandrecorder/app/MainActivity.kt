@@ -479,6 +479,9 @@ private fun MicSettingsScreen(
             Text(if (ui.isRunningStereoGuidedTest) "Test stéréo guidé en cours..." else "Test stéréo guidé (gauche/droite/centre)")
         }
         Text("Résultat probe: ${ui.stereoProbeMessage}")
+        Text("Source input: ${ui.inputSourceLabel}", style = MaterialTheme.typography.bodySmall)
+        Text("Route active: ${ui.inputRoutedDevice}", style = MaterialTheme.typography.bodySmall)
+        Text("Traitements: ${ui.inputProcessingSummary}", style = MaterialTheme.typography.bodySmall)
         ui.stereoGuidedTestResult?.let {
             Text(it, style = MaterialTheme.typography.bodySmall)
         }

@@ -11,6 +11,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.bandrecorder.core.audio.CalibrationProgress
 import com.bandrecorder.core.audio.CalibrationResult
+import com.bandrecorder.core.audio.InputDiagnostics
 import com.bandrecorder.core.audio.StereoProbeResult
 import com.bandrecorder.core.audio.StereoWindowMeasurement
 import com.bandrecorder.core.audio.WavRecorderEngine
@@ -91,6 +92,10 @@ data class RecorderUiState(
     val stereoActualChannels: Int = 1,
     val stereoProbeMessage: String = "Stereo not tested yet",
     val stereoGuidedTestResult: String? = null,
+    val inputSourceLabel: String = "Unknown",
+    val inputPreferredDeviceSet: Boolean = false,
+    val inputRoutedDevice: String = "Unknown",
+    val inputProcessingSummary: String = "AGC/NS/AEC unknown",
     val abTestResult: String? = null
 )
 
@@ -130,7 +135,18 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         peakDb = status.peakDb,
                         headroomDb = status.headroomDb,
                         elapsedMs = status.elapsedMs,
-                        status = if (status.isRecording) "Recording" else it.status
+                        status = if (status.isRecording) "Recording" else it.status,
+                        inputSourceLabel = status.inputDiagnostics?.sourceLabel ?: it.inputSourceLabel,
+                        inputPreferredDeviceSet = status.inputDiagnostics?.preferredDeviceSet ?: it.inputPreferredDeviceSet,
+                        inputRoutedDevice = status.inputDiagnostics?.let { diag ->
+                            val type = diag.routedDeviceTypeLabel ?: "type?"
+                            val id = diag.routedDeviceId?.toString() ?: "unknown"
+                            val addr = diag.routedDeviceAddress ?: "n/a"
+                            "$type#$id ($addr)"
+                        } ?: it.inputRoutedDevice,
+                        inputProcessingSummary = status.inputDiagnostics?.let { diag ->
+                            "AGC=${diag.agcEnabled ?: "n/a"} NS=${diag.nsEnabled ?: "n/a"} AEC=${diag.aecEnabled ?: "n/a"}"
+                        } ?: it.inputProcessingSummary
                     )
                 }
             }
@@ -170,12 +186,24 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             _uiState.update { it.copy(status = "Probing stereo capability...") }
             val probe: StereoProbeResult = engine.probeStereoCapability(preferredDevice = resolveEffectiveMicDevice())
             _uiState.update {
+                val diag = probe.diagnostics
                 it.copy(
                     stereoProbeDone = true,
                     stereoSupported = probe.supported,
                     stereoActualChannels = probe.actualChannelCount,
                     stereoProbeMessage = probe.message,
-                    status = if (probe.supported) "Stereo supported" else "Stereo not supported"
+                    status = if (probe.supported) "Stereo supported" else "Stereo not supported",
+                    inputSourceLabel = diag?.sourceLabel ?: it.inputSourceLabel,
+                    inputPreferredDeviceSet = diag?.preferredDeviceSet ?: it.inputPreferredDeviceSet,
+                    inputRoutedDevice = diag?.let { d ->
+                        val type = d.routedDeviceTypeLabel ?: "type?"
+                        val id = d.routedDeviceId?.toString() ?: "unknown"
+                        val addr = d.routedDeviceAddress ?: "n/a"
+                        "$type#$id ($addr)"
+                    } ?: it.inputRoutedDevice,
+                    inputProcessingSummary = diag?.let { d ->
+                        "AGC=${d.agcEnabled ?: "n/a"} NS=${d.nsEnabled ?: "n/a"} AEC=${d.aecEnabled ?: "n/a"}"
+                    } ?: it.inputProcessingSummary
                 )
             }
         }
@@ -237,6 +265,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 swappedOrientation -> "swapped"
                 else -> "inconsistent"
             }
+            val inputDiag = left.diagnostics ?: right.diagnostics ?: center.diagnostics
             val resultText = buildString {
                 val verdict = if (pass) {
                     if (swappedOrientation) "Guided stereo test: PASS (channels swapped)"
@@ -265,7 +294,18 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         pass -> "Guided test confirmed stereo separation"
                         else -> "Guided test did not confirm stereo separation"
                     },
-                    status = if (pass) "Guided stereo test passed" else "Guided stereo test failed"
+                    status = if (pass) "Guided stereo test passed" else "Guided stereo test failed",
+                    inputSourceLabel = inputDiag?.sourceLabel ?: it.inputSourceLabel,
+                    inputPreferredDeviceSet = inputDiag?.preferredDeviceSet ?: it.inputPreferredDeviceSet,
+                    inputRoutedDevice = inputDiag?.let { d ->
+                        val type = d.routedDeviceTypeLabel ?: "type?"
+                        val id = d.routedDeviceId?.toString() ?: "unknown"
+                        val addr = d.routedDeviceAddress ?: "n/a"
+                        "$type#$id ($addr)"
+                    } ?: it.inputRoutedDevice,
+                    inputProcessingSummary = inputDiag?.let { d ->
+                        "AGC=${d.agcEnabled ?: "n/a"} NS=${d.nsEnabled ?: "n/a"} AEC=${d.aecEnabled ?: "n/a"}"
+                    } ?: it.inputProcessingSummary
                 )
             }
 
@@ -279,7 +319,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         right = right,
                         center = center,
                         pass = pass,
-                        orientation = orientationLabel
+                        orientation = orientationLabel,
+                        inputDiag = inputDiag
                     )
                 )
             }
@@ -291,12 +332,13 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         right: StereoWindowMeasurement,
         center: StereoWindowMeasurement,
         pass: Boolean,
-        orientation: String
+        orientation: String,
+        inputDiag: InputDiagnostics?
     ): List<String> {
         val leftDominanceDb = left.leftRmsDb - left.rightRmsDb
         val rightDominanceDb = right.rightRmsDb - right.leftRmsDb
         val centerDiffDb = abs(center.leftRmsDb - center.rightRmsDb)
-        return listOf(
+        val base = mutableListOf(
             "guided_stereo.pass=$pass",
             "guided_stereo.orientation=$orientation",
             "guided_stereo.left.left_rms=${left.leftRmsDb}",
@@ -309,6 +351,20 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             "guided_stereo.center.right_rms=${center.rightRmsDb}",
             "guided_stereo.center.abs_delta=$centerDiffDb"
         )
+        inputDiag?.let { d ->
+            base += "input.source=${d.sourceLabel}(${d.source})"
+            base += "input.preferred_device_set=${d.preferredDeviceSet}"
+            base += "input.routed_device_id=${d.routedDeviceId ?: "unknown"}"
+            base += "input.routed_device_type=${d.routedDeviceTypeLabel ?: d.routedDeviceType ?: "unknown"}"
+            base += "input.routed_device_address=${d.routedDeviceAddress ?: ""}"
+            base += "input.agc_available=${d.agcAvailable}"
+            base += "input.agc_enabled=${d.agcEnabled ?: "n/a"}"
+            base += "input.ns_available=${d.nsAvailable}"
+            base += "input.ns_enabled=${d.nsEnabled ?: "n/a"}"
+            base += "input.aec_available=${d.aecAvailable}"
+            base += "input.aec_enabled=${d.aecEnabled ?: "n/a"}"
+        }
+        return base
     }
 
     fun refreshMicrophones() {
@@ -807,6 +863,10 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             appendLine("stereo_supported=${_uiState.value.stereoSupported}")
             appendLine("stereo_actual_channels=${_uiState.value.stereoActualChannels}")
             appendLine("stereo_probe_message=${_uiState.value.stereoProbeMessage}")
+            appendLine("input_source=${_uiState.value.inputSourceLabel}")
+            appendLine("input_preferred_device_set=${_uiState.value.inputPreferredDeviceSet}")
+            appendLine("input_routed_device=${_uiState.value.inputRoutedDevice}")
+            appendLine("input_processing=${_uiState.value.inputProcessingSummary}")
             appendLine("selected_mic_id=${_uiState.value.selectedMicId ?: "auto"}")
             appendLine("effective_mic=${effective?.displayName ?: "none"}")
             appendLine("effective_mic_type=${effective?.typeLabel ?: "n/a"}")
