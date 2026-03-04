@@ -8,12 +8,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,10 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -53,7 +48,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -63,7 +57,6 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
 
 private enum class PendingAction {
@@ -227,7 +220,6 @@ private fun HomeScreen(
             Color(0xFFFF8C42)
         )
     )
-    val pagerState = rememberPagerState(pageCount = { 2 })
     val isBusy = ui.isCalibrating || ui.isTestingMic || ui.isRunningABTest || ui.isRunningStereoGuidedTest
 
     Box(
@@ -250,10 +242,11 @@ private fun HomeScreen(
 
         Column(
             modifier = Modifier
-                .align(Alignment.Center)
+                .align(Alignment.TopCenter)
                 .fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            Spacer(modifier = Modifier.height(86.dp))
             Text(
                 text = formatTimer(ui.elapsedMs),
                 fontSize = 72.sp,
@@ -261,56 +254,44 @@ private fun HomeScreen(
                 color = Color.White,
                 textAlign = TextAlign.Center
             )
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(10.dp))
             Text(
                 text = ui.status,
                 color = Color.White,
                 style = MaterialTheme.typography.bodyLarge
             )
-            Spacer(modifier = Modifier.height(30.dp))
-
-            HorizontalPager(
-                state = pagerState,
-                contentPadding = PaddingValues(horizontal = 92.dp),
-                pageSpacing = 18.dp,
+            Spacer(modifier = Modifier.height(24.dp))
+            Button(
+                onClick = onRecordToggle,
+                enabled = !isBusy || ui.isRecording,
+                modifier = Modifier
+                    .width(170.dp)
+                    .height(118.dp),
+                shape = RoundedCornerShape(26.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE6006F))
+            ) {
+                Text(
+                    text = if (ui.isRecording) "STOP" else "REC",
+                    fontSize = 36.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color.White
+                )
+            }
+            Spacer(modifier = Modifier.height(14.dp))
+            Button(
+                onClick = onOpenBalance,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(190.dp)
-            ) { page ->
-                val pageOffset = ((pagerState.currentPage - page) + pagerState.currentPageOffsetFraction)
-                    .absoluteValue
-                    .coerceIn(0f, 1f)
-                val targetScale = 1f - (0.30f * pageOffset)
-                val targetAlpha = 1f - (0.40f * pageOffset)
-                val scale by animateFloatAsState(targetValue = targetScale, label = "cardScale")
-                val alpha by animateFloatAsState(targetValue = targetAlpha, label = "cardAlpha")
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer {
-                            scaleX = scale
-                            scaleY = scale
-                            this.alpha = alpha
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (page == 0) {
-                        MainCarouselCard(
-                            title = if (ui.isRecording) "STOP" else "REC",
-                            subtitle = if (ui.isRecording) "Arrêter l'enregistrement" else "Démarrer l'enregistrement",
-                            enabled = !isBusy || ui.isRecording,
-                            onClick = onRecordToggle
-                        )
-                    } else {
-                        MainCarouselCard(
-                            title = "BALANCE",
-                            subtitle = "Mesure et calibrage",
-                            enabled = true,
-                            onClick = onOpenBalance
-                        )
-                    }
-                }
+                    .height(64.dp),
+                shape = RoundedCornerShape(22.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE6006F))
+            ) {
+                Text(
+                    text = "BALANCE",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color.White
+                )
             }
         }
 
@@ -339,52 +320,6 @@ private fun SmallActionButton(
         )
     ) {
         Text(text)
-    }
-}
-
-@Composable
-private fun MainCarouselCard(
-    title: String,
-    subtitle: String,
-    enabled: Boolean,
-    onClick: () -> Unit
-) {
-    val titleSize = if (title.length > 6) 28.sp else 34.sp
-    val cardShape = RoundedCornerShape(30.dp)
-
-    Card(
-        modifier = Modifier
-            .width(182.dp)
-            .height(142.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFE6006F)),
-        shape = cardShape
-    ) {
-        Button(
-            onClick = onClick,
-            enabled = enabled,
-            modifier = Modifier.fillMaxSize(),
-            shape = cardShape,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color.Transparent,
-                disabledContainerColor = Color.Transparent,
-                contentColor = Color.White,
-                disabledContentColor = Color(0xCCFFFFFF)
-            )
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    text = title,
-                    fontSize = titleSize,
-                    fontWeight = FontWeight.ExtraBold
-                )
-                Text(
-                    text = subtitle,
-                    fontSize = 12.sp,
-                    textAlign = TextAlign.Center,
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-        }
     }
 }
 
