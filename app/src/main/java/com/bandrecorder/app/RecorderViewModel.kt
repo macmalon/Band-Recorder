@@ -98,6 +98,7 @@ data class RecorderUiState(
     val testHistory: List<MicTestHistoryEntry> = emptyList(),
     val lastDiagnosticReportPath: String? = null,
     val stereoModeRequested: Boolean = false,
+    val stereoChannelsSwapped: Boolean = false,
     val stereoProbeDone: Boolean = false,
     val stereoSupported: Boolean = false,
     val stereoActualChannels: Int = 1,
@@ -132,6 +133,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 showAdvancedInternals = settings.showAdvancedInternals,
                 selectedTestDurationSec = normalizeDuration(settings.testDurationSec),
                 stereoModeRequested = settings.stereoModeRequested,
+                stereoChannelsSwapped = settings.stereoChannelsSwapped,
                 testHistory = loadHistory()
             )
         }
@@ -189,6 +191,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     fun setStereoModeRequested(enabled: Boolean) {
         settingsStore.setStereoModeRequested(enabled)
         _uiState.update { it.copy(stereoModeRequested = enabled) }
+    }
+
+    fun setStereoChannelsSwapped(enabled: Boolean) {
+        settingsStore.setStereoChannelsSwapped(enabled)
+        _uiState.update { it.copy(stereoChannelsSwapped = enabled) }
     }
 
     fun probeStereoCapability() {
@@ -280,6 +287,18 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 else -> "inconsistent"
             }
             val inputDiag = left.diagnostics ?: right.diagnostics ?: center.diagnostics
+            val autoSwap = pass && swappedOrientation
+            val routedMicId = inputDiag?.routedDeviceId
+            val routedMicOption = routedMicId?.let { rid -> _uiState.value.microphones.firstOrNull { it.id == rid } }
+            val chosenMicId = if (pass && routedMicOption != null) routedMicOption.id else _uiState.value.selectedMicId
+            val chosenMic = effectiveMic(_uiState.value.microphones, chosenMicId)
+
+            if (pass) {
+                settingsStore.setStereoModeRequested(true)
+                settingsStore.setStereoChannelsSwapped(autoSwap)
+                settingsStore.setSelectedMicId(chosenMicId)
+            }
+
             val resultText = buildString {
                 val verdict = if (pass) {
                     if (swappedOrientation) "Guided stereo test: PASS (channels swapped)"
@@ -293,6 +312,9 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 appendLine("CENTER step: |L-R| = ${"%.1f".format(centerDiffDb)} dB ${if (centerOk) "OK" else "HIGH"}")
                 appendLine("Orientation: $orientationLabel")
                 appendLine("Channels seen: $channelCount")
+                if (pass) {
+                    appendLine("Profile applied: stereo ON, swap=${if (autoSwap) "ON" else "OFF"}, mic=${chosenMic?.displayName ?: "auto"}")
+                }
                 append("Tip: make louder, closer, and side-specific sounds during LEFT/RIGHT steps.")
             }
 
@@ -303,6 +325,13 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     stereoProbeDone = true,
                     stereoSupported = pass,
                     stereoActualChannels = channelCount,
+                    stereoModeRequested = if (pass) true else it.stereoModeRequested,
+                    stereoChannelsSwapped = if (pass) autoSwap else it.stereoChannelsSwapped,
+                    selectedMicId = if (pass) chosenMicId else it.selectedMicId,
+                    isAutoMicMode = if (pass) chosenMicId == null else it.isAutoMicMode,
+                    effectiveMicLabel = if (pass) chosenMic?.displayName else it.effectiveMicLabel,
+                    effectiveMicWarning = if (pass) chosenMic?.warning else it.effectiveMicWarning,
+                    effectiveMicRecommended = if (pass) chosenMic?.recommended ?: true else it.effectiveMicRecommended,
                     stereoProbeMessage = when {
                         pass && swappedOrientation -> "Guided test confirmed stereo separation (channels swapped)"
                         pass -> "Guided test confirmed stereo separation"
@@ -335,7 +364,9 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         center = center,
                         pass = pass,
                         orientation = orientationLabel,
-                        inputDiag = inputDiag
+                        inputDiag = inputDiag,
+                        autoSwapApplied = autoSwap,
+                        selectedMicIdAfterTest = chosenMicId
                     )
                 )
             }
@@ -348,7 +379,9 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         center: StereoWindowMeasurement,
         pass: Boolean,
         orientation: String,
-        inputDiag: InputDiagnostics?
+        inputDiag: InputDiagnostics?,
+        autoSwapApplied: Boolean,
+        selectedMicIdAfterTest: Int?
     ): List<String> {
         val leftDominanceDb = left.leftRmsDb - left.rightRmsDb
         val rightDominanceDb = right.rightRmsDb - right.leftRmsDb
@@ -356,6 +389,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         val base = mutableListOf(
             "guided_stereo.pass=$pass",
             "guided_stereo.orientation=$orientation",
+            "guided_stereo.auto_swap_applied=$autoSwapApplied",
+            "guided_stereo.selected_mic_after_test=${selectedMicIdAfterTest ?: "auto"}",
             "guided_stereo.left.left_rms=${left.leftRmsDb}",
             "guided_stereo.left.right_rms=${left.rightRmsDb}",
             "guided_stereo.left.delta_l_minus_r=$leftDominanceDb",
@@ -703,7 +738,12 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 val (displayName, output) = buildTempOutputFile()
                 pendingTempFile = output
                 pendingDisplayName = displayName
-                engine.startRecording(output, preferredDevice = selectedMic, requestedChannelCount = channels)
+                engine.startRecording(
+                    output,
+                    preferredDevice = selectedMic,
+                    requestedChannelCount = channels,
+                    swapStereoChannels = _uiState.value.stereoChannelsSwapped
+                )
                 _uiState.update {
                     it.copy(
                         status = if (channels == 2) "Recording (stereo)" else "Recording (mono)",
@@ -715,7 +755,12 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
             StorageLocation.APP_PRIVATE -> {
                 val output = buildAppPrivateOutputFile()
-                engine.startRecording(output, preferredDevice = selectedMic, requestedChannelCount = channels)
+                engine.startRecording(
+                    output,
+                    preferredDevice = selectedMic,
+                    requestedChannelCount = channels,
+                    swapStereoChannels = _uiState.value.stereoChannelsSwapped
+                )
                 _uiState.update {
                     it.copy(
                         status = if (channels == 2) "Recording (stereo)" else "Recording (mono)",
@@ -874,6 +919,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             appendLine("status=${_uiState.value.status}")
             appendLine("storage=${_uiState.value.storageLocation}")
             appendLine("stereo_requested=${_uiState.value.stereoModeRequested}")
+            appendLine("stereo_channels_swapped=${_uiState.value.stereoChannelsSwapped}")
             appendLine("stereo_probe_done=${_uiState.value.stereoProbeDone}")
             appendLine("stereo_supported=${_uiState.value.stereoSupported}")
             appendLine("stereo_actual_channels=${_uiState.value.stereoActualChannels}")

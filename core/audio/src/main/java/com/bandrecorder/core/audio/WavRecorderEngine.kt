@@ -89,6 +89,7 @@ class WavRecorderEngine {
     private var dataBytesWritten: Int = 0
     private var sampleRateHz: Int = 48_000
     private var channelCount: Int = 1
+    private var swapStereoChannels: Boolean = false
     private var inputDiagnostics: InputDiagnostics? = null
 
     private data class AudioRecordInit(
@@ -349,7 +350,8 @@ class WavRecorderEngine {
         output: File,
         sampleRate: Int = 48_000,
         preferredDevice: AudioDeviceInfo? = null,
-        requestedChannelCount: Int = 1
+        requestedChannelCount: Int = 1,
+        swapStereoChannels: Boolean = false
     ) {
         if (recordJob != null) return
 
@@ -370,6 +372,7 @@ class WavRecorderEngine {
         outputFile = output
         sampleRateHz = sampleRate
         channelCount = channels
+        this.swapStereoChannels = swapStereoChannels
         dataBytesWritten = 0
         inputDiagnostics = buildInputDiagnostics(
             record = record,
@@ -412,13 +415,28 @@ class WavRecorderEngine {
                     )
 
                     var bi = 0
-                    for (i in 0 until read) {
-                        val s = shorts[i].toInt()
-                        bytes[bi++] = (s and 0xFF).toByte()
-                        bytes[bi++] = ((s shr 8) and 0xFF).toByte()
+                    if (channelCount == 2 && this@WavRecorderEngine.swapStereoChannels) {
+                        val usable = read - (read % 2)
+                        var i = 0
+                        while (i < usable) {
+                            val left = shorts[i].toInt()
+                            val right = shorts[i + 1].toInt()
+                            // Write R then L to swap output channels.
+                            bytes[bi++] = (right and 0xFF).toByte()
+                            bytes[bi++] = ((right shr 8) and 0xFF).toByte()
+                            bytes[bi++] = (left and 0xFF).toByte()
+                            bytes[bi++] = ((left shr 8) and 0xFF).toByte()
+                            i += 2
+                        }
+                    } else {
+                        for (i in 0 until read) {
+                            val s = shorts[i].toInt()
+                            bytes[bi++] = (s and 0xFF).toByte()
+                            bytes[bi++] = ((s shr 8) and 0xFF).toByte()
+                        }
                     }
-                    stream.write(bytes, 0, read * 2)
-                    dataBytesWritten += (read * 2)
+                    stream.write(bytes, 0, bi)
+                    dataBytesWritten += bi
                 }
             } finally {
                 runCatching { stream.flush() }

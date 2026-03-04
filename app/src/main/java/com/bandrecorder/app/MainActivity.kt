@@ -161,6 +161,7 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onSelectMic = vm::selectMicrophone,
                 onSetTestDuration = vm::setTestDuration,
                 onToggleStereoRequested = vm::setStereoModeRequested,
+                onToggleStereoSwap = vm::setStereoChannelsSwapped,
                 onRequestTestMic = { requestAudioPermission(PendingAction.TEST_MIC) },
                 onRequestProbeStereo = { requestAudioPermission(PendingAction.PROBE_STEREO) },
                 onOpenGuidedStereoTest = { navController.navigate(AppRoute.GuidedStereoTest.route) }
@@ -443,6 +444,7 @@ private fun MicSettingsScreen(
     onSelectMic: (Int?) -> Unit,
     onSetTestDuration: (Int) -> Unit,
     onToggleStereoRequested: (Boolean) -> Unit,
+    onToggleStereoSwap: (Boolean) -> Unit,
     onRequestTestMic: () -> Unit,
     onRequestProbeStereo: () -> Unit,
     onOpenGuidedStereoTest: () -> Unit
@@ -492,6 +494,15 @@ private fun MicSettingsScreen(
             Text("Ouvrir test stéréo guidé")
         }
         Text("Résultat probe: ${ui.stereoProbeMessage}")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (ui.stereoChannelsSwapped) {
+                Button(onClick = { onToggleStereoSwap(true) }) { Text("Swap L/R ON") }
+                OutlinedButton(onClick = { onToggleStereoSwap(false) }) { Text("Swap L/R OFF") }
+            } else {
+                OutlinedButton(onClick = { onToggleStereoSwap(true) }) { Text("Swap L/R ON") }
+                Button(onClick = { onToggleStereoSwap(false) }) { Text("Swap L/R OFF") }
+            }
+        }
         Text("Source input: ${ui.inputSourceLabel}", style = MaterialTheme.typography.bodySmall)
         Text("Route active: ${ui.inputRoutedDevice}", style = MaterialTheme.typography.bodySmall)
         Text("Traitements: ${ui.inputProcessingSummary}", style = MaterialTheme.typography.bodySmall)
