@@ -20,6 +20,7 @@ import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import kotlin.math.abs
 import kotlin.math.log10
+import kotlin.math.max
 import kotlin.math.sqrt
 
 data class CalibrationResult(
@@ -140,24 +141,95 @@ class WavRecorderEngine {
         val record = createAudioRecord(sampleRate, channelMask, encoding, bufferSize)
             ?: return@withContext StereoProbeResult(false, 1, "Stereo AudioRecord init failed")
 
-        if (preferredDevice != null) {
-            runCatching { record.setPreferredDevice(preferredDevice) }
+        val preferredSet = if (preferredDevice != null) {
+            runCatching { record.setPreferredDevice(preferredDevice) }.getOrDefault(false)
+        } else {
+            false
         }
+
         val actual = record.channelCount
-        val readBuffer = ShortArray(1024)
+        val readBuffer = ShortArray(4096)
+
         val result = runCatching {
             record.startRecording()
-            val read = record.read(readBuffer, 0, readBuffer.size)
-            read > 0 && actual >= 2
-        }.getOrDefault(false)
+            val routed = runCatching { record.routedDevice }.getOrNull()
+
+            var totalPairs = 0
+            var leftAbs = 0.0
+            var rightAbs = 0.0
+            var diffAbs = 0.0
+            var equalCount = 0
+            var successfulReads = 0
+
+            repeat(6) {
+                val read = record.read(readBuffer, 0, readBuffer.size)
+                if (read <= 0) return@repeat
+                successfulReads++
+
+                if (actual >= 2) {
+                    val pairs = read / 2
+                    for (i in 0 until pairs) {
+                        val l = readBuffer[i * 2].toDouble()
+                        val r = readBuffer[i * 2 + 1].toDouble()
+                        leftAbs += abs(l)
+                        rightAbs += abs(r)
+                        diffAbs += abs(l - r)
+                        if (l == r) equalCount++
+                    }
+                    totalPairs += pairs
+                }
+            }
+
+            val readsOk = successfulReads > 0
+            if (!readsOk || actual < 2 || totalPairs == 0) {
+                val msg = buildString {
+                    append("Stereo not confirmed (reads=")
+                    append(successfulReads)
+                    append(", channels=")
+                    append(actual)
+                    append(", preferred_set=")
+                    append(preferredSet)
+                    append(", routed_device=")
+                    append(routed?.id ?: "unknown")
+                    append(")")
+                }
+                return@runCatching StereoProbeResult(false, max(actual, 1), msg)
+            }
+
+            val avgL = leftAbs / totalPairs.toDouble()
+            val avgR = rightAbs / totalPairs.toDouble()
+            val avgDiff = diffAbs / totalPairs.toDouble()
+            val equalRatio = equalCount.toDouble() / totalPairs.toDouble()
+            val diffVsLevel = avgDiff / max(1.0, (avgL + avgR) * 0.5)
+
+            val likelyDualMono = equalRatio > 0.985 || diffVsLevel < 0.015
+            val supported = !likelyDualMono
+
+            val msg = buildString {
+                if (supported) append("Stereo confirmed")
+                else append("2ch detected but likely dual-mono")
+                append(" (reads=")
+                append(successfulReads)
+                append(", channels=")
+                append(actual)
+                append(", diff_ratio=")
+                append("%.3f".format(diffVsLevel))
+                append(", equal_ratio=")
+                append("%.3f".format(equalRatio))
+                append(", preferred_set=")
+                append(preferredSet)
+                append(", routed_device=")
+                append(routed?.id ?: "unknown")
+                append(")")
+            }
+            StereoProbeResult(supported, actual, msg)
+        }.getOrElse {
+            StereoProbeResult(false, max(actual, 1), "Stereo probe failed: ${it.message ?: "unknown error"}")
+        }
+
         runCatching { record.stop() }
         record.release()
-
-        if (result) {
-            StereoProbeResult(true, actual, "Stereo input confirmed")
-        } else {
-            StereoProbeResult(false, actual, "Stereo input not confirmed on this route")
-        }
+        result
     }
 
     @SuppressLint("MissingPermission")
