@@ -412,13 +412,28 @@ private fun BalanceScreen(
                         )
 
                         Text("Sortie DSP", fontWeight = FontWeight.SemiBold)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             if (cfg.dspOutputMode == DspOutputMode.MONITORING_ONLY) {
-                                Button(onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_ONLY) }) { Text("Monitoring") }
-                                OutlinedButton(onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_AND_RECORDING) }) { Text("Monitoring+Fichier") }
+                                Button(
+                                    onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_ONLY) },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("Monitoring") }
+                                OutlinedButton(
+                                    onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_AND_RECORDING) },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("Monitoring+Fichier") }
                             } else {
-                                OutlinedButton(onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_ONLY) }) { Text("Monitoring") }
-                                Button(onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_AND_RECORDING) }) { Text("Monitoring+Fichier") }
+                                OutlinedButton(
+                                    onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_ONLY) },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("Monitoring") }
+                                Button(
+                                    onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_AND_RECORDING) },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("Monitoring+Fichier") }
                             }
                         }
 
@@ -449,11 +464,20 @@ private fun BalanceScreen(
 
                         if (advancedOpen) {
                             Text("Profil cible", fontWeight = FontWeight.SemiBold)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(onClick = { onSetMixProfile(MixProfile.ROCK_POP_BALANCED) }) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = { onSetMixProfile(MixProfile.ROCK_POP_BALANCED) },
+                                    modifier = Modifier.weight(1f)
+                                ) {
                                     Text("Rock/Pop équilibré")
                                 }
-                                OutlinedButton(onClick = onResetProfile) {
+                                OutlinedButton(
+                                    onClick = onResetProfile,
+                                    modifier = Modifier.weight(1f)
+                                ) {
                                     Text("Reset profil")
                                 }
                             }
@@ -915,19 +939,33 @@ private fun ToggleRow(
     enabled: Boolean,
     onToggle: (Boolean) -> Unit
 ) {
-    Row(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         Text(label)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             if (enabled) {
-                Button(onClick = { onToggle(true) }) { Text("ON") }
-                OutlinedButton(onClick = { onToggle(false) }) { Text("OFF") }
+                Button(
+                    onClick = { onToggle(true) },
+                    modifier = Modifier.weight(1f)
+                ) { Text("ON") }
+                OutlinedButton(
+                    onClick = { onToggle(false) },
+                    modifier = Modifier.weight(1f)
+                ) { Text("OFF") }
             } else {
-                OutlinedButton(onClick = { onToggle(true) }) { Text("ON") }
-                Button(onClick = { onToggle(false) }) { Text("OFF") }
+                OutlinedButton(
+                    onClick = { onToggle(true) },
+                    modifier = Modifier.weight(1f)
+                ) { Text("ON") }
+                Button(
+                    onClick = { onToggle(false) },
+                    modifier = Modifier.weight(1f)
+                ) { Text("OFF") }
             }
         }
     }
