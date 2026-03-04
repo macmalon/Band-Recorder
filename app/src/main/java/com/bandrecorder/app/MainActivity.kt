@@ -66,6 +66,7 @@ private enum class PendingAction {
     START_RECORDING,
     TEST_MIC,
     PROBE_STEREO,
+    RUN_GUIDED_STEREO_TEST,
     RUN_AB_TEST
 }
 
@@ -106,6 +107,7 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
             PendingAction.START_RECORDING -> vm.startRecording()
             PendingAction.TEST_MIC -> vm.testSelectedMicrophone()
             PendingAction.PROBE_STEREO -> vm.probeStereoCapability()
+            PendingAction.RUN_GUIDED_STEREO_TEST -> vm.runGuidedStereoTest()
             PendingAction.RUN_AB_TEST -> vm.runExternalABTest()
             null -> Unit
         }
@@ -154,7 +156,8 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onSetTestDuration = vm::setTestDuration,
                 onToggleStereoRequested = vm::setStereoModeRequested,
                 onRequestTestMic = { requestAudioPermission(PendingAction.TEST_MIC) },
-                onRequestProbeStereo = { requestAudioPermission(PendingAction.PROBE_STEREO) }
+                onRequestProbeStereo = { requestAudioPermission(PendingAction.PROBE_STEREO) },
+                onRequestGuidedStereoTest = { requestAudioPermission(PendingAction.RUN_GUIDED_STEREO_TEST) }
             )
         }
         composable(AppRoute.Settings.route) {
@@ -202,7 +205,7 @@ private fun HomeScreen(
         )
     )
     val pagerState = rememberPagerState(pageCount = { 2 })
-    val isBusy = ui.isCalibrating || ui.isTestingMic || ui.isRunningABTest
+    val isBusy = ui.isCalibrating || ui.isTestingMic || ui.isRunningABTest || ui.isRunningStereoGuidedTest
 
     Box(
         modifier = Modifier
@@ -396,7 +399,7 @@ private fun BalanceScreen(
 
         Button(
             onClick = onRequestCalibrate,
-            enabled = !ui.isCalibrating && !ui.isTestingMic && !ui.isRecording && !ui.isRunningABTest
+            enabled = !ui.isCalibrating && !ui.isTestingMic && !ui.isRecording && !ui.isRunningABTest && !ui.isRunningStereoGuidedTest
         ) {
             Text("Calibrage 30s")
         }
@@ -428,13 +431,14 @@ private fun MicSettingsScreen(
     onSetTestDuration: (Int) -> Unit,
     onToggleStereoRequested: (Boolean) -> Unit,
     onRequestTestMic: () -> Unit,
-    onRequestProbeStereo: () -> Unit
+    onRequestProbeStereo: () -> Unit,
+    onRequestGuidedStereoTest: () -> Unit
 ) {
     ScreenScaffold(title = "Réglages micro", onBack = onBack) {
         Text("Microphones", fontWeight = FontWeight.Bold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onRefreshMics) { Text("Scan") }
-            Button(onClick = onRequestTestMic, enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic) {
+            Button(onClick = onRequestTestMic, enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest && !ui.isRunningStereoGuidedTest) {
                 Text(if (ui.isTestingMic) "Test..." else "Test mic")
             }
         }
@@ -462,12 +466,22 @@ private fun MicSettingsScreen(
         }
         OutlinedButton(
             onClick = onRequestProbeStereo,
-            enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest,
+            enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest && !ui.isRunningStereoGuidedTest,
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("Probe stéréo")
         }
+        Button(
+            onClick = onRequestGuidedStereoTest,
+            enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest && !ui.isRunningStereoGuidedTest,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(if (ui.isRunningStereoGuidedTest) "Test stéréo guidé en cours..." else "Test stéréo guidé (gauche/droite/centre)")
+        }
         Text("Résultat probe: ${ui.stereoProbeMessage}")
+        ui.stereoGuidedTestResult?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall)
+        }
 
         Spacer(modifier = Modifier.height(4.dp))
         OutlinedButton(onClick = { onSelectMic(null) }) {
@@ -563,7 +577,7 @@ private fun SettingsScreen(
         Text("External A/B built-in test", fontWeight = FontWeight.Bold)
         Button(
             onClick = onRequestRunABTest,
-            enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest
+            enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest && !ui.isRunningStereoGuidedTest
         ) {
             Text(if (ui.isRunningABTest) "Running A/B..." else "Run external A/B")
         }

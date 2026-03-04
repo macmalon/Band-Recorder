@@ -50,6 +50,13 @@ data class StereoProbeResult(
     val message: String
 )
 
+data class StereoWindowMeasurement(
+    val leftRmsDb: Float,
+    val rightRmsDb: Float,
+    val actualChannelCount: Int,
+    val framesRead: Int
+)
+
 class WavRecorderEngine {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val status = MutableStateFlow(RecordingStatus())
@@ -233,6 +240,67 @@ class WavRecorderEngine {
     }
 
     @SuppressLint("MissingPermission")
+    suspend fun measureStereoWindow(
+        durationSeconds: Int = 3,
+        sampleRate: Int = 48_000,
+        preferredDevice: AudioDeviceInfo? = null
+    ): StereoWindowMeasurement? = withContext(Dispatchers.Default) {
+        val encoding = AudioFormat.ENCODING_PCM_16BIT
+        val channelMask = AudioFormat.CHANNEL_IN_STEREO
+        val minBuffer = AudioRecord.getMinBufferSize(sampleRate, channelMask, encoding)
+        if (minBuffer <= 0) return@withContext null
+
+        val bufferSize = (minBuffer * 2).coerceAtLeast(4096)
+        val record = createAudioRecord(sampleRate, channelMask, encoding, bufferSize) ?: return@withContext null
+        if (preferredDevice != null) {
+            runCatching { record.setPreferredDevice(preferredDevice) }
+        }
+        val actual = record.channelCount
+        if (actual < 2) {
+            record.release()
+            return@withContext null
+        }
+
+        val targetFrames = sampleRate * durationSeconds
+        val readBuffer = ShortArray(bufferSize / 2)
+        var framesRead = 0
+        var leftSumSquares = 0.0
+        var rightSumSquares = 0.0
+
+        record.startRecording()
+        try {
+            while (framesRead < targetFrames) {
+                val read = record.read(readBuffer, 0, readBuffer.size)
+                if (read <= 0) continue
+                val usable = read - (read % 2)
+                var i = 0
+                while (i < usable) {
+                    val left = readBuffer[i] / Short.MAX_VALUE.toDouble()
+                    val right = readBuffer[i + 1] / Short.MAX_VALUE.toDouble()
+                    leftSumSquares += left * left
+                    rightSumSquares += right * right
+                    framesRead++
+                    i += 2
+                    if (framesRead >= targetFrames) break
+                }
+            }
+        } finally {
+            runCatching { record.stop() }
+            record.release()
+        }
+
+        if (framesRead <= 0) return@withContext null
+        val leftRmsDb = rmsDbFromSumSquares(leftSumSquares, framesRead)
+        val rightRmsDb = rmsDbFromSumSquares(rightSumSquares, framesRead)
+        StereoWindowMeasurement(
+            leftRmsDb = leftRmsDb,
+            rightRmsDb = rightRmsDb,
+            actualChannelCount = actual,
+            framesRead = framesRead
+        )
+    }
+
+    @SuppressLint("MissingPermission")
     fun startRecording(
         output: File,
         sampleRate: Int = 48_000,
@@ -355,6 +423,11 @@ class WavRecorderEngine {
         val peakDb = (20.0 * log10(peak.coerceAtLeast(1e-6))).toFloat()
 
         return AudioLevel(rmsDb = rmsDb, peakDb = peakDb, headroomDb = -peakDb)
+    }
+
+    private fun rmsDbFromSumSquares(sumSquares: Double, sampleCount: Int): Float {
+        val rms = sqrt((sumSquares / sampleCount.coerceAtLeast(1)).coerceAtLeast(1e-12))
+        return (20.0 * log10(rms.coerceAtLeast(1e-6))).toFloat()
     }
 
     private fun finalizeWavHeader(file: File, dataSize: Int, sampleRate: Int, channels: Int) {

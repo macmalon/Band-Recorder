@@ -12,6 +12,7 @@ import androidx.lifecycle.viewModelScope
 import com.bandrecorder.core.audio.CalibrationProgress
 import com.bandrecorder.core.audio.CalibrationResult
 import com.bandrecorder.core.audio.StereoProbeResult
+import com.bandrecorder.core.audio.StereoWindowMeasurement
 import com.bandrecorder.core.audio.WavRecorderEngine
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -59,6 +60,7 @@ data class RecorderUiState(
     val isCalibrating: Boolean = false,
     val isTestingMic: Boolean = false,
     val isRunningABTest: Boolean = false,
+    val isRunningStereoGuidedTest: Boolean = false,
     val calibrationProgress: Int = 0,
     val rmsDb: Float = -90f,
     val peakDb: Float = -90f,
@@ -88,6 +90,7 @@ data class RecorderUiState(
     val stereoSupported: Boolean = false,
     val stereoActualChannels: Int = 1,
     val stereoProbeMessage: String = "Stereo not tested yet",
+    val stereoGuidedTestResult: String? = null,
     val abTestResult: String? = null
 )
 
@@ -161,7 +164,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun probeStereoCapability() {
-        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest) return
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest || _uiState.value.isRunningStereoGuidedTest) return
 
         viewModelScope.launch {
             _uiState.update { it.copy(status = "Probing stereo capability...") }
@@ -176,6 +179,108 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
         }
+    }
+
+    fun runGuidedStereoTest() {
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest || _uiState.value.isRunningStereoGuidedTest) return
+
+        viewModelScope.launch {
+            val preferredDevice = resolveEffectiveMicDevice()
+            _uiState.update {
+                it.copy(
+                    isRunningStereoGuidedTest = true,
+                    stereoGuidedTestResult = null,
+                    status = "Guided stereo test: prepare LEFT side (2s)"
+                )
+            }
+            delay(2000)
+            _uiState.update { it.copy(status = "Guided stereo test: capture LEFT (3s)") }
+            val left = engine.measureStereoWindow(durationSeconds = 3, preferredDevice = preferredDevice)
+
+            _uiState.update { it.copy(status = "Guided stereo test: prepare RIGHT side (2s)") }
+            delay(2000)
+            _uiState.update { it.copy(status = "Guided stereo test: capture RIGHT (3s)") }
+            val right = engine.measureStereoWindow(durationSeconds = 3, preferredDevice = preferredDevice)
+
+            _uiState.update { it.copy(status = "Guided stereo test: prepare CENTER (2s)") }
+            delay(2000)
+            _uiState.update { it.copy(status = "Guided stereo test: capture CENTER (3s)") }
+            val center = engine.measureStereoWindow(durationSeconds = 3, preferredDevice = preferredDevice)
+
+            if (left == null || right == null || center == null) {
+                _uiState.update {
+                    it.copy(
+                        isRunningStereoGuidedTest = false,
+                        stereoGuidedTestResult = "Guided stereo test failed: stereo capture route unavailable.",
+                        status = "Guided stereo test failed"
+                    )
+                }
+                return@launch
+            }
+
+            val leftDominanceDb = left.leftRmsDb - left.rightRmsDb
+            val rightDominanceDb = right.rightRmsDb - right.leftRmsDb
+            val centerDiffDb = abs(center.leftRmsDb - center.rightRmsDb)
+
+            val leftOk = leftDominanceDb >= 1.5f
+            val rightOk = rightDominanceDb >= 1.5f
+            val centerOk = centerDiffDb <= 3.0f
+            val pass = leftOk && rightOk && centerOk
+
+            val channelCount = minOf(left.actualChannelCount, right.actualChannelCount, center.actualChannelCount)
+            val resultText = buildString {
+                appendLine(if (pass) "Guided stereo test: PASS" else "Guided stereo test: FAIL")
+                appendLine("LEFT step: L-R = ${"%.1f".format(leftDominanceDb)} dB ${if (leftOk) "OK" else "LOW"}")
+                appendLine("RIGHT step: R-L = ${"%.1f".format(rightDominanceDb)} dB ${if (rightOk) "OK" else "LOW"}")
+                appendLine("CENTER step: |L-R| = ${"%.1f".format(centerDiffDb)} dB ${if (centerOk) "OK" else "HIGH"}")
+                appendLine("Channels seen: $channelCount")
+                append("Tip: make louder, closer, and side-specific sounds during LEFT/RIGHT steps.")
+            }
+
+            _uiState.update {
+                it.copy(
+                    isRunningStereoGuidedTest = false,
+                    stereoGuidedTestResult = resultText,
+                    stereoProbeDone = true,
+                    stereoSupported = pass,
+                    stereoActualChannels = channelCount,
+                    stereoProbeMessage = if (pass) "Guided test confirmed stereo separation" else "Guided test did not confirm stereo separation",
+                    status = if (pass) "Guided stereo test passed" else "Guided stereo test failed"
+                )
+            }
+
+            if (_uiState.value.diagnosticModeEnabled) {
+                exportDiagnosticReport(
+                    event = "guided_stereo_test",
+                    entry = null,
+                    recordingPath = _uiState.value.lastOutputPath,
+                    extraLines = buildGuidedStereoDiagnosticLines(left, right, center, pass)
+                )
+            }
+        }
+    }
+
+    private fun buildGuidedStereoDiagnosticLines(
+        left: StereoWindowMeasurement,
+        right: StereoWindowMeasurement,
+        center: StereoWindowMeasurement,
+        pass: Boolean
+    ): List<String> {
+        val leftDominanceDb = left.leftRmsDb - left.rightRmsDb
+        val rightDominanceDb = right.rightRmsDb - right.leftRmsDb
+        val centerDiffDb = abs(center.leftRmsDb - center.rightRmsDb)
+        return listOf(
+            "guided_stereo.pass=$pass",
+            "guided_stereo.left.left_rms=${left.leftRmsDb}",
+            "guided_stereo.left.right_rms=${left.rightRmsDb}",
+            "guided_stereo.left.delta_l_minus_r=$leftDominanceDb",
+            "guided_stereo.right.left_rms=${right.leftRmsDb}",
+            "guided_stereo.right.right_rms=${right.rightRmsDb}",
+            "guided_stereo.right.delta_r_minus_l=$rightDominanceDb",
+            "guided_stereo.center.left_rms=${center.leftRmsDb}",
+            "guided_stereo.center.right_rms=${center.rightRmsDb}",
+            "guided_stereo.center.abs_delta=$centerDiffDb"
+        )
     }
 
     fun refreshMicrophones() {
@@ -253,7 +358,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun testSelectedMicrophone() {
-        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest) return
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest || _uiState.value.isRunningStereoGuidedTest) return
 
         val durationSec = _uiState.value.selectedTestDurationSec
 
@@ -322,7 +427,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun runExternalABTest() {
-        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest) return
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest || _uiState.value.isRunningStereoGuidedTest) return
 
         val builtIns = _uiState.value.microphones.filter { it.typeCode == AudioDeviceInfo.TYPE_BUILTIN_MIC }
         if (builtIns.size < 2) {
@@ -436,7 +541,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun runCalibration() {
-        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest) return
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest || _uiState.value.isRunningStereoGuidedTest) return
 
         viewModelScope.launch {
             _uiState.update {
@@ -483,7 +588,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun startRecording() {
-        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest) return
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest || _uiState.value.isRunningStereoGuidedTest) return
 
         val selectedMic = resolveEffectiveMicDevice()
         val wantsStereo = _uiState.value.stereoModeRequested
