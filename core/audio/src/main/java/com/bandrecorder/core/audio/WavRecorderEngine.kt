@@ -1,6 +1,7 @@
 package com.bandrecorder.core.audio
 
 import android.annotation.SuppressLint
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -58,6 +59,7 @@ class WavRecorderEngine {
     suspend fun runCalibration(
         durationSeconds: Int = 30,
         sampleRate: Int = 48_000,
+        preferredDevice: AudioDeviceInfo? = null,
         onProgress: (CalibrationProgress) -> Unit
     ): CalibrationResult? = withContext(Dispatchers.Default) {
         val channelMask = AudioFormat.CHANNEL_IN_MONO
@@ -67,6 +69,9 @@ class WavRecorderEngine {
 
         val bufferSize = (minBuffer * 2).coerceAtLeast(4096)
         val record = createAudioRecord(sampleRate, channelMask, encoding, bufferSize) ?: return@withContext null
+        if (preferredDevice != null) {
+            runCatching { record.setPreferredDevice(preferredDevice) }
+        }
 
         var peak = 0.0
         var sumSquares = 0.0
@@ -114,7 +119,7 @@ class WavRecorderEngine {
     }
 
     @SuppressLint("MissingPermission")
-    fun startRecording(output: File, sampleRate: Int = 48_000) {
+    fun startRecording(output: File, sampleRate: Int = 48_000, preferredDevice: AudioDeviceInfo? = null) {
         if (recordJob != null) return
 
         val channelMask = AudioFormat.CHANNEL_IN_MONO
@@ -124,6 +129,9 @@ class WavRecorderEngine {
 
         val bufferSize = (minBuffer * 2).coerceAtLeast(4096)
         val record = createAudioRecord(sampleRate, channelMask, encoding, bufferSize) ?: return
+        if (preferredDevice != null) {
+            runCatching { record.setPreferredDevice(preferredDevice) }
+        }
 
         output.parentFile?.mkdirs()
         outputFile = output

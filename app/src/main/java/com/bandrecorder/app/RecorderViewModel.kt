@@ -2,6 +2,8 @@ package com.bandrecorder.app
 
 import android.app.Application
 import android.content.ContentValues
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.os.Environment
 import android.provider.MediaStore
 import androidx.lifecycle.AndroidViewModel
@@ -20,9 +22,15 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+data class MicrophoneOption(
+    val id: Int,
+    val label: String
+)
+
 data class RecorderUiState(
     val isRecording: Boolean = false,
     val isCalibrating: Boolean = false,
+    val isTestingMic: Boolean = false,
     val calibrationProgress: Int = 0,
     val rmsDb: Float = -90f,
     val peakDb: Float = -90f,
@@ -32,11 +40,17 @@ data class RecorderUiState(
     val calibrationRmsDb: Float? = null,
     val calibrationPeakDb: Float? = null,
     val recommendedGainDb: Float? = null,
-    val lastOutputPath: String? = null
+    val lastOutputPath: String? = null,
+    val storageLocation: StorageLocation = StorageLocation.DOWNLOADS,
+    val microphones: List<MicrophoneOption> = emptyList(),
+    val selectedMicId: Int? = null,
+    val micTestResult: String? = null
 )
 
 class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private val engine = WavRecorderEngine()
+    private val settingsStore = AppSettingsStore(app)
+
     private var pendingTempFile: File? = null
     private var pendingDisplayName: String? = null
 
@@ -44,6 +58,15 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     val uiState: StateFlow<RecorderUiState> = _uiState.asStateFlow()
 
     init {
+        val settings = settingsStore.load()
+        _uiState.update {
+            it.copy(
+                storageLocation = settings.storageLocation,
+                selectedMicId = settings.selectedMicId
+            )
+        }
+        refreshMicrophones()
+
         viewModelScope.launch {
             engine.statusFlow().collect { status ->
                 _uiState.update {
@@ -53,7 +76,6 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         peakDb = status.peakDb,
                         headroomDb = status.headroomDb,
                         elapsedMs = status.elapsedMs,
-                        lastOutputPath = it.lastOutputPath,
                         status = if (status.isRecording) "Recording" else it.status
                     )
                 }
@@ -61,8 +83,90 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun setStorageLocation(location: StorageLocation) {
+        settingsStore.setStorageLocation(location)
+        _uiState.update { it.copy(storageLocation = location) }
+    }
+
+    fun refreshMicrophones() {
+        val audioManager = getApplication<Application>().getSystemService(AudioManager::class.java)
+        val devices = audioManager
+            .getDevices(AudioManager.GET_DEVICES_INPUTS)
+            .filter { it.isSource }
+
+        val options = devices.map { d ->
+            val name = d.productName?.toString()?.takeIf { it.isNotBlank() } ?: "Mic"
+            val type = deviceTypeLabel(d.type)
+            MicrophoneOption(d.id, "$name ($type)")
+        }.sortedBy { it.label }
+
+        val selected = _uiState.value.selectedMicId
+        val selectedStillExists = selected != null && options.any { it.id == selected }
+        val newSelected = if (selectedStillExists) selected else null
+        if (selected != newSelected) {
+            settingsStore.setSelectedMicId(newSelected)
+        }
+
+        _uiState.update {
+            it.copy(
+                microphones = options,
+                selectedMicId = newSelected,
+                status = if (options.isEmpty()) "No microphone input detected" else it.status
+            )
+        }
+    }
+
+    fun selectMicrophone(micId: Int?) {
+        settingsStore.setSelectedMicId(micId)
+        _uiState.update { it.copy(selectedMicId = micId) }
+    }
+
+    fun testSelectedMicrophone() {
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic) return
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isTestingMic = true,
+                    status = "Mic test (5s)",
+                    micTestResult = null
+                )
+            }
+
+            val result: CalibrationResult? = engine.runCalibration(
+                durationSeconds = 5,
+                preferredDevice = resolveSelectedMic(),
+                onProgress = { progress: CalibrationProgress ->
+                    _uiState.update { state ->
+                        state.copy(
+                            rmsDb = progress.rmsDb,
+                            peakDb = progress.peakDb,
+                            headroomDb = -progress.peakDb
+                        )
+                    }
+                }
+            )
+
+            _uiState.update {
+                if (result == null) {
+                    it.copy(
+                        isTestingMic = false,
+                        status = "Mic test failed",
+                        micTestResult = "Echec du test micro"
+                    )
+                } else {
+                    it.copy(
+                        isTestingMic = false,
+                        status = "Mic test OK",
+                        micTestResult = "RMS ${"%.1f".format(result.rmsDb)} dBFS / Peak ${"%.1f".format(result.peakDb)} dBFS"
+                    )
+                }
+            }
+        }
+    }
+
     fun runCalibration() {
-        if (_uiState.value.isRecording || _uiState.value.isCalibrating) return
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic) return
 
         viewModelScope.launch {
             _uiState.update {
@@ -73,16 +177,20 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
 
-            val result: CalibrationResult? = engine.runCalibration(durationSeconds = 30) { progress: CalibrationProgress ->
-                _uiState.update { state ->
-                    state.copy(
-                        calibrationProgress = progress.progressPercent,
-                        rmsDb = progress.rmsDb,
-                        peakDb = progress.peakDb,
-                        headroomDb = -progress.peakDb
-                    )
+            val result: CalibrationResult? = engine.runCalibration(
+                durationSeconds = 30,
+                preferredDevice = resolveSelectedMic(),
+                onProgress = { progress: CalibrationProgress ->
+                    _uiState.update { state ->
+                        state.copy(
+                            calibrationProgress = progress.progressPercent,
+                            rmsDb = progress.rmsDb,
+                            peakDb = progress.peakDb,
+                            headroomDb = -progress.peakDb
+                        )
+                    }
                 }
-            }
+            )
 
             _uiState.update {
                 if (result == null) {
@@ -105,18 +213,35 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun startRecording() {
-        if (_uiState.value.isRecording || _uiState.value.isCalibrating) return
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic) return
 
-        val (displayName, output) = buildTempOutputFile()
-        pendingTempFile = output
-        pendingDisplayName = displayName
-        engine.startRecording(output)
-        _uiState.update {
-            it.copy(
-                status = "Recording",
-                elapsedMs = 0L,
-                lastOutputPath = "Downloads/Band Recorder/$displayName"
-            )
+        val selectedMic = resolveSelectedMic()
+        when (_uiState.value.storageLocation) {
+            StorageLocation.DOWNLOADS -> {
+                val (displayName, output) = buildTempOutputFile()
+                pendingTempFile = output
+                pendingDisplayName = displayName
+                engine.startRecording(output, preferredDevice = selectedMic)
+                _uiState.update {
+                    it.copy(
+                        status = "Recording",
+                        elapsedMs = 0L,
+                        lastOutputPath = "Downloads/Band Recorder/$displayName"
+                    )
+                }
+            }
+
+            StorageLocation.APP_PRIVATE -> {
+                val output = buildAppPrivateOutputFile()
+                engine.startRecording(output, preferredDevice = selectedMic)
+                _uiState.update {
+                    it.copy(
+                        status = "Recording",
+                        elapsedMs = 0L,
+                        lastOutputPath = output.absolutePath
+                    )
+                }
+            }
         }
     }
 
@@ -129,8 +254,18 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 delay(50)
             }
             delay(150)
-            exportPendingRecordingToDownloads()
+            if (pendingTempFile != null) {
+                exportPendingRecordingToDownloads()
+            } else {
+                _uiState.update { it.copy(status = "Stopped") }
+            }
         }
+    }
+
+    private fun resolveSelectedMic(): AudioDeviceInfo? {
+        val selectedId = _uiState.value.selectedMicId ?: return null
+        val audioManager = getApplication<Application>().getSystemService(AudioManager::class.java)
+        return audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).firstOrNull { it.id == selectedId }
     }
 
     private fun buildTempOutputFile(): Pair<String, File> {
@@ -139,6 +274,16 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val displayName = "session_$timestamp.wav"
         return displayName to File(root, displayName)
+    }
+
+    private fun buildAppPrivateOutputFile(): File {
+        val root = getApplication<Application>()
+            .getExternalFilesDir(Environment.DIRECTORY_MUSIC)
+            ?: getApplication<Application>().filesDir
+        val folder = File(root, "band_recordings")
+        folder.mkdirs()
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        return File(folder, "session_$timestamp.wav")
     }
 
     private fun exportPendingRecordingToDownloads() {
@@ -190,6 +335,18 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
         pendingTempFile = null
         pendingDisplayName = null
+    }
+
+    private fun deviceTypeLabel(type: Int): String = when (type) {
+        AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Built-in"
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth SCO"
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "Bluetooth A2DP"
+        AudioDeviceInfo.TYPE_BLE_HEADSET -> "BLE Headset"
+        AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired headset"
+        AudioDeviceInfo.TYPE_USB_DEVICE -> "USB device"
+        AudioDeviceInfo.TYPE_USB_HEADSET -> "USB headset"
+        AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB accessory"
+        else -> "Type $type"
     }
 
     override fun onCleared() {
