@@ -43,6 +43,12 @@ data class RecordingStatus(
     val outputPath: String? = null
 )
 
+data class StereoProbeResult(
+    val supported: Boolean,
+    val actualChannelCount: Int,
+    val message: String
+)
+
 class WavRecorderEngine {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val status = MutableStateFlow(RecordingStatus())
@@ -52,6 +58,7 @@ class WavRecorderEngine {
     private var outputFile: File? = null
     private var dataBytesWritten: Int = 0
     private var sampleRateHz: Int = 48_000
+    private var channelCount: Int = 1
 
     fun statusFlow(): StateFlow<RecordingStatus> = status.asStateFlow()
 
@@ -119,10 +126,51 @@ class WavRecorderEngine {
     }
 
     @SuppressLint("MissingPermission")
-    fun startRecording(output: File, sampleRate: Int = 48_000, preferredDevice: AudioDeviceInfo? = null) {
+    suspend fun probeStereoCapability(
+        sampleRate: Int = 48_000,
+        preferredDevice: AudioDeviceInfo? = null
+    ): StereoProbeResult = withContext(Dispatchers.Default) {
+        val encoding = AudioFormat.ENCODING_PCM_16BIT
+        val channelMask = AudioFormat.CHANNEL_IN_STEREO
+        val minBuffer = AudioRecord.getMinBufferSize(sampleRate, channelMask, encoding)
+        if (minBuffer <= 0) {
+            return@withContext StereoProbeResult(false, 1, "Stereo min buffer unsupported")
+        }
+        val bufferSize = (minBuffer * 2).coerceAtLeast(4096)
+        val record = createAudioRecord(sampleRate, channelMask, encoding, bufferSize)
+            ?: return@withContext StereoProbeResult(false, 1, "Stereo AudioRecord init failed")
+
+        if (preferredDevice != null) {
+            runCatching { record.setPreferredDevice(preferredDevice) }
+        }
+        val actual = record.channelCount
+        val readBuffer = ShortArray(1024)
+        val result = runCatching {
+            record.startRecording()
+            val read = record.read(readBuffer, 0, readBuffer.size)
+            read > 0 && actual >= 2
+        }.getOrDefault(false)
+        runCatching { record.stop() }
+        record.release()
+
+        if (result) {
+            StereoProbeResult(true, actual, "Stereo input confirmed")
+        } else {
+            StereoProbeResult(false, actual, "Stereo input not confirmed on this route")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun startRecording(
+        output: File,
+        sampleRate: Int = 48_000,
+        preferredDevice: AudioDeviceInfo? = null,
+        requestedChannelCount: Int = 1
+    ) {
         if (recordJob != null) return
 
-        val channelMask = AudioFormat.CHANNEL_IN_MONO
+        val channels = if (requestedChannelCount >= 2) 2 else 1
+        val channelMask = if (channels == 2) AudioFormat.CHANNEL_IN_STEREO else AudioFormat.CHANNEL_IN_MONO
         val encoding = AudioFormat.ENCODING_PCM_16BIT
         val minBuffer = AudioRecord.getMinBufferSize(sampleRate, channelMask, encoding)
         if (minBuffer <= 0) return
@@ -136,6 +184,7 @@ class WavRecorderEngine {
         output.parentFile?.mkdirs()
         outputFile = output
         sampleRateHz = sampleRate
+        channelCount = channels
         dataBytesWritten = 0
 
         val stream = FileOutputStream(output)
@@ -179,7 +228,7 @@ class WavRecorderEngine {
             } finally {
                 runCatching { stream.flush() }
                 runCatching { stream.close() }
-                finalizeWavHeader(output, dataBytesWritten, sampleRateHz)
+                finalizeWavHeader(output, dataBytesWritten, sampleRateHz, channelCount)
                 runCatching { record.stop() }
                 record.release()
                 audioRecord = null
@@ -236,8 +285,8 @@ class WavRecorderEngine {
         return AudioLevel(rmsDb = rmsDb, peakDb = peakDb, headroomDb = -peakDb)
     }
 
-    private fun finalizeWavHeader(file: File, dataSize: Int, sampleRate: Int) {
-        val byteRate = sampleRate * 1 * 16 / 8
+    private fun finalizeWavHeader(file: File, dataSize: Int, sampleRate: Int, channels: Int) {
+        val byteRate = sampleRate * channels * 16 / 8
         val totalDataLen = 36 + dataSize
 
         val header = ByteArray(44)
@@ -256,10 +305,10 @@ class WavRecorderEngine {
         header[15] = ' '.code.toByte()
         writeIntLE(header, 16, 16)
         writeShortLE(header, 20, 1)
-        writeShortLE(header, 22, 1)
+        writeShortLE(header, 22, channels)
         writeIntLE(header, 24, sampleRate)
         writeIntLE(header, 28, byteRate)
-        writeShortLE(header, 32, 2)
+        writeShortLE(header, 32, channels * 2)
         writeShortLE(header, 34, 16)
         header[36] = 'd'.code.toByte()
         header[37] = 'a'.code.toByte()

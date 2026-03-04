@@ -13,7 +13,8 @@ data class AppSettings(
     val selectedMicId: Int? = null,
     val diagnosticMode: Boolean = true,
     val showAdvancedInternals: Boolean = false,
-    val testDurationSec: Int = 5
+    val testDurationSec: Int = 5,
+    val stereoModeRequested: Boolean = false
 )
 
 class AppSettingsStore(app: Application) {
@@ -27,12 +28,14 @@ class AppSettingsStore(app: Application) {
         val diagnosticMode = prefs.getBoolean(KEY_DIAGNOSTIC_MODE, true)
         val showAdvanced = prefs.getBoolean(KEY_SHOW_ADVANCED_INTERNALS, false)
         val testDurationSec = prefs.getInt(KEY_TEST_DURATION_SEC, 5).coerceIn(5, 30)
+        val stereoRequested = prefs.getBoolean(KEY_STEREO_MODE_REQUESTED, false)
         return AppSettings(
             storageLocation = storage,
             selectedMicId = micId,
             diagnosticMode = diagnosticMode,
             showAdvancedInternals = showAdvanced,
-            testDurationSec = testDurationSec
+            testDurationSec = testDurationSec,
+            stereoModeRequested = stereoRequested
         )
     }
 
@@ -58,11 +61,16 @@ class AppSettingsStore(app: Application) {
         prefs.edit().putInt(KEY_TEST_DURATION_SEC, seconds.coerceIn(5, 30)).apply()
     }
 
+    fun setStereoModeRequested(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_STEREO_MODE_REQUESTED, enabled).apply()
+    }
+
     private companion object {
         const val KEY_STORAGE_LOCATION = "storage_location"
         const val KEY_MIC_ID = "selected_mic_id"
         const val KEY_DIAGNOSTIC_MODE = "diagnostic_mode"
         const val KEY_SHOW_ADVANCED_INTERNALS = "show_advanced_internals"
         const val KEY_TEST_DURATION_SEC = "test_duration_sec"
+        const val KEY_STEREO_MODE_REQUESTED = "stereo_mode_requested"
     }
 }

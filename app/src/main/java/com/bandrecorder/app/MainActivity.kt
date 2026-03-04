@@ -35,7 +35,9 @@ import kotlin.math.roundToInt
 private enum class PendingAction {
     CALIBRATE,
     START_RECORDING,
-    TEST_MIC
+    TEST_MIC,
+    PROBE_STEREO,
+    RUN_AB_TEST
 }
 
 private enum class ScreenTab {
@@ -70,6 +72,8 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
             PendingAction.CALIBRATE -> vm.runCalibration()
             PendingAction.START_RECORDING -> vm.startRecording()
             PendingAction.TEST_MIC -> vm.testSelectedMicrophone()
+            PendingAction.PROBE_STEREO -> vm.probeStereoCapability()
+            PendingAction.RUN_AB_TEST -> vm.runExternalABTest()
             null -> Unit
         }
         pendingAction = null
@@ -118,8 +122,17 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                     onToggleDiagnostic = vm::setDiagnosticMode,
                     onToggleAdvanced = vm::setShowAdvancedInternals,
                     onSetTestDuration = vm::setTestDuration,
+                    onToggleStereoRequested = vm::setStereoModeRequested,
                     onTestMic = {
                         pendingAction = PendingAction.TEST_MIC
+                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    },
+                    onProbeStereo = {
+                        pendingAction = PendingAction.PROBE_STEREO
+                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    },
+                    onRunABTest = {
+                        pendingAction = PendingAction.RUN_AB_TEST
                         permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     }
                 )
@@ -216,6 +229,15 @@ private fun RecordTab(
     ui.lastDiagnosticReportPath?.let {
         Text("Last diagnostic report: $it", style = MaterialTheme.typography.bodySmall)
     }
+    if (ui.stereoProbeDone) {
+        Text(
+            "Stereo probe: ${if (ui.stereoSupported) "supported" else "not supported"} (${ui.stereoActualChannels} ch) - ${ui.stereoProbeMessage}",
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+    ui.abTestResult?.let {
+        Text("A/B result:\n$it", style = MaterialTheme.typography.bodySmall)
+    }
 }
 
 @Composable
@@ -227,7 +249,10 @@ private fun OptionsTab(
     onToggleDiagnostic: (Boolean) -> Unit,
     onToggleAdvanced: (Boolean) -> Unit,
     onSetTestDuration: (Int) -> Unit,
-    onTestMic: () -> Unit
+    onToggleStereoRequested: (Boolean) -> Unit,
+    onTestMic: () -> Unit,
+    onProbeStereo: () -> Unit,
+    onRunABTest: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -292,6 +317,28 @@ private fun OptionsTab(
                 }
             }
         }
+
+        Text("Stereo capture", fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (ui.stereoModeRequested) {
+                Button(onClick = { onToggleStereoRequested(true) }) { Text("Stereo ON") }
+                OutlinedButton(onClick = { onToggleStereoRequested(false) }) { Text("Stereo OFF") }
+            } else {
+                OutlinedButton(onClick = { onToggleStereoRequested(true) }) { Text("Stereo ON") }
+                Button(onClick = { onToggleStereoRequested(false) }) { Text("Stereo OFF") }
+            }
+            OutlinedButton(onClick = onProbeStereo, enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest) {
+                Text("Probe stereo")
+            }
+        }
+        Text("Probe result: ${ui.stereoProbeMessage}")
+        Text("Will record in stereo only if probe confirmed support.")
+
+        Text("External A/B built-in test", fontWeight = FontWeight.Bold)
+        Button(onClick = onRunABTest, enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest) {
+            Text(if (ui.isRunningABTest) "Running A/B..." else "Run external A/B")
+        }
+        Text("Protocol: keep silence 2s then play external reference 6s for each built-in mic.")
 
         OutlinedButton(onClick = { onSelectMic(null) }) {
             val autoLabel = ui.effectiveMicLabel ?: "none"

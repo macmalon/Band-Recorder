@@ -11,6 +11,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.bandrecorder.core.audio.CalibrationProgress
 import com.bandrecorder.core.audio.CalibrationResult
+import com.bandrecorder.core.audio.StereoProbeResult
 import com.bandrecorder.core.audio.WavRecorderEngine
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +24,7 @@ import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 
 data class MicrophoneOption(
     val id: Int,
@@ -56,6 +58,7 @@ data class RecorderUiState(
     val isRecording: Boolean = false,
     val isCalibrating: Boolean = false,
     val isTestingMic: Boolean = false,
+    val isRunningABTest: Boolean = false,
     val calibrationProgress: Int = 0,
     val rmsDb: Float = -90f,
     val peakDb: Float = -90f,
@@ -79,7 +82,13 @@ data class RecorderUiState(
     val selectedTestDurationSec: Int = 5,
     val availableTestDurationsSec: List<Int> = listOf(5, 15, 30),
     val testHistory: List<MicTestHistoryEntry> = emptyList(),
-    val lastDiagnosticReportPath: String? = null
+    val lastDiagnosticReportPath: String? = null,
+    val stereoModeRequested: Boolean = false,
+    val stereoProbeDone: Boolean = false,
+    val stereoSupported: Boolean = false,
+    val stereoActualChannels: Int = 1,
+    val stereoProbeMessage: String = "Stereo not tested yet",
+    val abTestResult: String? = null
 )
 
 class RecorderViewModel(app: Application) : AndroidViewModel(app) {
@@ -102,6 +111,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 diagnosticModeEnabled = settings.diagnosticMode,
                 showAdvancedInternals = settings.showAdvancedInternals,
                 selectedTestDurationSec = normalizeDuration(settings.testDurationSec),
+                stereoModeRequested = settings.stereoModeRequested,
                 testHistory = loadHistory()
             )
         }
@@ -145,6 +155,29 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.update { it.copy(selectedTestDurationSec = normalized) }
     }
 
+    fun setStereoModeRequested(enabled: Boolean) {
+        settingsStore.setStereoModeRequested(enabled)
+        _uiState.update { it.copy(stereoModeRequested = enabled) }
+    }
+
+    fun probeStereoCapability() {
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest) return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(status = "Probing stereo capability...") }
+            val probe: StereoProbeResult = engine.probeStereoCapability(preferredDevice = resolveEffectiveMicDevice())
+            _uiState.update {
+                it.copy(
+                    stereoProbeDone = true,
+                    stereoSupported = probe.supported,
+                    stereoActualChannels = probe.actualChannelCount,
+                    stereoProbeMessage = probe.message,
+                    status = if (probe.supported) "Stereo supported" else "Stereo not supported"
+                )
+            }
+        }
+    }
+
     fun refreshMicrophones() {
         val audioManager = getApplication<Application>().getSystemService(AudioManager::class.java)
         val devices = audioManager
@@ -155,7 +188,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
         val raw = devices.map { device ->
             val info = microInfoById[device.id]
-            val baseName = device.productName?.toString()?.takeIf { it.isNotBlank() } ?: "Microphone"
+            val baseName = device.productName.toString().takeIf { it.isNotBlank() } ?: "Microphone"
             MicrophoneOption(
                 id = device.id,
                 displayName = baseName,
@@ -168,10 +201,10 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 directionalityLabel = info?.let { microphoneDirectionalityLabel(it.directionality) },
                 position = info?.position?.let { formatCoordinate(it.x, it.y, it.z) },
                 orientation = info?.orientation?.let { formatCoordinate(it.x, it.y, it.z) },
-                rawAddress = device.address?.takeIf { it.isNotBlank() },
-                rawChannelCounts = device.channelCounts?.takeIf { it.isNotEmpty() }?.joinToString(","),
-                rawSampleRates = device.sampleRates?.takeIf { it.isNotEmpty() }?.joinToString(","),
-                rawEncodings = device.encodings?.takeIf { it.isNotEmpty() }?.joinToString(",")
+                rawAddress = device.address.takeIf { it.isNotBlank() },
+                rawChannelCounts = device.channelCounts.takeIf { it.isNotEmpty() }?.joinToString(","),
+                rawSampleRates = device.sampleRates.takeIf { it.isNotEmpty() }?.joinToString(","),
+                rawEncodings = device.encodings.takeIf { it.isNotEmpty() }?.joinToString(",")
             )
         }
 
@@ -220,7 +253,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun testSelectedMicrophone() {
-        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic) return
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest) return
 
         val durationSec = _uiState.value.selectedTestDurationSec
 
@@ -288,8 +321,122 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun runExternalABTest() {
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest) return
+
+        val builtIns = _uiState.value.microphones.filter { it.typeCode == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+        if (builtIns.size < 2) {
+            _uiState.update {
+                it.copy(
+                    status = "A/B test requires at least 2 built-in microphones",
+                    abTestResult = "A/B unavailable: less than 2 built-in microphones detected"
+                )
+            }
+            return
+        }
+
+        val micA = builtIns[0]
+        val micB = builtIns[1]
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isRunningABTest = true,
+                    status = "A/B: ${micA.displayName} silence 2s, then external signal 6s",
+                    abTestResult = null
+                )
+            }
+            val measureA = runGuidedABMeasure(micA)
+
+            _uiState.update {
+                it.copy(status = "A/B: ${micB.displayName} silence 2s, then external signal 6s")
+            }
+            val measureB = runGuidedABMeasure(micB)
+
+            _uiState.update { it.copy(isRunningABTest = false) }
+
+            if (measureA == null || measureB == null) {
+                _uiState.update {
+                    it.copy(status = "A/B test failed", abTestResult = "A/B failed: measurement error")
+                }
+                return@launch
+            }
+
+            val scoreA = computeABScore(measureA.noise, measureA.signal)
+            val scoreB = computeABScore(measureB.noise, measureB.signal)
+            val winner = if (scoreA >= scoreB) micA else micB
+
+            val result = buildString {
+                appendLine("A/B external test complete")
+                appendLine("Mic A: ${micA.displayName} | score ${"%.1f".format(scoreA)} | noise ${"%.1f".format(measureA.noise.rmsDb)} | signal ${"%.1f".format(measureA.signal.rmsDb)}")
+                appendLine("Mic B: ${micB.displayName} | score ${"%.1f".format(scoreB)} | noise ${"%.1f".format(measureB.noise.rmsDb)} | signal ${"%.1f".format(measureB.signal.rmsDb)}")
+                appendLine("Recommended mic: ${winner.displayName}")
+            }
+
+            _uiState.update {
+                it.copy(
+                    status = "A/B test complete",
+                    abTestResult = result
+                )
+            }
+
+            if (_uiState.value.diagnosticModeEnabled) {
+                exportDiagnosticReport(
+                    event = "ab_test",
+                    entry = null,
+                    recordingPath = _uiState.value.lastOutputPath,
+                    extraLines = listOf(
+                        "ab.micA=${micA.displayName}",
+                        "ab.micA.score=$scoreA",
+                        "ab.micA.noise_rms=${measureA.noise.rmsDb}",
+                        "ab.micA.signal_rms=${measureA.signal.rmsDb}",
+                        "ab.micB=${micB.displayName}",
+                        "ab.micB.score=$scoreB",
+                        "ab.micB.noise_rms=${measureB.noise.rmsDb}",
+                        "ab.micB.signal_rms=${measureB.signal.rmsDb}",
+                        "ab.winner=${winner.displayName}"
+                    )
+                )
+            }
+        }
+    }
+
+    private data class ABMeasure(
+        val noise: CalibrationResult,
+        val signal: CalibrationResult
+    )
+
+    private suspend fun runGuidedABMeasure(mic: MicrophoneOption): ABMeasure? {
+        val audioManager = getApplication<Application>().getSystemService(AudioManager::class.java)
+        val device = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).firstOrNull { it.id == mic.id }
+
+        val noise = engine.runCalibration(
+            durationSeconds = 2,
+            preferredDevice = device,
+            onProgress = { progress ->
+                _uiState.update { s -> s.copy(rmsDb = progress.rmsDb, peakDb = progress.peakDb, headroomDb = -progress.peakDb) }
+            }
+        ) ?: return null
+
+        val signal = engine.runCalibration(
+            durationSeconds = 6,
+            preferredDevice = device,
+            onProgress = { progress ->
+                _uiState.update { s -> s.copy(rmsDb = progress.rmsDb, peakDb = progress.peakDb, headroomDb = -progress.peakDb) }
+            }
+        ) ?: return null
+
+        return ABMeasure(noise = noise, signal = signal)
+    }
+
+    private fun computeABScore(noise: CalibrationResult, signal: CalibrationResult): Float {
+        val snr = signal.rmsDb - noise.rmsDb
+        val peakPenalty = abs(signal.peakDb - (-6f))
+        return (snr * 2f) - peakPenalty
+    }
+
     fun runCalibration() {
-        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic) return
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest) return
 
         viewModelScope.launch {
             _uiState.update {
@@ -336,18 +483,26 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun startRecording() {
-        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic) return
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest) return
 
         val selectedMic = resolveEffectiveMicDevice()
+        val wantsStereo = _uiState.value.stereoModeRequested
+        val stereoOk = _uiState.value.stereoProbeDone && _uiState.value.stereoSupported
+        val channels = if (wantsStereo && stereoOk) 2 else 1
+
+        if (wantsStereo && !stereoOk) {
+            _uiState.update { it.copy(status = "Stereo requested but not confirmed. Falling back to mono.") }
+        }
+
         when (_uiState.value.storageLocation) {
             StorageLocation.DOWNLOADS -> {
                 val (displayName, output) = buildTempOutputFile()
                 pendingTempFile = output
                 pendingDisplayName = displayName
-                engine.startRecording(output, preferredDevice = selectedMic)
+                engine.startRecording(output, preferredDevice = selectedMic, requestedChannelCount = channels)
                 _uiState.update {
                     it.copy(
-                        status = "Recording",
+                        status = if (channels == 2) "Recording (stereo)" else "Recording (mono)",
                         elapsedMs = 0L,
                         lastOutputPath = "Downloads/Band Recorder/$displayName"
                     )
@@ -356,10 +511,10 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
             StorageLocation.APP_PRIVATE -> {
                 val output = buildAppPrivateOutputFile()
-                engine.startRecording(output, preferredDevice = selectedMic)
+                engine.startRecording(output, preferredDevice = selectedMic, requestedChannelCount = channels)
                 _uiState.update {
                     it.copy(
-                        status = "Recording",
+                        status = if (channels == 2) "Recording (stereo)" else "Recording (mono)",
                         elapsedMs = 0L,
                         lastOutputPath = output.absolutePath
                     )
@@ -488,7 +643,12 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun exportDiagnosticReport(event: String, entry: MicTestHistoryEntry?, recordingPath: String?) {
+    private fun exportDiagnosticReport(
+        event: String,
+        entry: MicTestHistoryEntry?,
+        recordingPath: String?,
+        extraLines: List<String> = emptyList()
+    ) {
         val resolver = getApplication<Application>().contentResolver
         val now = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val displayName = "diag_${event}_$now.txt"
@@ -509,6 +669,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             appendLine("event=$event")
             appendLine("status=${_uiState.value.status}")
             appendLine("storage=${_uiState.value.storageLocation}")
+            appendLine("stereo_requested=${_uiState.value.stereoModeRequested}")
+            appendLine("stereo_probe_done=${_uiState.value.stereoProbeDone}")
+            appendLine("stereo_supported=${_uiState.value.stereoSupported}")
+            appendLine("stereo_actual_channels=${_uiState.value.stereoActualChannels}")
+            appendLine("stereo_probe_message=${_uiState.value.stereoProbeMessage}")
             appendLine("selected_mic_id=${_uiState.value.selectedMicId ?: "auto"}")
             appendLine("effective_mic=${effective?.displayName ?: "none"}")
             appendLine("effective_mic_type=${effective?.typeLabel ?: "n/a"}")
@@ -524,6 +689,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 appendLine("test_result_rms_db=${entry.rmsDb}")
                 appendLine("test_result_peak_db=${entry.peakDb}")
             }
+            extraLines.forEach { appendLine(it) }
             appendLine("available_mics=${_uiState.value.microphones.size}")
             _uiState.value.microphones.forEachIndexed { index, mic ->
                 appendLine("mic[$index].id=${mic.id}")
