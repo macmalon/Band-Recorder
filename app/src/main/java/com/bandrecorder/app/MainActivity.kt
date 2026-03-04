@@ -80,6 +80,11 @@ private sealed class AppRoute(val route: String) {
     data object Link : AppRoute("link")
 }
 
+private enum class BalanceSection {
+    GLOBAL,
+    INSTRUMENTS
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -341,54 +346,116 @@ private fun BalanceScreen(
     }
     val saturationAlert = ui.peakDb > -3f
     val lowLevelAlert = ui.rmsDb < -38f && ui.isRecording
+    var section by remember { mutableStateOf(BalanceSection.GLOBAL) }
 
     ScreenScaffold(title = "Balance", onBack = onBack) {
-        Text("Status: ${ui.status}")
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Text("RMS: ${"%.1f".format(ui.rmsDb)} dBFS")
-        Text("Peak: ${"%.1f".format(ui.peakDb)} dBFS")
-        Text("Headroom: ${"%.1f".format(ui.headroomDb)} dB")
-        Spacer(modifier = Modifier.height(6.dp))
-
-        Text("VU meter")
-        LinearProgressIndicator(
-            progress = { vuProgress },
-            color = vuColor,
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(modifier = Modifier.height(12.dp))
-
-        if (ui.isCalibrating) {
-            Text("Calibration en cours: ${ui.calibrationProgress}%")
-            LinearProgressIndicator(
-                progress = { ui.calibrationProgress / 100f },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(modifier = Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (section == BalanceSection.GLOBAL) {
+                Button(onClick = { section = BalanceSection.GLOBAL }) { Text("Global") }
+                OutlinedButton(onClick = { section = BalanceSection.INSTRUMENTS }) { Text("Instruments") }
+            } else {
+                OutlinedButton(onClick = { section = BalanceSection.GLOBAL }) { Text("Global") }
+                Button(onClick = { section = BalanceSection.INSTRUMENTS }) { Text("Instruments") }
+            }
         }
 
-        Button(
-            onClick = onRequestCalibrate,
-            enabled = !ui.isCalibrating && !ui.isTestingMic && !ui.isRecording && !ui.isRunningABTest && !ui.isRunningStereoGuidedTest
-        ) {
-            Text("Calibrage 30s")
-        }
+        when (section) {
+            BalanceSection.GLOBAL -> {
+                Text("Status: ${ui.status}")
+                Spacer(modifier = Modifier.height(8.dp))
 
-        ui.recommendedGainDb?.let {
-            val signed = if (it >= 0f) "+${"%.1f".format(it)}" else "${"%.1f".format(it)}"
-            Text("Gain recommandé: $signed dB", fontWeight = FontWeight.SemiBold)
-        }
+                Text("RMS: ${"%.1f".format(ui.rmsDb)} dBFS")
+                Text("Peak: ${"%.1f".format(ui.peakDb)} dBFS")
+                Text("Headroom: ${"%.1f".format(ui.headroomDb)} dB")
+                Spacer(modifier = Modifier.height(6.dp))
 
-        if (saturationAlert) {
-            Text("Alerte: risque de saturation", color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold)
-        } else if (lowLevelAlert) {
-            Text("Alerte: niveau trop faible", color = Color(0xFFFF9800), fontWeight = FontWeight.Bold)
-        }
+                Text("VU meter")
+                LinearProgressIndicator(
+                    progress = { vuProgress },
+                    color = vuColor,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(12.dp))
 
-        ui.lastOutputPath?.let {
-            Spacer(modifier = Modifier.height(10.dp))
-            Text("Dernier fichier: $it", style = MaterialTheme.typography.bodySmall)
+                if (ui.isCalibrating) {
+                    Text("Calibration en cours: ${ui.calibrationProgress}%")
+                    LinearProgressIndicator(
+                        progress = { ui.calibrationProgress / 100f },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
+                Button(
+                    onClick = onRequestCalibrate,
+                    enabled = !ui.isCalibrating && !ui.isTestingMic && !ui.isRecording && !ui.isRunningABTest && !ui.isRunningStereoGuidedTest
+                ) {
+                    Text("Calibrage 30s")
+                }
+
+                ui.recommendedGainDb?.let {
+                    val signed = if (it >= 0f) "+${"%.1f".format(it)}" else "${"%.1f".format(it)}"
+                    Text("Gain recommandé: $signed dB", fontWeight = FontWeight.SemiBold)
+                }
+
+                if (saturationAlert) {
+                    Text("Alerte: risque de saturation", color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold)
+                } else if (lowLevelAlert) {
+                    Text("Alerte: niveau trop faible", color = Color(0xFFFF9800), fontWeight = FontWeight.Bold)
+                }
+
+                ui.lastOutputPath?.let {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text("Dernier fichier: $it", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            BalanceSection.INSTRUMENTS -> {
+                Text(
+                    "Balances instrument (affinage par type). Référence rapide basée sur RMS/Peak actuels.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                val profiles = listOf(
+                    Triple("Voix lead", Pair(-24f, -16f), Pair(-12f, -6f)),
+                    Triple("Guitare électrique", Pair(-22f, -14f), Pair(-10f, -6f)),
+                    Triple("Basse", Pair(-20f, -14f), Pair(-9f, -5f)),
+                    Triple("Kick", Pair(-18f, -12f), Pair(-8f, -4f)),
+                    Triple("Snare", Pair(-20f, -14f), Pair(-10f, -5f)),
+                    Triple("Overheads", Pair(-26f, -18f), Pair(-14f, -8f)),
+                    Triple("Piano/Clavier", Pair(-24f, -16f), Pair(-12f, -7f)),
+                    Triple("Sax/Trompette", Pair(-22f, -14f), Pair(-10f, -6f))
+                )
+
+                profiles.forEach { (name, rmsRange, peakRange) ->
+                    val rmsOk = ui.rmsDb in rmsRange.first..rmsRange.second
+                    val peakOk = ui.peakDb in peakRange.first..peakRange.second
+                    val label = when {
+                        rmsOk && peakOk -> "OK"
+                        ui.peakDb > peakRange.second -> "Trop fort"
+                        ui.rmsDb < rmsRange.first -> "Trop faible"
+                        else -> "À ajuster"
+                    }
+                    val color = when (label) {
+                        "OK" -> Color(0xFF2E7D32)
+                        "Trop fort" -> Color(0xFFD32F2F)
+                        else -> Color(0xFFFF9800)
+                    }
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0x14FFFFFF))
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(name, fontWeight = FontWeight.SemiBold)
+                        Text("Cible RMS: ${rmsRange.first.toInt()} à ${rmsRange.second.toInt()} dBFS", style = MaterialTheme.typography.bodySmall)
+                        Text("Cible Peak: ${peakRange.first.toInt()} à ${peakRange.second.toInt()} dBFS", style = MaterialTheme.typography.bodySmall)
+                        Text("État actuel: $label", color = color, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
         }
     }
 }
