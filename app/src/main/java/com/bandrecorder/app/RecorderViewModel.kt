@@ -35,7 +35,21 @@ data class MicrophoneOption(
     val locationLabel: String?,
     val directionalityLabel: String?,
     val position: String?,
-    val orientation: String?
+    val orientation: String?,
+    val rawAddress: String?,
+    val rawChannelCounts: String?,
+    val rawSampleRates: String?,
+    val rawEncodings: String?
+)
+
+data class MicTestHistoryEntry(
+    val timestampIso: String,
+    val micLabel: String,
+    val durationSec: Int,
+    val rmsDb: Float,
+    val peakDb: Float,
+    val recommended: Boolean,
+    val warning: String?
 )
 
 data class RecorderUiState(
@@ -59,12 +73,19 @@ data class RecorderUiState(
     val effectiveMicWarning: String? = null,
     val effectiveMicRecommended: Boolean = true,
     val isAutoMicMode: Boolean = true,
-    val micTestResult: String? = null
+    val micTestResult: String? = null,
+    val diagnosticModeEnabled: Boolean = true,
+    val showAdvancedInternals: Boolean = false,
+    val selectedTestDurationSec: Int = 5,
+    val availableTestDurationsSec: List<Int> = listOf(5, 15, 30),
+    val testHistory: List<MicTestHistoryEntry> = emptyList(),
+    val lastDiagnosticReportPath: String? = null
 )
 
 class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private val engine = WavRecorderEngine()
     private val settingsStore = AppSettingsStore(app)
+    private val historyFile = File(app.filesDir, "mic_test_history.tsv")
 
     private var pendingTempFile: File? = null
     private var pendingDisplayName: String? = null
@@ -77,9 +98,14 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.update {
             it.copy(
                 storageLocation = settings.storageLocation,
-                selectedMicId = settings.selectedMicId
+                selectedMicId = settings.selectedMicId,
+                diagnosticModeEnabled = settings.diagnosticMode,
+                showAdvancedInternals = settings.showAdvancedInternals,
+                selectedTestDurationSec = normalizeDuration(settings.testDurationSec),
+                testHistory = loadHistory()
             )
         }
+
         refreshMicrophones()
 
         viewModelScope.launch {
@@ -101,6 +127,22 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     fun setStorageLocation(location: StorageLocation) {
         settingsStore.setStorageLocation(location)
         _uiState.update { it.copy(storageLocation = location) }
+    }
+
+    fun setDiagnosticMode(enabled: Boolean) {
+        settingsStore.setDiagnosticMode(enabled)
+        _uiState.update { it.copy(diagnosticModeEnabled = enabled) }
+    }
+
+    fun setShowAdvancedInternals(enabled: Boolean) {
+        settingsStore.setShowAdvancedInternals(enabled)
+        _uiState.update { it.copy(showAdvancedInternals = enabled) }
+    }
+
+    fun setTestDuration(seconds: Int) {
+        val normalized = normalizeDuration(seconds)
+        settingsStore.setTestDurationSec(normalized)
+        _uiState.update { it.copy(selectedTestDurationSec = normalized) }
     }
 
     fun refreshMicrophones() {
@@ -125,7 +167,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 locationLabel = info?.let { microphoneLocationLabel(it.location) },
                 directionalityLabel = info?.let { microphoneDirectionalityLabel(it.directionality) },
                 position = info?.position?.let { formatCoordinate(it.x, it.y, it.z) },
-                orientation = info?.orientation?.let { formatCoordinate(it.x, it.y, it.z) }
+                orientation = info?.orientation?.let { formatCoordinate(it.x, it.y, it.z) },
+                rawAddress = device.address?.takeIf { it.isNotBlank() },
+                rawChannelCounts = device.channelCounts?.takeIf { it.isNotEmpty() }?.joinToString(","),
+                rawSampleRates = device.sampleRates?.takeIf { it.isNotEmpty() }?.joinToString(","),
+                rawEncodings = device.encodings?.takeIf { it.isNotEmpty() }?.joinToString(",")
             )
         }
 
@@ -176,18 +222,21 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     fun testSelectedMicrophone() {
         if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic) return
 
+        val durationSec = _uiState.value.selectedTestDurationSec
+
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
                     isTestingMic = true,
-                    status = "Mic test (5s)",
+                    status = "Mic test (${durationSec}s)",
                     micTestResult = null
                 )
             }
 
             val preferredDevice = resolveEffectiveMicDevice()
+            val effective = effectiveMic(_uiState.value.microphones, _uiState.value.selectedMicId)
             val result: CalibrationResult? = engine.runCalibration(
-                durationSeconds = 5,
+                durationSeconds = durationSec,
                 preferredDevice = preferredDevice,
                 onProgress = { progress: CalibrationProgress ->
                     _uiState.update { state ->
@@ -212,6 +261,27 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         isTestingMic = false,
                         status = "Mic test OK",
                         micTestResult = "RMS ${"%.1f".format(result.rmsDb)} dBFS / Peak ${"%.1f".format(result.peakDb)} dBFS"
+                    )
+                }
+            }
+
+            if (result != null && effective != null) {
+                val entry = MicTestHistoryEntry(
+                    timestampIso = isoNow(),
+                    micLabel = effective.displayName,
+                    durationSec = durationSec,
+                    rmsDb = result.rmsDb,
+                    peakDb = result.peakDb,
+                    recommended = effective.recommended,
+                    warning = effective.warning
+                )
+                appendHistory(entry)
+
+                if (_uiState.value.diagnosticModeEnabled) {
+                    exportDiagnosticReport(
+                        event = "mic_test",
+                        entry = entry,
+                        recordingPath = _uiState.value.lastOutputPath
                     )
                 }
             }
@@ -312,6 +382,9 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             } else {
                 _uiState.update { it.copy(status = "Stopped") }
             }
+            if (_uiState.value.diagnosticModeEnabled) {
+                exportDiagnosticReport(event = "recording_stop", entry = null, recordingPath = _uiState.value.lastOutputPath)
+            }
         }
     }
 
@@ -369,6 +442,127 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private fun formatCoordinate(x: Float, y: Float, z: Float): String {
         return "x=${"%.2f".format(Locale.US, x)}, y=${"%.2f".format(Locale.US, y)}, z=${"%.2f".format(Locale.US, z)}"
     }
+
+    private fun normalizeDuration(seconds: Int): Int = when (seconds) {
+        5, 15, 30 -> seconds
+        else -> 5
+    }
+
+    private fun loadHistory(): List<MicTestHistoryEntry> {
+        if (!historyFile.exists()) return emptyList()
+        return historyFile.readLines()
+            .mapNotNull { line ->
+                val parts = line.split("\t")
+                if (parts.size < 7) return@mapNotNull null
+                runCatching {
+                    MicTestHistoryEntry(
+                        timestampIso = parts[0],
+                        micLabel = parts[1],
+                        durationSec = parts[2].toInt(),
+                        rmsDb = parts[3].toFloat(),
+                        peakDb = parts[4].toFloat(),
+                        recommended = parts[5].toBooleanStrictOrNull() ?: false,
+                        warning = parts[6].ifBlank { null }
+                    )
+                }.getOrNull()
+            }
+            .takeLast(50)
+            .reversed()
+    }
+
+    private fun appendHistory(entry: MicTestHistoryEntry) {
+        historyFile.parentFile?.mkdirs()
+        historyFile.appendText(
+            listOf(
+                entry.timestampIso,
+                entry.micLabel.replace("\t", " "),
+                entry.durationSec.toString(),
+                entry.rmsDb.toString(),
+                entry.peakDb.toString(),
+                entry.recommended.toString(),
+                entry.warning.orEmpty().replace("\t", " ")
+            ).joinToString("\t") + "\n"
+        )
+        _uiState.update {
+            it.copy(testHistory = (listOf(entry) + it.testHistory).take(50))
+        }
+    }
+
+    private fun exportDiagnosticReport(event: String, entry: MicTestHistoryEntry?, recordingPath: String?) {
+        val resolver = getApplication<Application>().contentResolver
+        val now = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val displayName = "diag_${event}_$now.txt"
+
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Band Recorder/diagnostics")
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return
+        val effective = effectiveMic(_uiState.value.microphones, _uiState.value.selectedMicId)
+
+        val content = buildString {
+            appendLine("band_recorder_diagnostic_report")
+            appendLine("timestamp=${isoNow()}")
+            appendLine("event=$event")
+            appendLine("status=${_uiState.value.status}")
+            appendLine("storage=${_uiState.value.storageLocation}")
+            appendLine("selected_mic_id=${_uiState.value.selectedMicId ?: "auto"}")
+            appendLine("effective_mic=${effective?.displayName ?: "none"}")
+            appendLine("effective_mic_type=${effective?.typeLabel ?: "n/a"}")
+            appendLine("effective_mic_recommended=${effective?.recommended ?: false}")
+            appendLine("effective_mic_warning=${effective?.warning ?: ""}")
+            appendLine("rms_db=${_uiState.value.rmsDb}")
+            appendLine("peak_db=${_uiState.value.peakDb}")
+            appendLine("headroom_db=${_uiState.value.headroomDb}")
+            appendLine("elapsed_ms=${_uiState.value.elapsedMs}")
+            appendLine("recording_path=${recordingPath ?: ""}")
+            if (entry != null) {
+                appendLine("test_duration_sec=${entry.durationSec}")
+                appendLine("test_result_rms_db=${entry.rmsDb}")
+                appendLine("test_result_peak_db=${entry.peakDb}")
+            }
+            appendLine("available_mics=${_uiState.value.microphones.size}")
+            _uiState.value.microphones.forEachIndexed { index, mic ->
+                appendLine("mic[$index].id=${mic.id}")
+                appendLine("mic[$index].name=${mic.displayName}")
+                appendLine("mic[$index].type=${mic.typeLabel}(${mic.typeCode})")
+                appendLine("mic[$index].recommended=${mic.recommended}")
+                appendLine("mic[$index].warning=${mic.warning ?: ""}")
+                appendLine("mic[$index].description=${mic.description ?: ""}")
+                appendLine("mic[$index].location=${mic.locationLabel ?: ""}")
+                appendLine("mic[$index].directionality=${mic.directionalityLabel ?: ""}")
+                appendLine("mic[$index].position=${mic.position ?: ""}")
+                appendLine("mic[$index].orientation=${mic.orientation ?: ""}")
+                appendLine("mic[$index].raw.address=${mic.rawAddress ?: ""}")
+                appendLine("mic[$index].raw.channel_counts=${mic.rawChannelCounts ?: ""}")
+                appendLine("mic[$index].raw.sample_rates=${mic.rawSampleRates ?: ""}")
+                appendLine("mic[$index].raw.encodings=${mic.rawEncodings ?: ""}")
+            }
+        }
+
+        val ok = runCatching {
+            resolver.openOutputStream(uri)?.use { out -> out.write(content.toByteArray()) }
+                ?: error("Cannot open output stream")
+            values.clear()
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            true
+        }.getOrElse {
+            resolver.delete(uri, null, null)
+            false
+        }
+
+        if (ok) {
+            _uiState.update {
+                it.copy(lastDiagnosticReportPath = "Downloads/Band Recorder/diagnostics/$displayName")
+            }
+        }
+    }
+
+    private fun isoNow(): String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(Date())
 
     private fun buildTempOutputFile(): Pair<String, File> {
         val root = File(getApplication<Application>().cacheDir, "band_recordings_tmp")

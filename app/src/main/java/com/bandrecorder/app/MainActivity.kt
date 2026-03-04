@@ -105,7 +105,7 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                         pendingAction = PendingAction.START_RECORDING
                         permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     },
-                    onStop = { vm.stopRecording() }
+                    onStop = vm::stopRecording
                 )
             }
 
@@ -115,6 +115,9 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                     onStorageChange = vm::setStorageLocation,
                     onRefreshMics = vm::refreshMicrophones,
                     onSelectMic = vm::selectMicrophone,
+                    onToggleDiagnostic = vm::setDiagnosticMode,
+                    onToggleAdvanced = vm::setShowAdvancedInternals,
+                    onSetTestDuration = vm::setTestDuration,
                     onTestMic = {
                         pendingAction = PendingAction.TEST_MIC
                         permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -210,6 +213,9 @@ private fun RecordTab(
     ui.lastOutputPath?.let {
         Text("File: $it", style = MaterialTheme.typography.bodySmall)
     }
+    ui.lastDiagnosticReportPath?.let {
+        Text("Last diagnostic report: $it", style = MaterialTheme.typography.bodySmall)
+    }
 }
 
 @Composable
@@ -218,6 +224,9 @@ private fun OptionsTab(
     onStorageChange: (StorageLocation) -> Unit,
     onRefreshMics: () -> Unit,
     onSelectMic: (Int?) -> Unit,
+    onToggleDiagnostic: (Boolean) -> Unit,
+    onToggleAdvanced: (Boolean) -> Unit,
+    onSetTestDuration: (Int) -> Unit,
     onTestMic: () -> Unit
 ) {
     Column(
@@ -245,11 +254,42 @@ private fun OptionsTab(
                 "Default: app private folder"
         )
 
+        Text("Diagnostics", fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (ui.diagnosticModeEnabled) {
+                Button(onClick = { onToggleDiagnostic(true) }) { Text("Diagnostic ON") }
+                OutlinedButton(onClick = { onToggleDiagnostic(false) }) { Text("Diagnostic OFF") }
+            } else {
+                OutlinedButton(onClick = { onToggleDiagnostic(true) }) { Text("Diagnostic ON") }
+                Button(onClick = { onToggleDiagnostic(false) }) { Text("Diagnostic OFF") }
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (ui.showAdvancedInternals) {
+                Button(onClick = { onToggleAdvanced(true) }) { Text("Advanced ON") }
+                OutlinedButton(onClick = { onToggleAdvanced(false) }) { Text("Advanced OFF") }
+            } else {
+                OutlinedButton(onClick = { onToggleAdvanced(true) }) { Text("Advanced ON") }
+                Button(onClick = { onToggleAdvanced(false) }) { Text("Advanced OFF") }
+            }
+        }
+
         Text("Microphones", fontWeight = FontWeight.Bold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onRefreshMics) { Text("Scan") }
             Button(onClick = onTestMic, enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic) {
-                Text(if (ui.isTestingMic) "Testing..." else "Test 5s")
+                Text(if (ui.isTestingMic) "Testing..." else "Test mic")
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ui.availableTestDurationsSec.forEach { sec ->
+                if (sec == ui.selectedTestDurationSec) {
+                    Button(onClick = { onSetTestDuration(sec) }) { Text("${sec}s") }
+                } else {
+                    OutlinedButton(onClick = { onSetTestDuration(sec) }) { Text("${sec}s") }
+                }
             }
         }
 
@@ -291,12 +331,34 @@ private fun OptionsTab(
                     Text("Directionality: ${mic.directionalityLabel ?: "N/A"}")
                     Text("Position: ${mic.position ?: "N/A"}")
                     Text("Orientation: ${mic.orientation ?: "N/A"}")
+
+                    if (ui.showAdvancedInternals) {
+                        Text("Raw address: ${mic.rawAddress ?: "N/A"}")
+                        Text("Raw channel counts: ${mic.rawChannelCounts ?: "N/A"}")
+                        Text("Raw sample rates: ${mic.rawSampleRates ?: "N/A"}")
+                        Text("Raw encodings: ${mic.rawEncodings ?: "N/A"}")
+                    }
                 }
             }
         }
 
         ui.micTestResult?.let {
             Text("Test result: $it")
+        }
+
+        Text("Test history", fontWeight = FontWeight.Bold)
+        if (ui.testHistory.isEmpty()) {
+            Text("No tests yet")
+        } else {
+            ui.testHistory.forEach { entry ->
+                Text(
+                    "${entry.timestampIso} | ${entry.micLabel} | ${entry.durationSec}s | RMS ${"%.1f".format(entry.rmsDb)} | Peak ${"%.1f".format(entry.peakDb)}"
+                )
+            }
+        }
+
+        ui.lastDiagnosticReportPath?.let {
+            Text("Last diagnostic report: $it", style = MaterialTheme.typography.bodySmall)
         }
 
         Text(
@@ -312,4 +374,3 @@ private fun formatTimer(ms: Long): String {
     val s = totalSec % 60
     return "%02d:%02d".format(m, s)
 }
-

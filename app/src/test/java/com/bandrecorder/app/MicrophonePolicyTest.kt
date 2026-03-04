@@ -51,8 +51,11 @@ class MicrophonePolicyTest {
             locationLabel = null,
             directionalityLabel = null,
             position = null,
-            orientation = null
+            orientation = null,
+            rawAddress = null,
+            rawChannelCounts = null,
+            rawSampleRates = null,
+            rawEncodings = null
         )
     }
 }
-

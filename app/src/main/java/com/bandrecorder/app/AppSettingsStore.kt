@@ -10,7 +10,10 @@ enum class StorageLocation {
 
 data class AppSettings(
     val storageLocation: StorageLocation = StorageLocation.DOWNLOADS,
-    val selectedMicId: Int? = null
+    val selectedMicId: Int? = null,
+    val diagnosticMode: Boolean = true,
+    val showAdvancedInternals: Boolean = false,
+    val testDurationSec: Int = 5
 )
 
 class AppSettingsStore(app: Application) {
@@ -21,7 +24,16 @@ class AppSettingsStore(app: Application) {
         val storage = runCatching { StorageLocation.valueOf(storageRaw ?: StorageLocation.DOWNLOADS.name) }
             .getOrDefault(StorageLocation.DOWNLOADS)
         val micId = if (prefs.contains(KEY_MIC_ID)) prefs.getInt(KEY_MIC_ID, -1).takeIf { it >= 0 } else null
-        return AppSettings(storageLocation = storage, selectedMicId = micId)
+        val diagnosticMode = prefs.getBoolean(KEY_DIAGNOSTIC_MODE, true)
+        val showAdvanced = prefs.getBoolean(KEY_SHOW_ADVANCED_INTERNALS, false)
+        val testDurationSec = prefs.getInt(KEY_TEST_DURATION_SEC, 5).coerceIn(5, 30)
+        return AppSettings(
+            storageLocation = storage,
+            selectedMicId = micId,
+            diagnosticMode = diagnosticMode,
+            showAdvancedInternals = showAdvanced,
+            testDurationSec = testDurationSec
+        )
     }
 
     fun setStorageLocation(location: StorageLocation) {
@@ -34,9 +46,23 @@ class AppSettingsStore(app: Application) {
         }.apply()
     }
 
+    fun setDiagnosticMode(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_DIAGNOSTIC_MODE, enabled).apply()
+    }
+
+    fun setShowAdvancedInternals(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_SHOW_ADVANCED_INTERNALS, enabled).apply()
+    }
+
+    fun setTestDurationSec(seconds: Int) {
+        prefs.edit().putInt(KEY_TEST_DURATION_SEC, seconds.coerceIn(5, 30)).apply()
+    }
+
     private companion object {
         const val KEY_STORAGE_LOCATION = "storage_location"
         const val KEY_MIC_ID = "selected_mic_id"
+        const val KEY_DIAGNOSTIC_MODE = "diagnostic_mode"
+        const val KEY_SHOW_ADVANCED_INTERNALS = "show_advanced_internals"
+        const val KEY_TEST_DURATION_SEC = "test_duration_sec"
     }
 }
-
