@@ -6,14 +6,30 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -25,11 +41,22 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
 
 private enum class PendingAction {
@@ -40,9 +67,13 @@ private enum class PendingAction {
     RUN_AB_TEST
 }
 
-private enum class ScreenTab {
-    RECORD,
-    OPTIONS
+private sealed class AppRoute(val route: String) {
+    data object Home : AppRoute("home")
+    data object Balance : AppRoute("balance")
+    data object MicSettings : AppRoute("mic_settings")
+    data object Player : AppRoute("player")
+    data object Settings : AppRoute("settings")
+    data object Link : AppRoute("link")
 }
 
 class MainActivity : ComponentActivity() {
@@ -61,8 +92,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun MainScreen(vm: RecorderViewModel = viewModel()) {
     val ui by vm.uiState.collectAsState()
+    val navController = rememberNavController()
     var pendingAction by remember { mutableStateOf<PendingAction?>(null) }
-    var tab by remember { mutableStateOf(ScreenTab.RECORD) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -79,62 +110,239 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
         pendingAction = null
     }
 
-    Column(
-        modifier = Modifier
-            .padding(20.dp)
-            .fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text("Band Recorder V1", style = MaterialTheme.typography.headlineMedium)
+    fun requestAudioPermission(action: PendingAction) {
+        pendingAction = action
+        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (tab == ScreenTab.RECORD) {
-                Button(onClick = { tab = ScreenTab.RECORD }) { Text("Record") }
-                OutlinedButton(onClick = { tab = ScreenTab.OPTIONS }) { Text("Options") }
-            } else {
-                OutlinedButton(onClick = { tab = ScreenTab.RECORD }) { Text("Record") }
-                Button(onClick = { tab = ScreenTab.OPTIONS }) { Text("Options") }
+    NavHost(
+        navController = navController,
+        startDestination = AppRoute.Home.route
+    ) {
+        composable(AppRoute.Home.route) {
+            HomeScreen(
+                ui = ui,
+                onRecordToggle = {
+                    if (ui.isRecording) {
+                        vm.stopRecording()
+                    } else {
+                        requestAudioPermission(PendingAction.START_RECORDING)
+                    }
+                },
+                onOpenBalance = { navController.navigate(AppRoute.Balance.route) },
+                onOpenMicSettings = { navController.navigate(AppRoute.MicSettings.route) },
+                onOpenPlayer = { navController.navigate(AppRoute.Player.route) },
+                onOpenSettings = { navController.navigate(AppRoute.Settings.route) },
+                onOpenLink = { navController.navigate(AppRoute.Link.route) }
+            )
+        }
+        composable(AppRoute.Balance.route) {
+            BalanceScreen(
+                ui = ui,
+                onBack = { navController.popBackStack() },
+                onRequestCalibrate = { requestAudioPermission(PendingAction.CALIBRATE) }
+            )
+        }
+        composable(AppRoute.MicSettings.route) {
+            MicSettingsScreen(
+                ui = ui,
+                onBack = { navController.popBackStack() },
+                onRefreshMics = vm::refreshMicrophones,
+                onSelectMic = vm::selectMicrophone,
+                onSetTestDuration = vm::setTestDuration,
+                onToggleStereoRequested = vm::setStereoModeRequested,
+                onRequestTestMic = { requestAudioPermission(PendingAction.TEST_MIC) },
+                onRequestProbeStereo = { requestAudioPermission(PendingAction.PROBE_STEREO) }
+            )
+        }
+        composable(AppRoute.Settings.route) {
+            SettingsScreen(
+                ui = ui,
+                onBack = { navController.popBackStack() },
+                onStorageChange = vm::setStorageLocation,
+                onToggleDiagnostic = vm::setDiagnosticMode,
+                onToggleAdvanced = vm::setShowAdvancedInternals,
+                onRequestRunABTest = { requestAudioPermission(PendingAction.RUN_AB_TEST) }
+            )
+        }
+        composable(AppRoute.Player.route) {
+            PlaceholderScreen(
+                title = "Lecteur",
+                subtitle = "Le lecteur sera ajouté dans une prochaine étape de la roadmap.",
+                navController = navController
+            )
+        }
+        composable(AppRoute.Link.route) {
+            PlaceholderScreen(
+                title = "Link / WiFi Direct",
+                subtitle = "La connexion multi-appareils et le mode télécommande arrivent prochainement.",
+                navController = navController
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeScreen(
+    ui: RecorderUiState,
+    onRecordToggle: () -> Unit,
+    onOpenBalance: () -> Unit,
+    onOpenMicSettings: () -> Unit,
+    onOpenPlayer: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenLink: () -> Unit
+) {
+    val gradient = Brush.verticalGradient(
+        colors = listOf(
+            Color(0xFF8BCF2F),
+            Color(0xFFFFF44F),
+            Color(0xFFFF8C42)
+        )
+    )
+    val pagerState = rememberPagerState(pageCount = { 2 })
+    val isBusy = ui.isCalibrating || ui.isTestingMic || ui.isRunningABTest
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(gradient)
+            .padding(16.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.TopCenter),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            SmallActionButton(text = "Mic", onClick = onOpenMicSettings)
+            SmallActionButton(text = "Link", onClick = onOpenLink)
+        }
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = formatTimer(ui.elapsedMs),
+                fontSize = 72.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = Color.White,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = ui.status,
+                color = Color.White,
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Spacer(modifier = Modifier.height(30.dp))
+
+            HorizontalPager(
+                state = pagerState,
+                contentPadding = PaddingValues(horizontal = 48.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(230.dp)
+            ) { page ->
+                val pageOffset = ((pagerState.currentPage - page) + pagerState.currentPageOffsetFraction).absoluteValue
+                val targetScale = if (pageOffset < 0.5f) 1f else 0.82f
+                val targetAlpha = if (pageOffset < 0.5f) 1f else 0.68f
+                val scale by animateFloatAsState(targetValue = targetScale, label = "cardScale")
+                val alpha by animateFloatAsState(targetValue = targetAlpha, label = "cardAlpha")
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            this.alpha = alpha
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (page == 0) {
+                        MainCarouselCard(
+                            title = if (ui.isRecording) "STOP" else "REC",
+                            subtitle = if (ui.isRecording) "Arrêter l'enregistrement" else "Démarrer l'enregistrement",
+                            enabled = !isBusy || ui.isRecording,
+                            onClick = onRecordToggle
+                        )
+                    } else {
+                        MainCarouselCard(
+                            title = "BALANCE",
+                            subtitle = "Mesure et calibrage",
+                            enabled = true,
+                            onClick = onOpenBalance
+                        )
+                    }
+                }
             }
         }
 
-        when (tab) {
-            ScreenTab.RECORD -> {
-                RecordTab(
-                    ui = ui,
-                    onRequestCalibrate = {
-                        pendingAction = PendingAction.CALIBRATE
-                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    },
-                    onRequestStart = {
-                        pendingAction = PendingAction.START_RECORDING
-                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    },
-                    onStop = vm::stopRecording
-                )
-            }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            SmallActionButton(text = "Lecteur", onClick = onOpenPlayer)
+            SmallActionButton(text = "Paramètres", onClick = onOpenSettings)
+        }
+    }
+}
 
-            ScreenTab.OPTIONS -> {
-                OptionsTab(
-                    ui = ui,
-                    onStorageChange = vm::setStorageLocation,
-                    onRefreshMics = vm::refreshMicrophones,
-                    onSelectMic = vm::selectMicrophone,
-                    onToggleDiagnostic = vm::setDiagnosticMode,
-                    onToggleAdvanced = vm::setShowAdvancedInternals,
-                    onSetTestDuration = vm::setTestDuration,
-                    onToggleStereoRequested = vm::setStereoModeRequested,
-                    onTestMic = {
-                        pendingAction = PendingAction.TEST_MIC
-                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    },
-                    onProbeStereo = {
-                        pendingAction = PendingAction.PROBE_STEREO
-                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    },
-                    onRunABTest = {
-                        pendingAction = PendingAction.RUN_AB_TEST
-                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    }
+@Composable
+private fun SmallActionButton(
+    text: String,
+    onClick: () -> Unit
+) {
+    OutlinedButton(
+        onClick = onClick,
+        shape = RoundedCornerShape(20.dp),
+        colors = ButtonDefaults.outlinedButtonColors(
+            contentColor = Color.White
+        )
+    ) {
+        Text(text)
+    }
+}
+
+@Composable
+private fun MainCarouselCard(
+    title: String,
+    subtitle: String,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier.size(210.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFE6006F)),
+        shape = CircleShape
+    ) {
+        Button(
+            onClick = onClick,
+            enabled = enabled,
+            modifier = Modifier.fillMaxSize(),
+            shape = CircleShape,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color.Transparent,
+                disabledContainerColor = Color.Transparent,
+                contentColor = Color.White,
+                disabledContentColor = Color(0xCCFFFFFF)
+            )
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = title,
+                    fontSize = 36.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Text(
+                    text = subtitle,
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyMedium
                 )
             }
         }
@@ -142,11 +350,10 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
 }
 
 @Composable
-private fun RecordTab(
+private fun BalanceScreen(
     ui: RecorderUiState,
-    onRequestCalibrate: () -> Unit,
-    onRequestStart: () -> Unit,
-    onStop: () -> Unit
+    onBack: () -> Unit,
+    onRequestCalibrate: () -> Unit
 ) {
     val vuProgress = ((ui.peakDb + 60f) / 60f).coerceIn(0f, 1f)
     val vuColor = when {
@@ -154,114 +361,167 @@ private fun RecordTab(
         ui.peakDb > -9f -> Color(0xFFFF9800)
         else -> Color(0xFF2E7D32)
     }
-
     val saturationAlert = ui.peakDb > -3f
-    val lowLevelAlert = ui.rmsDb < -38f
+    val lowLevelAlert = ui.rmsDb < -38f && ui.isRecording
 
-    Text("Status: ${ui.status}")
+    ScreenScaffold(title = "Balance", onBack = onBack) {
+        Text("Status: ${ui.status}")
+        Spacer(modifier = Modifier.height(8.dp))
 
-    val effectiveMicLine = if (ui.isAutoMicMode) {
-        "Microphone: Auto -> ${ui.effectiveMicLabel ?: "Unknown"}"
-    } else {
-        "Microphone: ${ui.effectiveMicLabel ?: "Unknown"}"
-    }
-    Text(effectiveMicLine)
+        Text("RMS: ${"%.1f".format(ui.rmsDb)} dBFS")
+        Text("Peak: ${"%.1f".format(ui.peakDb)} dBFS")
+        Text("Headroom: ${"%.1f".format(ui.headroomDb)} dB")
+        Spacer(modifier = Modifier.height(6.dp))
 
-    if (!ui.effectiveMicRecommended && !ui.effectiveMicWarning.isNullOrBlank()) {
-        Text(
-            "Warning: ${ui.effectiveMicWarning}",
-            color = Color(0xFFD32F2F),
-            style = MaterialTheme.typography.bodySmall
-        )
-    }
-
-    if (ui.isCalibrating) {
-        Text("Calibration in progress: ${ui.calibrationProgress}%")
+        Text("VU meter")
         LinearProgressIndicator(
-            progress = { ui.calibrationProgress / 100f },
+            progress = { vuProgress },
+            color = vuColor,
             modifier = Modifier.fillMaxWidth()
         )
-    }
+        Spacer(modifier = Modifier.height(12.dp))
 
-    ui.recommendedGainDb?.let {
-        val signed = if (it >= 0f) "+${"%.1f".format(it)}" else "${"%.1f".format(it)}"
-        Text("Recommended gain: $signed dB", fontWeight = FontWeight.SemiBold)
-    }
-
-    Text("RMS: ${"%.1f".format(ui.rmsDb)} dBFS")
-    Text("Peak: ${"%.1f".format(ui.peakDb)} dBFS")
-    Text("Headroom: ${"%.1f".format(ui.headroomDb)} dB")
-
-    Text("VU meter")
-    LinearProgressIndicator(
-        progress = { vuProgress },
-        color = vuColor,
-        modifier = Modifier.fillMaxWidth()
-    )
-
-    if (ui.isRecording) {
-        Text("Duration: ${formatTimer(ui.elapsedMs)}", fontWeight = FontWeight.SemiBold)
-    }
-
-    if (saturationAlert) {
-        Text("Alert: clipping risk", color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold)
-    } else if (lowLevelAlert && ui.isRecording) {
-        Text("Alert: level too low", color = Color(0xFFFF9800), fontWeight = FontWeight.Bold)
-    }
-
-    if (ui.isRecording) {
-        Button(onClick = onStop) {
-            Text("Stop")
-        }
-    } else {
-        Button(onClick = onRequestCalibrate, enabled = !ui.isCalibrating && !ui.isTestingMic) {
-            Text("Calibrate 30s")
+        if (ui.isCalibrating) {
+            Text("Calibration en cours: ${ui.calibrationProgress}%")
+            LinearProgressIndicator(
+                progress = { ui.calibrationProgress / 100f },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
         }
 
-        Button(onClick = onRequestStart, enabled = !ui.isCalibrating && !ui.isTestingMic) {
-            Text("Start Recording")
+        Button(
+            onClick = onRequestCalibrate,
+            enabled = !ui.isCalibrating && !ui.isTestingMic && !ui.isRecording && !ui.isRunningABTest
+        ) {
+            Text("Calibrage 30s")
         }
-    }
 
-    ui.lastOutputPath?.let {
-        Text("File: $it", style = MaterialTheme.typography.bodySmall)
-    }
-    ui.lastDiagnosticReportPath?.let {
-        Text("Last diagnostic report: $it", style = MaterialTheme.typography.bodySmall)
-    }
-    if (ui.stereoProbeDone) {
-        Text(
-            "Stereo probe: ${if (ui.stereoSupported) "supported" else "not supported"} (${ui.stereoActualChannels} ch) - ${ui.stereoProbeMessage}",
-            style = MaterialTheme.typography.bodySmall
-        )
-    }
-    ui.abTestResult?.let {
-        Text("A/B result:\n$it", style = MaterialTheme.typography.bodySmall)
+        ui.recommendedGainDb?.let {
+            val signed = if (it >= 0f) "+${"%.1f".format(it)}" else "${"%.1f".format(it)}"
+            Text("Gain recommandé: $signed dB", fontWeight = FontWeight.SemiBold)
+        }
+
+        if (saturationAlert) {
+            Text("Alerte: risque de saturation", color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold)
+        } else if (lowLevelAlert) {
+            Text("Alerte: niveau trop faible", color = Color(0xFFFF9800), fontWeight = FontWeight.Bold)
+        }
+
+        ui.lastOutputPath?.let {
+            Spacer(modifier = Modifier.height(10.dp))
+            Text("Dernier fichier: $it", style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
 
 @Composable
-private fun OptionsTab(
+private fun MicSettingsScreen(
     ui: RecorderUiState,
-    onStorageChange: (StorageLocation) -> Unit,
+    onBack: () -> Unit,
     onRefreshMics: () -> Unit,
     onSelectMic: (Int?) -> Unit,
-    onToggleDiagnostic: (Boolean) -> Unit,
-    onToggleAdvanced: (Boolean) -> Unit,
     onSetTestDuration: (Int) -> Unit,
     onToggleStereoRequested: (Boolean) -> Unit,
-    onTestMic: () -> Unit,
-    onProbeStereo: () -> Unit,
-    onRunABTest: () -> Unit
+    onRequestTestMic: () -> Unit,
+    onRequestProbeStereo: () -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Text("Recording location", fontWeight = FontWeight.Bold)
+    ScreenScaffold(title = "Réglages micro", onBack = onBack) {
+        Text("Microphones", fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onRefreshMics) { Text("Scan") }
+            Button(onClick = onRequestTestMic, enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic) {
+                Text(if (ui.isTestingMic) "Test..." else "Test mic")
+            }
+        }
 
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ui.availableTestDurationsSec.forEach { sec ->
+                if (sec == ui.selectedTestDurationSec) {
+                    Button(onClick = { onSetTestDuration(sec) }) { Text("${sec}s") }
+                } else {
+                    OutlinedButton(onClick = { onSetTestDuration(sec) }) { Text("${sec}s") }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+        Text("Capture stéréo", fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (ui.stereoModeRequested) {
+                Button(onClick = { onToggleStereoRequested(true) }) { Text("Stéréo ON") }
+                OutlinedButton(onClick = { onToggleStereoRequested(false) }) { Text("Stéréo OFF") }
+            } else {
+                OutlinedButton(onClick = { onToggleStereoRequested(true) }) { Text("Stéréo ON") }
+                Button(onClick = { onToggleStereoRequested(false) }) { Text("Stéréo OFF") }
+            }
+            OutlinedButton(
+                onClick = onRequestProbeStereo,
+                enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest
+            ) {
+                Text("Probe stéréo")
+            }
+        }
+        Text("Résultat probe: ${ui.stereoProbeMessage}")
+
+        Spacer(modifier = Modifier.height(4.dp))
+        OutlinedButton(onClick = { onSelectMic(null) }) {
+            val autoLabel = ui.effectiveMicLabel ?: "none"
+            Text(if (ui.selectedMicId == null) "Auto (actif -> $autoLabel)" else "Auto")
+        }
+
+        if (ui.microphones.isEmpty()) {
+            Text("Aucun microphone détecté")
+        } else {
+            ui.microphones.forEach { mic ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val selected = mic.id == ui.selectedMicId
+                        if (selected) {
+                            Button(onClick = { onSelectMic(mic.id) }) { Text("Sélectionné") }
+                        } else {
+                            OutlinedButton(onClick = { onSelectMic(mic.id) }) { Text("Choisir") }
+                        }
+                        Text(mic.displayName, fontWeight = FontWeight.SemiBold)
+                    }
+                    Text("Type: ${mic.typeLabel} (${mic.typeCode})")
+                    if (!mic.warning.isNullOrBlank()) {
+                        Text("Warning: ${mic.warning}", color = Color(0xFFD32F2F), style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (ui.showAdvancedInternals) {
+                        Text("ID: ${mic.id}")
+                        Text("Description: ${mic.description ?: "N/A"}")
+                        Text("Location: ${mic.locationLabel ?: "N/A"}")
+                        Text("Directionality: ${mic.directionalityLabel ?: "N/A"}")
+                        Text("Raw sample rates: ${mic.rawSampleRates ?: "N/A"}")
+                    }
+                }
+            }
+        }
+
+        ui.micTestResult?.let {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text("Résultat test: $it")
+        }
+    }
+}
+
+@Composable
+private fun SettingsScreen(
+    ui: RecorderUiState,
+    onBack: () -> Unit,
+    onStorageChange: (StorageLocation) -> Unit,
+    onToggleDiagnostic: (Boolean) -> Unit,
+    onToggleAdvanced: (Boolean) -> Unit,
+    onRequestRunABTest: () -> Unit
+) {
+    ScreenScaffold(title = "Paramètres", onBack = onBack) {
+        Text("Emplacement d'enregistrement", fontWeight = FontWeight.Bold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (ui.storageLocation == StorageLocation.DOWNLOADS) {
                 Button(onClick = { onStorageChange(StorageLocation.DOWNLOADS) }) { Text("Downloads") }
@@ -272,14 +532,8 @@ private fun OptionsTab(
             }
         }
 
-        Text(
-            if (ui.storageLocation == StorageLocation.DOWNLOADS)
-                "Default: Downloads/Band Recorder"
-            else
-                "Default: app private folder"
-        )
-
-        Text("Diagnostics", fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(4.dp))
+        Text("Diagnostic", fontWeight = FontWeight.Bold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (ui.diagnosticModeEnabled) {
                 Button(onClick = { onToggleDiagnostic(true) }) { Text("Diagnostic ON") }
@@ -300,118 +554,82 @@ private fun OptionsTab(
             }
         }
 
-        Text("Microphones", fontWeight = FontWeight.Bold)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onRefreshMics) { Text("Scan") }
-            Button(onClick = onTestMic, enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic) {
-                Text(if (ui.isTestingMic) "Testing..." else "Test mic")
-            }
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ui.availableTestDurationsSec.forEach { sec ->
-                if (sec == ui.selectedTestDurationSec) {
-                    Button(onClick = { onSetTestDuration(sec) }) { Text("${sec}s") }
-                } else {
-                    OutlinedButton(onClick = { onSetTestDuration(sec) }) { Text("${sec}s") }
-                }
-            }
-        }
-
-        Text("Stereo capture", fontWeight = FontWeight.Bold)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (ui.stereoModeRequested) {
-                Button(onClick = { onToggleStereoRequested(true) }) { Text("Stereo ON") }
-                OutlinedButton(onClick = { onToggleStereoRequested(false) }) { Text("Stereo OFF") }
-            } else {
-                OutlinedButton(onClick = { onToggleStereoRequested(true) }) { Text("Stereo ON") }
-                Button(onClick = { onToggleStereoRequested(false) }) { Text("Stereo OFF") }
-            }
-            OutlinedButton(onClick = onProbeStereo, enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest) {
-                Text("Probe stereo")
-            }
-        }
-        Text("Probe result: ${ui.stereoProbeMessage}")
-        Text("Will record in stereo only if probe confirmed support.")
-
+        Spacer(modifier = Modifier.height(6.dp))
         Text("External A/B built-in test", fontWeight = FontWeight.Bold)
-        Button(onClick = onRunABTest, enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest) {
+        Button(
+            onClick = onRequestRunABTest,
+            enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest
+        ) {
             Text(if (ui.isRunningABTest) "Running A/B..." else "Run external A/B")
         }
-        Text("Protocol: keep silence 2s then play external reference 6s for each built-in mic.")
+        ui.abTestResult?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
-        OutlinedButton(onClick = { onSelectMic(null) }) {
-            val autoLabel = ui.effectiveMicLabel ?: "none"
-            Text(if (ui.selectedMicId == null) "Auto (active -> $autoLabel)" else "Auto")
-        }
-
-        if (ui.microphones.isEmpty()) {
-            Text("No microphone detected")
-        } else {
-            ui.microphones.forEach { mic ->
-                val selected = mic.id == ui.selectedMicId
-                val badge = if (mic.recommended) "Recommended" else "Not recommended"
-
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (selected) {
-                            Button(onClick = { onSelectMic(mic.id) }) { Text("Selected") }
-                        } else {
-                            OutlinedButton(onClick = { onSelectMic(mic.id) }) { Text("Select") }
-                        }
-                        Text(mic.displayName, fontWeight = FontWeight.SemiBold)
-                    }
-
-                    Text("Type: ${mic.typeLabel} (${mic.typeCode}) - $badge")
-                    if (!mic.warning.isNullOrBlank()) {
-                        Text("Warning: ${mic.warning}", color = Color(0xFFD32F2F), style = MaterialTheme.typography.bodySmall)
-                    }
-
-                    Text("ID: ${mic.id}")
-                    Text("Description: ${mic.description ?: "N/A"}")
-                    Text("Location: ${mic.locationLabel ?: "N/A"}")
-                    Text("Directionality: ${mic.directionalityLabel ?: "N/A"}")
-                    Text("Position: ${mic.position ?: "N/A"}")
-                    Text("Orientation: ${mic.orientation ?: "N/A"}")
-
-                    if (ui.showAdvancedInternals) {
-                        Text("Raw address: ${mic.rawAddress ?: "N/A"}")
-                        Text("Raw channel counts: ${mic.rawChannelCounts ?: "N/A"}")
-                        Text("Raw sample rates: ${mic.rawSampleRates ?: "N/A"}")
-                        Text("Raw encodings: ${mic.rawEncodings ?: "N/A"}")
-                    }
-                }
-            }
-        }
-
-        ui.micTestResult?.let {
-            Text("Test result: $it")
-        }
-
-        Text("Test history", fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text("Historique des tests", fontWeight = FontWeight.Bold)
         if (ui.testHistory.isEmpty()) {
-            Text("No tests yet")
+            Text("Aucun test pour le moment")
         } else {
             ui.testHistory.forEach { entry ->
                 Text(
-                    "${entry.timestampIso} | ${entry.micLabel} | ${entry.durationSec}s | RMS ${"%.1f".format(entry.rmsDb)} | Peak ${"%.1f".format(entry.peakDb)}"
+                    "${entry.timestampIso} | ${entry.micLabel} | ${entry.durationSec}s | RMS ${"%.1f".format(entry.rmsDb)} | Peak ${"%.1f".format(entry.peakDb)}",
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
         }
 
         ui.lastDiagnosticReportPath?.let {
-            Text("Last diagnostic report: $it", style = MaterialTheme.typography.bodySmall)
+            Spacer(modifier = Modifier.height(6.dp))
+            Text("Dernier rapport: $it", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun PlaceholderScreen(
+    title: String,
+    subtitle: String,
+    navController: NavHostController
+) {
+    ScreenScaffold(title = title, onBack = { navController.popBackStack() }) {
+        Text(subtitle, style = MaterialTheme.typography.bodyLarge)
+    }
+}
+
+@Composable
+private fun ScreenScaffold(
+    title: String,
+    onBack: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedButton(onClick = onBack) {
+                Text("Retour")
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         }
 
-        Text(
-            "Next options planned: FLAC format, manual gain, auto fade, silence threshold.",
-            style = MaterialTheme.typography.bodySmall
-        )
+        Spacer(modifier = Modifier.height(12.dp))
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0x10FFFFFF))
+                .padding(14.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            content()
+        }
     }
 }
 
