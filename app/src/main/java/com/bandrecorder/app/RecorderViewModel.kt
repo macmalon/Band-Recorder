@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.ContentValues
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.media.MicrophoneInfo
 import android.os.Environment
 import android.provider.MediaStore
 import androidx.lifecycle.AndroidViewModel
@@ -18,13 +19,23 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 data class MicrophoneOption(
     val id: Int,
-    val label: String
+    val displayName: String,
+    val typeCode: Int,
+    val typeLabel: String,
+    val recommended: Boolean,
+    val warning: String?,
+    val description: String?,
+    val locationLabel: String?,
+    val directionalityLabel: String?,
+    val position: String?,
+    val orientation: String?
 )
 
 data class RecorderUiState(
@@ -44,6 +55,10 @@ data class RecorderUiState(
     val storageLocation: StorageLocation = StorageLocation.DOWNLOADS,
     val microphones: List<MicrophoneOption> = emptyList(),
     val selectedMicId: Int? = null,
+    val effectiveMicLabel: String? = null,
+    val effectiveMicWarning: String? = null,
+    val effectiveMicRecommended: Boolean = true,
+    val isAutoMicMode: Boolean = true,
     val micTestResult: String? = null
 )
 
@@ -94,31 +109,68 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             .getDevices(AudioManager.GET_DEVICES_INPUTS)
             .filter { it.isSource }
 
-        val options = devices.map { d ->
-            val name = d.productName?.toString()?.takeIf { it.isNotBlank() } ?: "Mic"
-            val type = deviceTypeLabel(d.type)
-            MicrophoneOption(d.id, "$name ($type)")
-        }.sortedBy { it.label }
+        val microInfoById = loadMicrophoneInfoById(audioManager)
 
-        val selected = _uiState.value.selectedMicId
-        val selectedStillExists = selected != null && options.any { it.id == selected }
-        val newSelected = if (selectedStillExists) selected else null
-        if (selected != newSelected) {
+        val raw = devices.map { device ->
+            val info = microInfoById[device.id]
+            val baseName = device.productName?.toString()?.takeIf { it.isNotBlank() } ?: "Microphone"
+            MicrophoneOption(
+                id = device.id,
+                displayName = baseName,
+                typeCode = device.type,
+                typeLabel = MicrophonePolicy.typeLabel(device.type),
+                recommended = MicrophonePolicy.isRecommended(device.type),
+                warning = MicrophonePolicy.warningForType(device.type),
+                description = info?.description?.takeIf { it.isNotBlank() },
+                locationLabel = info?.let { microphoneLocationLabel(it.location) },
+                directionalityLabel = info?.let { microphoneDirectionalityLabel(it.directionality) },
+                position = info?.position?.let { formatCoordinate(it.x, it.y, it.z) },
+                orientation = info?.orientation?.let { formatCoordinate(it.x, it.y, it.z) }
+            )
+        }
+
+        val deduped = dedupeDisplayNames(raw).sortedBy { it.displayName.lowercase(Locale.ROOT) }
+
+        val previousSelected = _uiState.value.selectedMicId
+        val selectedStillExists = previousSelected != null && deduped.any { it.id == previousSelected }
+        val selectionMissing = previousSelected != null && !selectedStillExists
+        val newSelected = if (selectedStillExists) previousSelected else null
+
+        if (previousSelected != newSelected) {
             settingsStore.setSelectedMicId(newSelected)
         }
 
+        val effective = effectiveMic(deduped, newSelected)
         _uiState.update {
             it.copy(
-                microphones = options,
+                microphones = deduped,
                 selectedMicId = newSelected,
-                status = if (options.isEmpty()) "No microphone input detected" else it.status
+                isAutoMicMode = newSelected == null,
+                effectiveMicLabel = effective?.displayName,
+                effectiveMicWarning = effective?.warning,
+                effectiveMicRecommended = effective?.recommended ?: true,
+                status = when {
+                    deduped.isEmpty() -> "No microphone input detected"
+                    selectionMissing -> "Selected mic unavailable, switched to Auto"
+                    else -> it.status
+                }
             )
         }
     }
 
     fun selectMicrophone(micId: Int?) {
         settingsStore.setSelectedMicId(micId)
-        _uiState.update { it.copy(selectedMicId = micId) }
+        val effective = effectiveMic(_uiState.value.microphones, micId)
+        _uiState.update {
+            it.copy(
+                selectedMicId = micId,
+                isAutoMicMode = micId == null,
+                effectiveMicLabel = effective?.displayName,
+                effectiveMicWarning = effective?.warning,
+                effectiveMicRecommended = effective?.recommended ?: true,
+                status = if (micId == null) "Microphone: Auto" else "Microphone selected"
+            )
+        }
     }
 
     fun testSelectedMicrophone() {
@@ -133,9 +185,10 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
 
+            val preferredDevice = resolveEffectiveMicDevice()
             val result: CalibrationResult? = engine.runCalibration(
                 durationSeconds = 5,
-                preferredDevice = resolveSelectedMic(),
+                preferredDevice = preferredDevice,
                 onProgress = { progress: CalibrationProgress ->
                     _uiState.update { state ->
                         state.copy(
@@ -152,7 +205,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(
                         isTestingMic = false,
                         status = "Mic test failed",
-                        micTestResult = "Echec du test micro"
+                        micTestResult = "Mic test failed"
                     )
                 } else {
                     it.copy(
@@ -179,7 +232,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
             val result: CalibrationResult? = engine.runCalibration(
                 durationSeconds = 30,
-                preferredDevice = resolveSelectedMic(),
+                preferredDevice = resolveEffectiveMicDevice(),
                 onProgress = { progress: CalibrationProgress ->
                     _uiState.update { state ->
                         state.copy(
@@ -215,7 +268,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     fun startRecording() {
         if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic) return
 
-        val selectedMic = resolveSelectedMic()
+        val selectedMic = resolveEffectiveMicDevice()
         when (_uiState.value.storageLocation) {
             StorageLocation.DOWNLOADS -> {
                 val (displayName, output) = buildTempOutputFile()
@@ -262,10 +315,59 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun resolveSelectedMic(): AudioDeviceInfo? {
-        val selectedId = _uiState.value.selectedMicId ?: return null
+    private fun resolveEffectiveMicDevice(): AudioDeviceInfo? {
         val audioManager = getApplication<Application>().getSystemService(AudioManager::class.java)
-        return audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).firstOrNull { it.id == selectedId }
+        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).filter { it.isSource }
+        val options = _uiState.value.microphones
+        val effectiveOption = effectiveMic(options, _uiState.value.selectedMicId) ?: return null
+        return devices.firstOrNull { it.id == effectiveOption.id }
+    }
+
+    private fun effectiveMic(options: List<MicrophoneOption>, selectedId: Int?): MicrophoneOption? {
+        if (selectedId != null) {
+            return options.firstOrNull { it.id == selectedId }
+        }
+        return MicrophonePolicy.chooseAutoMicrophone(options)
+    }
+
+    private fun dedupeDisplayNames(options: List<MicrophoneOption>): List<MicrophoneOption> {
+        val counts = options.groupingBy { it.displayName }.eachCount()
+        return options.map {
+            if ((counts[it.displayName] ?: 0) > 1) {
+                it.copy(displayName = "${it.displayName} #${it.id}")
+            } else {
+                it
+            }
+        }
+    }
+
+    private fun loadMicrophoneInfoById(audioManager: AudioManager): Map<Int, MicrophoneInfo> {
+        val infos = runCatching { audioManager.microphones }
+            .recoverCatching {
+                if (it is IOException) emptyList() else throw it
+            }
+            .getOrDefault(emptyList())
+        return infos.associateBy { it.id }
+    }
+
+    private fun microphoneLocationLabel(location: Int): String = when (location) {
+        MicrophoneInfo.LOCATION_MAINBODY -> "Main body"
+        MicrophoneInfo.LOCATION_MAINBODY_MOVABLE -> "Main body movable"
+        MicrophoneInfo.LOCATION_PERIPHERAL -> "Peripheral"
+        else -> "Unknown"
+    }
+
+    private fun microphoneDirectionalityLabel(directionality: Int): String = when (directionality) {
+        MicrophoneInfo.DIRECTIONALITY_OMNI -> "Omni"
+        MicrophoneInfo.DIRECTIONALITY_BI_DIRECTIONAL -> "Bi-directional"
+        MicrophoneInfo.DIRECTIONALITY_CARDIOID -> "Cardioid"
+        MicrophoneInfo.DIRECTIONALITY_HYPER_CARDIOID -> "Hyper-cardioid"
+        MicrophoneInfo.DIRECTIONALITY_SUPER_CARDIOID -> "Super-cardioid"
+        else -> "Unknown"
+    }
+
+    private fun formatCoordinate(x: Float, y: Float, z: Float): String {
+        return "x=${"%.2f".format(Locale.US, x)}, y=${"%.2f".format(Locale.US, y)}, z=${"%.2f".format(Locale.US, z)}"
     }
 
     private fun buildTempOutputFile(): Pair<String, File> {
@@ -335,18 +437,6 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
         pendingTempFile = null
         pendingDisplayName = null
-    }
-
-    private fun deviceTypeLabel(type: Int): String = when (type) {
-        AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Built-in"
-        AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth SCO"
-        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "Bluetooth A2DP"
-        AudioDeviceInfo.TYPE_BLE_HEADSET -> "BLE Headset"
-        AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired headset"
-        AudioDeviceInfo.TYPE_USB_DEVICE -> "USB device"
-        AudioDeviceInfo.TYPE_USB_HEADSET -> "USB headset"
-        AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB accessory"
-        else -> "Type $type"
     }
 
     override fun onCleared() {

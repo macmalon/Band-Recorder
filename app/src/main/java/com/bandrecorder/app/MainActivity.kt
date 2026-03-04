@@ -144,8 +144,23 @@ private fun RecordTab(
 
     Text("Status: ${ui.status}")
 
+    val effectiveMicLine = if (ui.isAutoMicMode) {
+        "Microphone: Auto -> ${ui.effectiveMicLabel ?: "Unknown"}"
+    } else {
+        "Microphone: ${ui.effectiveMicLabel ?: "Unknown"}"
+    }
+    Text(effectiveMicLine)
+
+    if (!ui.effectiveMicRecommended && !ui.effectiveMicWarning.isNullOrBlank()) {
+        Text(
+            "Warning: ${ui.effectiveMicWarning}",
+            color = Color(0xFFD32F2F),
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+
     if (ui.isCalibrating) {
-        Text("Calibration en cours: ${ui.calibrationProgress}%")
+        Text("Calibration in progress: ${ui.calibrationProgress}%")
         LinearProgressIndicator(
             progress = { ui.calibrationProgress / 100f },
             modifier = Modifier.fillMaxWidth()
@@ -154,7 +169,7 @@ private fun RecordTab(
 
     ui.recommendedGainDb?.let {
         val signed = if (it >= 0f) "+${"%.1f".format(it)}" else "${"%.1f".format(it)}"
-        Text("Gain recommande: $signed dB", fontWeight = FontWeight.SemiBold)
+        Text("Recommended gain: $signed dB", fontWeight = FontWeight.SemiBold)
     }
 
     Text("RMS: ${"%.1f".format(ui.rmsDb)} dBFS")
@@ -169,13 +184,13 @@ private fun RecordTab(
     )
 
     if (ui.isRecording) {
-        Text("Duree: ${formatTimer(ui.elapsedMs)}", fontWeight = FontWeight.SemiBold)
+        Text("Duration: ${formatTimer(ui.elapsedMs)}", fontWeight = FontWeight.SemiBold)
     }
 
     if (saturationAlert) {
-        Text("Alerte: saturation possible", color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold)
+        Text("Alert: clipping risk", color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold)
     } else if (lowLevelAlert && ui.isRecording) {
-        Text("Alerte: niveau trop faible", color = Color(0xFFFF9800), fontWeight = FontWeight.Bold)
+        Text("Alert: level too low", color = Color(0xFFFF9800), fontWeight = FontWeight.Bold)
     }
 
     if (ui.isRecording) {
@@ -184,7 +199,7 @@ private fun RecordTab(
         }
     } else {
         Button(onClick = onRequestCalibrate, enabled = !ui.isCalibrating && !ui.isTestingMic) {
-            Text("Calibrer 30s")
+            Text("Calibrate 30s")
         }
 
         Button(onClick = onRequestStart, enabled = !ui.isCalibrating && !ui.isTestingMic) {
@@ -193,7 +208,7 @@ private fun RecordTab(
     }
 
     ui.lastOutputPath?.let {
-        Text("Fichier: $it", style = MaterialTheme.typography.bodySmall)
+        Text("File: $it", style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -211,59 +226,83 @@ private fun OptionsTab(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Text("Emplacement d'enregistrement", fontWeight = FontWeight.Bold)
+        Text("Recording location", fontWeight = FontWeight.Bold)
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (ui.storageLocation == StorageLocation.DOWNLOADS) {
                 Button(onClick = { onStorageChange(StorageLocation.DOWNLOADS) }) { Text("Downloads") }
-                OutlinedButton(onClick = { onStorageChange(StorageLocation.APP_PRIVATE) }) { Text("App privée") }
+                OutlinedButton(onClick = { onStorageChange(StorageLocation.APP_PRIVATE) }) { Text("App private") }
             } else {
                 OutlinedButton(onClick = { onStorageChange(StorageLocation.DOWNLOADS) }) { Text("Downloads") }
-                Button(onClick = { onStorageChange(StorageLocation.APP_PRIVATE) }) { Text("App privée") }
+                Button(onClick = { onStorageChange(StorageLocation.APP_PRIVATE) }) { Text("App private") }
             }
         }
 
         Text(
             if (ui.storageLocation == StorageLocation.DOWNLOADS)
-                "Par defaut: Downloads/Band Recorder"
+                "Default: Downloads/Band Recorder"
             else
-                "Par defaut: dossier privé de l'app"
+                "Default: app private folder"
         )
 
         Text("Microphones", fontWeight = FontWeight.Bold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onRefreshMics) { Text("Scanner") }
+            OutlinedButton(onClick = onRefreshMics) { Text("Scan") }
             Button(onClick = onTestMic, enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic) {
-                Text(if (ui.isTestingMic) "Test..." else "Tester 5s")
+                Text(if (ui.isTestingMic) "Testing..." else "Test 5s")
             }
         }
 
         OutlinedButton(onClick = { onSelectMic(null) }) {
-            Text(if (ui.selectedMicId == null) "Auto (selection active)" else "Auto")
+            val autoLabel = ui.effectiveMicLabel ?: "none"
+            Text(if (ui.selectedMicId == null) "Auto (active -> $autoLabel)" else "Auto")
         }
 
         if (ui.microphones.isEmpty()) {
-            Text("Aucun micro detecte")
+            Text("No microphone detected")
         } else {
             ui.microphones.forEach { mic ->
                 val selected = mic.id == ui.selectedMicId
-                if (selected) {
-                    Button(onClick = { onSelectMic(mic.id) }, modifier = Modifier.fillMaxWidth()) {
-                        Text("${mic.label} (selectionne)")
+                val badge = if (mic.recommended) "Recommended" else "Not recommended"
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (selected) {
+                            Button(onClick = { onSelectMic(mic.id) }) { Text("Selected") }
+                        } else {
+                            OutlinedButton(onClick = { onSelectMic(mic.id) }) { Text("Select") }
+                        }
+                        Text(mic.displayName, fontWeight = FontWeight.SemiBold)
                     }
-                } else {
-                    OutlinedButton(onClick = { onSelectMic(mic.id) }, modifier = Modifier.fillMaxWidth()) {
-                        Text(mic.label)
+
+                    Text("Type: ${mic.typeLabel} (${mic.typeCode}) - $badge")
+                    if (!mic.warning.isNullOrBlank()) {
+                        Text("Warning: ${mic.warning}", color = Color(0xFFD32F2F), style = MaterialTheme.typography.bodySmall)
                     }
+
+                    Text("ID: ${mic.id}")
+                    Text("Description: ${mic.description ?: "N/A"}")
+                    Text("Location: ${mic.locationLabel ?: "N/A"}")
+                    Text("Directionality: ${mic.directionalityLabel ?: "N/A"}")
+                    Text("Position: ${mic.position ?: "N/A"}")
+                    Text("Orientation: ${mic.orientation ?: "N/A"}")
                 }
             }
         }
 
         ui.micTestResult?.let {
-            Text("Resultat test: $it")
+            Text("Test result: $it")
         }
 
-        Text("Options a venir: format FLAC, gain manuel, fade auto, seuil silence", style = MaterialTheme.typography.bodySmall)
+        Text(
+            "Next options planned: FLAC format, manual gain, auto fade, silence threshold.",
+            style = MaterialTheme.typography.bodySmall
+        )
     }
 }
 
@@ -273,3 +312,4 @@ private fun formatTimer(ms: Long): String {
     val s = totalSec % 60
     return "%02d:%02d".format(m, s)
 }
+
