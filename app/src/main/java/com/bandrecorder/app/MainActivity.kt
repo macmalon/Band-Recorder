@@ -71,6 +71,7 @@ private enum class PendingAction {
     START_RECORDING,
     TEST_MIC,
     PROBE_STEREO,
+    AUTO_MIC_SETUP,
     RUN_GUIDED_STEREO_TEST,
     RUN_AB_TEST
 }
@@ -107,12 +108,19 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (!granted) return@rememberLauncherForActivityResult
+        if (!granted) {
+            if (pendingAction == PendingAction.AUTO_MIC_SETUP) {
+                vm.markAutoSetupPermissionDenied()
+            }
+            pendingAction = null
+            return@rememberLauncherForActivityResult
+        }
         when (pendingAction) {
             PendingAction.CALIBRATE -> vm.runCalibration()
             PendingAction.START_RECORDING -> vm.startRecording()
             PendingAction.TEST_MIC -> vm.testSelectedMicrophone()
             PendingAction.PROBE_STEREO -> vm.probeStereoCapability()
+            PendingAction.AUTO_MIC_SETUP -> vm.runAutoMicSetup()
             PendingAction.RUN_GUIDED_STEREO_TEST -> vm.runGuidedStereoTest()
             PendingAction.RUN_AB_TEST -> vm.runExternalABTest()
             null -> Unit
@@ -164,7 +172,8 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onToggleStereoSwap = vm::setStereoChannelsSwapped,
                 onRequestTestMic = { requestAudioPermission(PendingAction.TEST_MIC) },
                 onRequestProbeStereo = { requestAudioPermission(PendingAction.PROBE_STEREO) },
-                onOpenGuidedStereoTest = { navController.navigate(AppRoute.GuidedStereoTest.route) }
+                onOpenGuidedStereoTest = { navController.navigate(AppRoute.GuidedStereoTest.route) },
+                onRequestAutoMicSetup = { requestAudioPermission(PendingAction.AUTO_MIC_SETUP) }
             )
         }
         composable(AppRoute.GuidedStereoTest.route) {
@@ -447,112 +456,192 @@ private fun MicSettingsScreen(
     onToggleStereoSwap: (Boolean) -> Unit,
     onRequestTestMic: () -> Unit,
     onRequestProbeStereo: () -> Unit,
-    onOpenGuidedStereoTest: () -> Unit
+    onOpenGuidedStereoTest: () -> Unit,
+    onRequestAutoMicSetup: () -> Unit
 ) {
-    ScreenScaffold(title = "Réglages micro", onBack = onBack) {
-        Text("Microphones", fontWeight = FontWeight.Bold)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onRefreshMics) { Text("Scan") }
-            Button(onClick = onRequestTestMic, enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest && !ui.isRunningStereoGuidedTest) {
-                Text(if (ui.isTestingMic) "Test..." else "Test mic")
-            }
+    var advancedExpanded by remember { mutableStateOf(false) }
+    var autoSetupTriggered by remember { mutableStateOf(false) }
+    val verificationRunning = ui.isAutoMicScanRunning || ui.isAutoStereoProbeRunning
+    val busyAudioAction = ui.isRecording || ui.isCalibrating || ui.isTestingMic || ui.isRunningABTest || ui.isRunningStereoGuidedTest
+
+    LaunchedEffect(Unit) {
+        if (!autoSetupTriggered) {
+            autoSetupTriggered = true
+            onRequestAutoMicSetup()
+        }
+    }
+
+    val pageGradient = Brush.verticalGradient(
+        colors = listOf(
+            Color(0x338BCF2F),
+            Color(0x33FFF44F),
+            Color(0x33FF8C42)
+        )
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .background(pageGradient)
+            .padding(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Réglages micro", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            OutlinedButton(onClick = onBack) { Text("Retour") }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ui.availableTestDurationsSec.forEach { sec ->
-                if (sec == ui.selectedTestDurationSec) {
-                    Button(onClick = { onSetTestDuration(sec) }) { Text("${sec}s") }
-                } else {
-                    OutlinedButton(onClick = { onSetTestDuration(sec) }) { Text("${sec}s") }
+        Spacer(modifier = Modifier.height(12.dp))
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0x22FFFFFF))
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            val compatibilityText = when {
+                verificationRunning -> "Vérification automatique en cours..."
+                ui.stereoSupported -> "Capture stéréo compatible sur cet appareil."
+                else -> "Capture stéréo non confirmée."
+            }
+            Text(compatibilityText, fontWeight = FontWeight.Bold)
+            Text("Pour valider totalement la stéréo, lance le test stéréo guidé en utilisant ta voix.")
+
+            if (ui.guidedStereoPassed) {
+                Text("Téléphone totalement compatible stéréo.", fontWeight = FontWeight.SemiBold, color = Color(0xFF1B5E20))
+                Text(
+                    "Paramètres optimaux enregistrés automatiquement: stéréo ${if (ui.stereoModeRequested) "ON" else "OFF"}, " +
+                        "swap ${if (ui.stereoChannelsSwapped) "ON" else "OFF"}, micro ${ui.effectiveMicLabel ?: "Auto"}."
+                )
+            }
+
+            if (!ui.autoMicSetupMessage.isNullOrBlank()) {
+                Text(ui.autoMicSetupMessage, color = Color(0xFFB00020))
+                OutlinedButton(onClick = onRequestAutoMicSetup, enabled = !verificationRunning && !busyAudioAction) {
+                    Text("Réessayer")
                 }
             }
-        }
 
-        Spacer(modifier = Modifier.height(4.dp))
-        Text("Capture stéréo", fontWeight = FontWeight.Bold)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (ui.stereoModeRequested) {
-                Button(onClick = { onToggleStereoRequested(true) }) { Text("Stéréo ON") }
-                OutlinedButton(onClick = { onToggleStereoRequested(false) }) { Text("Stéréo OFF") }
-            } else {
-                OutlinedButton(onClick = { onToggleStereoRequested(true) }) { Text("Stéréo ON") }
-                Button(onClick = { onToggleStereoRequested(false) }) { Text("Stéréo OFF") }
+            Button(
+                onClick = onOpenGuidedStereoTest,
+                enabled = !busyAudioAction,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Lancer test stéréo guidé")
             }
-        }
-        OutlinedButton(
-            onClick = onRequestProbeStereo,
-            enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest && !ui.isRunningStereoGuidedTest,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Probe stéréo")
-        }
-        Button(
-            onClick = onOpenGuidedStereoTest,
-            enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Ouvrir test stéréo guidé")
-        }
-        Text("Résultat probe: ${ui.stereoProbeMessage}")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (ui.stereoChannelsSwapped) {
-                Button(onClick = { onToggleStereoSwap(true) }) { Text("Swap L/R ON") }
-                OutlinedButton(onClick = { onToggleStereoSwap(false) }) { Text("Swap L/R OFF") }
-            } else {
-                OutlinedButton(onClick = { onToggleStereoSwap(true) }) { Text("Swap L/R ON") }
-                Button(onClick = { onToggleStereoSwap(false) }) { Text("Swap L/R OFF") }
+
+            OutlinedButton(
+                onClick = { advancedExpanded = !advancedExpanded },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (advancedExpanded) "Masquer Avancé" else "Afficher Avancé")
             }
-        }
-        Text("Source input: ${ui.inputSourceLabel}", style = MaterialTheme.typography.bodySmall)
-        Text("Route active: ${ui.inputRoutedDevice}", style = MaterialTheme.typography.bodySmall)
-        Text("Traitements: ${ui.inputProcessingSummary}", style = MaterialTheme.typography.bodySmall)
-        ui.stereoGuidedTestResult?.let {
-            Text(it, style = MaterialTheme.typography.bodySmall)
-        }
 
-        Spacer(modifier = Modifier.height(4.dp))
-        OutlinedButton(onClick = { onSelectMic(null) }) {
-            val autoLabel = ui.effectiveMicLabel ?: "none"
-            Text(if (ui.selectedMicId == null) "Auto (actif -> $autoLabel)" else "Auto")
-        }
+            if (advancedExpanded) {
+                Text("Avancé", fontWeight = FontWeight.Bold)
 
-        if (ui.microphones.isEmpty()) {
-            Text("Aucun microphone détecté")
-        } else {
-            ui.microphones.forEach { mic ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 6.dp),
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
-                ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        val selected = mic.id == ui.selectedMicId
-                        if (selected) {
-                            Button(onClick = { onSelectMic(mic.id) }) { Text("Sélectionné") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (ui.stereoModeRequested) {
+                        Button(onClick = { onToggleStereoRequested(true) }) { Text("Stéréo ON") }
+                        OutlinedButton(onClick = { onToggleStereoRequested(false) }) { Text("Stéréo OFF") }
+                    } else {
+                        OutlinedButton(onClick = { onToggleStereoRequested(true) }) { Text("Stéréo ON") }
+                        Button(onClick = { onToggleStereoRequested(false) }) { Text("Stéréo OFF") }
+                    }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (ui.stereoChannelsSwapped) {
+                        Button(onClick = { onToggleStereoSwap(true) }) { Text("Swap L/R ON") }
+                        OutlinedButton(onClick = { onToggleStereoSwap(false) }) { Text("Swap L/R OFF") }
+                    } else {
+                        OutlinedButton(onClick = { onToggleStereoSwap(true) }) { Text("Swap L/R ON") }
+                        Button(onClick = { onToggleStereoSwap(false) }) { Text("Swap L/R OFF") }
+                    }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onRefreshMics, enabled = !busyAudioAction) { Text("Scan") }
+                    Button(onClick = onRequestTestMic, enabled = !busyAudioAction) {
+                        Text(if (ui.isTestingMic) "Test..." else "Test mic")
+                    }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ui.availableTestDurationsSec.forEach { sec ->
+                        if (sec == ui.selectedTestDurationSec) {
+                            Button(onClick = { onSetTestDuration(sec) }) { Text("${sec}s") }
                         } else {
-                            OutlinedButton(onClick = { onSelectMic(mic.id) }) { Text("Choisir") }
+                            OutlinedButton(onClick = { onSetTestDuration(sec) }) { Text("${sec}s") }
                         }
-                        Text(mic.displayName, fontWeight = FontWeight.SemiBold)
-                    }
-                    Text("Type: ${mic.typeLabel} (${mic.typeCode})")
-                    if (!mic.warning.isNullOrBlank()) {
-                        Text("Warning: ${mic.warning}", color = Color(0xFFD32F2F), style = MaterialTheme.typography.bodySmall)
-                    }
-                    if (ui.showAdvancedInternals) {
-                        Text("ID: ${mic.id}")
-                        Text("Description: ${mic.description ?: "N/A"}")
-                        Text("Location: ${mic.locationLabel ?: "N/A"}")
-                        Text("Directionality: ${mic.directionalityLabel ?: "N/A"}")
-                        Text("Raw sample rates: ${mic.rawSampleRates ?: "N/A"}")
                     }
                 }
-            }
-        }
 
-        ui.micTestResult?.let {
-            Spacer(modifier = Modifier.height(6.dp))
-            Text("Résultat test: $it")
+                OutlinedButton(
+                    onClick = onRequestProbeStereo,
+                    enabled = !busyAudioAction,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Probe stéréo")
+                }
+
+                Text("Résultat probe: ${ui.stereoProbeMessage}", style = MaterialTheme.typography.bodySmall)
+                Text("Source input: ${ui.inputSourceLabel}", style = MaterialTheme.typography.bodySmall)
+                Text("Route active: ${ui.inputRoutedDevice}", style = MaterialTheme.typography.bodySmall)
+                Text("Traitements: ${ui.inputProcessingSummary}", style = MaterialTheme.typography.bodySmall)
+
+                OutlinedButton(onClick = { onSelectMic(null) }) {
+                    val autoLabel = ui.effectiveMicLabel ?: "none"
+                    Text(if (ui.selectedMicId == null) "Auto (actif -> $autoLabel)" else "Auto")
+                }
+
+                if (ui.microphones.isEmpty()) {
+                    Text("Aucun microphone détecté")
+                } else {
+                    ui.microphones.forEach { mic ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                val selected = mic.id == ui.selectedMicId
+                                if (selected) {
+                                    Button(onClick = { onSelectMic(mic.id) }) { Text("Sélectionné") }
+                                } else {
+                                    OutlinedButton(onClick = { onSelectMic(mic.id) }) { Text("Choisir") }
+                                }
+                                Text(mic.displayName, fontWeight = FontWeight.SemiBold)
+                            }
+                            Text("Type: ${mic.typeLabel} (${mic.typeCode})")
+                            Text("ID: ${mic.id}")
+                            Text("Description: ${mic.description ?: "N/A"}")
+                            Text("Location: ${mic.locationLabel ?: "N/A"}")
+                            Text("Directionality: ${mic.directionalityLabel ?: "N/A"}")
+                            Text("Raw channels: ${mic.rawChannelCounts ?: "N/A"}")
+                            Text("Raw sample rates: ${mic.rawSampleRates ?: "N/A"}")
+                            if (!mic.warning.isNullOrBlank()) {
+                                Text("Warning: ${mic.warning}", color = Color(0xFFD32F2F), style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
+
+                ui.micTestResult?.let {
+                    Text("Résultat test: $it", style = MaterialTheme.typography.bodySmall)
+                }
+                ui.stereoGuidedTestResult?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall)
+                }
+            }
         }
     }
 }

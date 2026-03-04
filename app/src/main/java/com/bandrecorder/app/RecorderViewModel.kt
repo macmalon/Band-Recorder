@@ -99,11 +99,15 @@ data class RecorderUiState(
     val lastDiagnosticReportPath: String? = null,
     val stereoModeRequested: Boolean = false,
     val stereoChannelsSwapped: Boolean = false,
+    val isAutoMicScanRunning: Boolean = false,
+    val isAutoStereoProbeRunning: Boolean = false,
+    val autoMicSetupMessage: String? = null,
     val stereoProbeDone: Boolean = false,
     val stereoSupported: Boolean = false,
     val stereoActualChannels: Int = 1,
     val stereoProbeMessage: String = "Stereo not tested yet",
     val stereoGuidedTestResult: String? = null,
+    val guidedStereoPassed: Boolean = false,
     val guidedStereoStep: GuidedStereoStep = GuidedStereoStep.IDLE,
     val inputSourceLabel: String = "Unknown",
     val inputPreferredDeviceSet: Boolean = false,
@@ -198,33 +202,89 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.update { it.copy(stereoChannelsSwapped = enabled) }
     }
 
+    fun markAutoSetupPermissionDenied() {
+        _uiState.update {
+            it.copy(
+                isAutoMicScanRunning = false,
+                isAutoStereoProbeRunning = false,
+                autoMicSetupMessage = "Impossible de vérifier maintenant: permission micro manquante."
+            )
+        }
+    }
+
+    fun retryAutoMicSetup() {
+        runAutoMicSetup()
+    }
+
+    fun runAutoMicSetup() {
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest || _uiState.value.isRunningStereoGuidedTest) {
+            _uiState.update {
+                it.copy(autoMicSetupMessage = "Impossible de vérifier maintenant: action audio déjà en cours.")
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isAutoMicScanRunning = true,
+                    isAutoStereoProbeRunning = false,
+                    autoMicSetupMessage = "Vérification automatique des micros en cours..."
+                )
+            }
+
+            refreshMicrophones()
+
+            _uiState.update {
+                it.copy(
+                    isAutoMicScanRunning = false,
+                    isAutoStereoProbeRunning = true,
+                    autoMicSetupMessage = "Vérification de la compatibilité stéréo en cours..."
+                )
+            }
+
+            runStereoProbeInternal()
+
+            _uiState.update {
+                it.copy(
+                    isAutoStereoProbeRunning = false,
+                    autoMicSetupMessage = null
+                )
+            }
+        }
+    }
+
     fun probeStereoCapability() {
         if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest || _uiState.value.isRunningStereoGuidedTest) return
 
         viewModelScope.launch {
-            _uiState.update { it.copy(status = "Probing stereo capability...") }
-            val probe: StereoProbeResult = engine.probeStereoCapability(preferredDevice = resolveEffectiveMicDevice())
-            _uiState.update {
-                val diag = probe.diagnostics
-                it.copy(
-                    stereoProbeDone = true,
-                    stereoSupported = probe.supported,
-                    stereoActualChannels = probe.actualChannelCount,
-                    stereoProbeMessage = probe.message,
-                    status = if (probe.supported) "Stereo supported" else "Stereo not supported",
-                    inputSourceLabel = diag?.sourceLabel ?: it.inputSourceLabel,
-                    inputPreferredDeviceSet = diag?.preferredDeviceSet ?: it.inputPreferredDeviceSet,
-                    inputRoutedDevice = diag?.let { d ->
-                        val type = d.routedDeviceTypeLabel ?: "type?"
-                        val id = d.routedDeviceId?.toString() ?: "unknown"
-                        val addr = d.routedDeviceAddress ?: "n/a"
-                        "$type#$id ($addr)"
-                    } ?: it.inputRoutedDevice,
-                    inputProcessingSummary = diag?.let { d ->
-                        "AGC=${d.agcEnabled ?: "n/a"} NS=${d.nsEnabled ?: "n/a"} AEC=${d.aecEnabled ?: "n/a"}"
-                    } ?: it.inputProcessingSummary
-                )
-            }
+            runStereoProbeInternal()
+        }
+    }
+
+    private suspend fun runStereoProbeInternal() {
+        _uiState.update { it.copy(status = "Probing stereo capability...") }
+        val probe: StereoProbeResult = engine.probeStereoCapability(preferredDevice = resolveEffectiveMicDevice())
+        _uiState.update {
+            val diag = probe.diagnostics
+            it.copy(
+                stereoProbeDone = true,
+                stereoSupported = probe.supported,
+                stereoActualChannels = probe.actualChannelCount,
+                stereoProbeMessage = probe.message,
+                status = if (probe.supported) "Stereo supported" else "Stereo not supported",
+                inputSourceLabel = diag?.sourceLabel ?: it.inputSourceLabel,
+                inputPreferredDeviceSet = diag?.preferredDeviceSet ?: it.inputPreferredDeviceSet,
+                inputRoutedDevice = diag?.let { d ->
+                    val type = d.routedDeviceTypeLabel ?: "type?"
+                    val id = d.routedDeviceId?.toString() ?: "unknown"
+                    val addr = d.routedDeviceAddress ?: "n/a"
+                    "$type#$id ($addr)"
+                } ?: it.inputRoutedDevice,
+                inputProcessingSummary = diag?.let { d ->
+                    "AGC=${d.agcEnabled ?: "n/a"} NS=${d.nsEnabled ?: "n/a"} AEC=${d.aecEnabled ?: "n/a"}"
+                } ?: it.inputProcessingSummary
+            )
         }
     }
 
@@ -237,6 +297,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 it.copy(
                     isRunningStereoGuidedTest = true,
                     stereoGuidedTestResult = null,
+                    guidedStereoPassed = false,
                     guidedStereoStep = GuidedStereoStep.PREP_LEFT,
                     status = "Guided stereo test: prepare LEFT side (2s)"
                 )
@@ -260,6 +321,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(
                         isRunningStereoGuidedTest = false,
                         stereoGuidedTestResult = "Guided stereo test failed: stereo capture route unavailable.",
+                        guidedStereoPassed = false,
                         guidedStereoStep = GuidedStereoStep.DONE,
                         status = "Guided stereo test failed"
                     )
@@ -322,6 +384,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 it.copy(
                     isRunningStereoGuidedTest = false,
                     stereoGuidedTestResult = resultText,
+                    guidedStereoPassed = pass,
                     stereoProbeDone = true,
                     stereoSupported = pass,
                     stereoActualChannels = channelCount,
