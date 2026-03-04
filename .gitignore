@@ -1,0 +1,31 @@
+# Android / Gradle
+.gradle/
+**/build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / temp
+*.log
+*.tmp
+
+# Office lock/temp files
+~$*.docx
+~WRL*.tmp
+
+# Keystore / secrets
+*.jks
+*.keystore
+*.pem
+*.key
+
+# Optional: huge local captures/exports
+recordings/
+exports/
