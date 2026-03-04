@@ -459,12 +459,13 @@ private fun MicSettingsScreen(
                 OutlinedButton(onClick = { onToggleStereoRequested(true) }) { Text("Stéréo ON") }
                 Button(onClick = { onToggleStereoRequested(false) }) { Text("Stéréo OFF") }
             }
-            OutlinedButton(
-                onClick = onRequestProbeStereo,
-                enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest
-            ) {
-                Text("Probe stéréo")
-            }
+        }
+        OutlinedButton(
+            onClick = onRequestProbeStereo,
+            enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Probe stéréo")
         }
         Text("Résultat probe: ${ui.stereoProbeMessage}")
 
