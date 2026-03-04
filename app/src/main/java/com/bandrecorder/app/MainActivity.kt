@@ -271,14 +271,17 @@ private fun HomeScreen(
 
             HorizontalPager(
                 state = pagerState,
-                contentPadding = PaddingValues(horizontal = 48.dp),
+                contentPadding = PaddingValues(horizontal = 78.dp),
+                pageSpacing = 14.dp,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(230.dp)
+                    .height(210.dp)
             ) { page ->
-                val pageOffset = ((pagerState.currentPage - page) + pagerState.currentPageOffsetFraction).absoluteValue
-                val targetScale = if (pageOffset < 0.5f) 1f else 0.82f
-                val targetAlpha = if (pageOffset < 0.5f) 1f else 0.68f
+                val pageOffset = ((pagerState.currentPage - page) + pagerState.currentPageOffsetFraction)
+                    .absoluteValue
+                    .coerceIn(0f, 1f)
+                val targetScale = 1f - (0.30f * pageOffset)
+                val targetAlpha = 1f - (0.40f * pageOffset)
                 val scale by animateFloatAsState(targetValue = targetScale, label = "cardScale")
                 val alpha by animateFloatAsState(targetValue = targetAlpha, label = "cardAlpha")
 
@@ -346,16 +349,21 @@ private fun MainCarouselCard(
     enabled: Boolean,
     onClick: () -> Unit
 ) {
+    val titleSize = if (title.length > 6) 28.sp else 34.sp
+    val cardShape = RoundedCornerShape(30.dp)
+
     Card(
-        modifier = Modifier.size(210.dp),
+        modifier = Modifier
+            .width(210.dp)
+            .height(168.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFFE6006F)),
-        shape = CircleShape
+        shape = cardShape
     ) {
         Button(
             onClick = onClick,
             enabled = enabled,
             modifier = Modifier.fillMaxSize(),
-            shape = CircleShape,
+            shape = cardShape,
             colors = ButtonDefaults.buttonColors(
                 containerColor = Color.Transparent,
                 disabledContainerColor = Color.Transparent,
@@ -366,7 +374,7 @@ private fun MainCarouselCard(
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
                     text = title,
-                    fontSize = 36.sp,
+                    fontSize = titleSize,
                     fontWeight = FontWeight.ExtraBold
                 )
                 Text(
