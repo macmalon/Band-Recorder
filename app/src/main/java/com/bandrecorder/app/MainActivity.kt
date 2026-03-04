@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -242,11 +243,11 @@ private fun HomeScreen(
 
         Column(
             modifier = Modifier
-                .align(Alignment.TopCenter)
+                .align(Alignment.Center)
+                .offset(y = (-122).dp)
                 .fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Spacer(modifier = Modifier.height(86.dp))
             Text(
                 text = formatTimer(ui.elapsedMs),
                 fontSize = 72.sp,
@@ -254,45 +255,48 @@ private fun HomeScreen(
                 color = Color.White,
                 textAlign = TextAlign.Center
             )
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = ui.status,
                 color = Color.White,
                 style = MaterialTheme.typography.bodyLarge
             )
-            Spacer(modifier = Modifier.height(24.dp))
-            Button(
-                onClick = onRecordToggle,
-                enabled = !isBusy || ui.isRecording,
-                modifier = Modifier
-                    .width(170.dp)
-                    .height(118.dp),
-                shape = RoundedCornerShape(26.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE6006F))
-            ) {
-                Text(
-                    text = if (ui.isRecording) "STOP" else "REC",
-                    fontSize = 36.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = Color.White
-                )
-            }
-            Spacer(modifier = Modifier.height(14.dp))
-            Button(
-                onClick = onOpenBalance,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(64.dp),
-                shape = RoundedCornerShape(22.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE6006F))
-            ) {
-                Text(
-                    text = "BALANCE",
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = Color.White
-                )
-            }
+        }
+
+        Button(
+            onClick = onRecordToggle,
+            enabled = !isBusy || ui.isRecording,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .width(170.dp)
+                .height(118.dp),
+            shape = RoundedCornerShape(26.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE6006F))
+        ) {
+            Text(
+                text = if (ui.isRecording) "STOP" else "REC",
+                fontSize = 36.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = Color.White
+            )
+        }
+
+        Button(
+            onClick = onOpenBalance,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 68.dp)
+                .fillMaxWidth()
+                .height(64.dp),
+            shape = RoundedCornerShape(22.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE6006F))
+        ) {
+            Text(
+                text = "BALANCE",
+                fontSize = 22.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = Color.White
+            )
         }
 
         Row(
