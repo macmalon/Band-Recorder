@@ -224,15 +224,31 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
             val leftOk = leftDominanceDb >= 1.5f
             val rightOk = rightDominanceDb >= 1.5f
+            val leftSwappedOk = leftDominanceDb <= -1.5f
+            val rightSwappedOk = rightDominanceDb <= -1.5f
             val centerOk = centerDiffDb <= 3.0f
-            val pass = leftOk && rightOk && centerOk
+            val normalOrientation = leftOk && rightOk
+            val swappedOrientation = leftSwappedOk && rightSwappedOk
+            val pass = (normalOrientation || swappedOrientation) && centerOk
 
             val channelCount = minOf(left.actualChannelCount, right.actualChannelCount, center.actualChannelCount)
+            val orientationLabel = when {
+                normalOrientation -> "normal"
+                swappedOrientation -> "swapped"
+                else -> "inconsistent"
+            }
             val resultText = buildString {
-                appendLine(if (pass) "Guided stereo test: PASS" else "Guided stereo test: FAIL")
+                val verdict = if (pass) {
+                    if (swappedOrientation) "Guided stereo test: PASS (channels swapped)"
+                    else "Guided stereo test: PASS"
+                } else {
+                    "Guided stereo test: FAIL"
+                }
+                appendLine(verdict)
                 appendLine("LEFT step: L-R = ${"%.1f".format(leftDominanceDb)} dB ${if (leftOk) "OK" else "LOW"}")
                 appendLine("RIGHT step: R-L = ${"%.1f".format(rightDominanceDb)} dB ${if (rightOk) "OK" else "LOW"}")
                 appendLine("CENTER step: |L-R| = ${"%.1f".format(centerDiffDb)} dB ${if (centerOk) "OK" else "HIGH"}")
+                appendLine("Orientation: $orientationLabel")
                 appendLine("Channels seen: $channelCount")
                 append("Tip: make louder, closer, and side-specific sounds during LEFT/RIGHT steps.")
             }
@@ -244,7 +260,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     stereoProbeDone = true,
                     stereoSupported = pass,
                     stereoActualChannels = channelCount,
-                    stereoProbeMessage = if (pass) "Guided test confirmed stereo separation" else "Guided test did not confirm stereo separation",
+                    stereoProbeMessage = when {
+                        pass && swappedOrientation -> "Guided test confirmed stereo separation (channels swapped)"
+                        pass -> "Guided test confirmed stereo separation"
+                        else -> "Guided test did not confirm stereo separation"
+                    },
                     status = if (pass) "Guided stereo test passed" else "Guided stereo test failed"
                 )
             }
@@ -254,7 +274,13 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     event = "guided_stereo_test",
                     entry = null,
                     recordingPath = _uiState.value.lastOutputPath,
-                    extraLines = buildGuidedStereoDiagnosticLines(left, right, center, pass)
+                    extraLines = buildGuidedStereoDiagnosticLines(
+                        left = left,
+                        right = right,
+                        center = center,
+                        pass = pass,
+                        orientation = orientationLabel
+                    )
                 )
             }
         }
@@ -264,13 +290,15 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         left: StereoWindowMeasurement,
         right: StereoWindowMeasurement,
         center: StereoWindowMeasurement,
-        pass: Boolean
+        pass: Boolean,
+        orientation: String
     ): List<String> {
         val leftDominanceDb = left.leftRmsDb - left.rightRmsDb
         val rightDominanceDb = right.rightRmsDb - right.leftRmsDb
         val centerDiffDb = abs(center.leftRmsDb - center.rightRmsDb)
         return listOf(
             "guided_stereo.pass=$pass",
+            "guided_stereo.orientation=$orientation",
             "guided_stereo.left.left_rms=${left.leftRmsDb}",
             "guided_stereo.left.right_rms=${left.rightRmsDb}",
             "guided_stereo.left.delta_l_minus_r=$leftDominanceDb",
