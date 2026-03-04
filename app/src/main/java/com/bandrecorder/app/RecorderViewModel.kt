@@ -4,6 +4,7 @@ import android.app.Application
 import android.os.Environment
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.bandrecorder.core.audio.CalibrationProgress
 import com.bandrecorder.core.audio.CalibrationResult
 import com.bandrecorder.core.audio.WavRecorderEngine
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -67,8 +68,15 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
 
-            val result: CalibrationResult? = engine.runCalibration(durationSeconds = 30) { progress ->
-                _uiState.update { state -> state.copy(calibrationProgress = progress) }
+            val result: CalibrationResult? = engine.runCalibration(durationSeconds = 30) { progress: CalibrationProgress ->
+                _uiState.update { state ->
+                    state.copy(
+                        calibrationProgress = progress.progressPercent,
+                        rmsDb = progress.rmsDb,
+                        peakDb = progress.peakDb,
+                        headroomDb = -progress.peakDb
+                    )
+                }
             }
 
             _uiState.update {

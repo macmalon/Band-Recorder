@@ -27,6 +27,12 @@ data class CalibrationResult(
     val recommendedGainDb: Float
 )
 
+data class CalibrationProgress(
+    val progressPercent: Int,
+    val rmsDb: Float,
+    val peakDb: Float
+)
+
 data class RecordingStatus(
     val isRecording: Boolean = false,
     val rmsDb: Float = -90f,
@@ -52,7 +58,7 @@ class WavRecorderEngine {
     suspend fun runCalibration(
         durationSeconds: Int = 30,
         sampleRate: Int = 48_000,
-        onProgress: (Int) -> Unit
+        onProgress: (CalibrationProgress) -> Unit
     ): CalibrationResult? = withContext(Dispatchers.Default) {
         val channelMask = AudioFormat.CHANNEL_IN_MONO
         val encoding = AudioFormat.ENCODING_PCM_16BIT
@@ -81,7 +87,16 @@ class WavRecorderEngine {
                 }
                 totalSamples += read
                 val progress = ((totalSamples.toFloat() / targetSamples.toFloat()) * 100f).toInt().coerceIn(0, 100)
-                onProgress(progress)
+                val currentRms = sqrt((sumSquares / totalSamples.coerceAtLeast(1)).coerceAtLeast(1e-12))
+                val currentRmsDb = (20.0 * log10(currentRms.coerceAtLeast(1e-6))).toFloat()
+                val currentPeakDb = (20.0 * log10(peak.coerceAtLeast(1e-6))).toFloat()
+                onProgress(
+                    CalibrationProgress(
+                        progressPercent = progress,
+                        rmsDb = currentRmsDb,
+                        peakDb = currentPeakDb
+                    )
+                )
             }
         } finally {
             runCatching { record.stop() }
