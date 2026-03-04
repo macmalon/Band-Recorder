@@ -563,7 +563,7 @@ private fun GuidedStereoTestScreen(
     }
 
     LaunchedEffect(Unit) {
-        if (!ui.isRunningStereoGuidedTest && ui.guidedStereoStep == GuidedStereoStep.IDLE) {
+        if (!ui.isRunningStereoGuidedTest) {
             onRequestStart()
         }
     }
@@ -580,14 +580,14 @@ private fun GuidedStereoTestScreen(
                 isActive = ui.guidedStereoStep == GuidedStereoStep.PREP_LEFT || ui.guidedStereoStep == GuidedStereoStep.CAPTURE_LEFT
             )
             GuidedStepCard(
-                label = "DROITE",
-                modifier = Modifier.weight(1f),
-                isActive = ui.guidedStereoStep == GuidedStereoStep.PREP_RIGHT || ui.guidedStereoStep == GuidedStereoStep.CAPTURE_RIGHT
-            )
-            GuidedStepCard(
                 label = "CENTRE",
                 modifier = Modifier.weight(1f),
                 isActive = ui.guidedStereoStep == GuidedStereoStep.PREP_CENTER || ui.guidedStereoStep == GuidedStereoStep.CAPTURE_CENTER
+            )
+            GuidedStepCard(
+                label = "DROITE",
+                modifier = Modifier.weight(1f),
+                isActive = ui.guidedStereoStep == GuidedStereoStep.PREP_RIGHT || ui.guidedStereoStep == GuidedStereoStep.CAPTURE_RIGHT
             )
         }
         Text("Étape: ${ui.guidedStereoStep.name}", style = MaterialTheme.typography.bodyLarge)
