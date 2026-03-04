@@ -1,6 +1,8 @@
 package com.bandrecorder.app
 
 import android.Manifest
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -38,11 +40,14 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -74,6 +79,7 @@ private sealed class AppRoute(val route: String) {
     data object Home : AppRoute("home")
     data object Balance : AppRoute("balance")
     data object MicSettings : AppRoute("mic_settings")
+    data object GuidedStereoTest : AppRoute("guided_stereo_test")
     data object Player : AppRoute("player")
     data object Settings : AppRoute("settings")
     data object Link : AppRoute("link")
@@ -157,7 +163,14 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onToggleStereoRequested = vm::setStereoModeRequested,
                 onRequestTestMic = { requestAudioPermission(PendingAction.TEST_MIC) },
                 onRequestProbeStereo = { requestAudioPermission(PendingAction.PROBE_STEREO) },
-                onRequestGuidedStereoTest = { requestAudioPermission(PendingAction.RUN_GUIDED_STEREO_TEST) }
+                onOpenGuidedStereoTest = { navController.navigate(AppRoute.GuidedStereoTest.route) }
+            )
+        }
+        composable(AppRoute.GuidedStereoTest.route) {
+            GuidedStereoTestScreen(
+                ui = ui,
+                onBack = { navController.popBackStack() },
+                onRequestStart = { requestAudioPermission(PendingAction.RUN_GUIDED_STEREO_TEST) }
             )
         }
         composable(AppRoute.Settings.route) {
@@ -432,7 +445,7 @@ private fun MicSettingsScreen(
     onToggleStereoRequested: (Boolean) -> Unit,
     onRequestTestMic: () -> Unit,
     onRequestProbeStereo: () -> Unit,
-    onRequestGuidedStereoTest: () -> Unit
+    onOpenGuidedStereoTest: () -> Unit
 ) {
     ScreenScaffold(title = "Réglages micro", onBack = onBack) {
         Text("Microphones", fontWeight = FontWeight.Bold)
@@ -472,11 +485,11 @@ private fun MicSettingsScreen(
             Text("Probe stéréo")
         }
         Button(
-            onClick = onRequestGuidedStereoTest,
-            enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest && !ui.isRunningStereoGuidedTest,
+            onClick = onOpenGuidedStereoTest,
+            enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text(if (ui.isRunningStereoGuidedTest) "Test stéréo guidé en cours..." else "Test stéréo guidé (gauche/droite/centre)")
+            Text("Ouvrir test stéréo guidé")
         }
         Text("Résultat probe: ${ui.stereoProbeMessage}")
         Text("Source input: ${ui.inputSourceLabel}", style = MaterialTheme.typography.bodySmall)
@@ -529,6 +542,95 @@ private fun MicSettingsScreen(
         ui.micTestResult?.let {
             Spacer(modifier = Modifier.height(6.dp))
             Text("Résultat test: $it")
+        }
+    }
+}
+
+@Composable
+private fun GuidedStereoTestScreen(
+    ui: RecorderUiState,
+    onBack: () -> Unit,
+    onRequestStart: () -> Unit
+) {
+    val context = LocalContext.current
+    val activity = context as? Activity
+    DisposableEffect(activity) {
+        val previous = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        onDispose {
+            activity?.requestedOrientation = previous
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (!ui.isRunningStereoGuidedTest && ui.guidedStereoStep == GuidedStereoStep.IDLE) {
+            onRequestStart()
+        }
+    }
+
+    ScreenScaffold(title = "Test stéréo guidé", onBack = onBack) {
+        Text("Suivez l'indicateur actif et faites du bruit du côté demandé.", fontWeight = FontWeight.SemiBold)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            GuidedStepCard(
+                label = "GAUCHE",
+                modifier = Modifier.weight(1f),
+                isActive = ui.guidedStereoStep == GuidedStereoStep.PREP_LEFT || ui.guidedStereoStep == GuidedStereoStep.CAPTURE_LEFT
+            )
+            GuidedStepCard(
+                label = "DROITE",
+                modifier = Modifier.weight(1f),
+                isActive = ui.guidedStereoStep == GuidedStereoStep.PREP_RIGHT || ui.guidedStereoStep == GuidedStereoStep.CAPTURE_RIGHT
+            )
+            GuidedStepCard(
+                label = "CENTRE",
+                modifier = Modifier.weight(1f),
+                isActive = ui.guidedStereoStep == GuidedStereoStep.PREP_CENTER || ui.guidedStereoStep == GuidedStereoStep.CAPTURE_CENTER
+            )
+        }
+        Text("Étape: ${ui.guidedStereoStep.name}", style = MaterialTheme.typography.bodyLarge)
+        Text("Status: ${ui.status}", style = MaterialTheme.typography.bodyLarge)
+        Button(
+            onClick = onRequestStart,
+            enabled = !ui.isRunningStereoGuidedTest,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(if (ui.isRunningStereoGuidedTest) "Test en cours..." else "Relancer le test")
+        }
+        ui.stereoGuidedTestResult?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall)
+        }
+        Text("Source input: ${ui.inputSourceLabel}", style = MaterialTheme.typography.bodySmall)
+        Text("Route active: ${ui.inputRoutedDevice}", style = MaterialTheme.typography.bodySmall)
+        Text("Traitements: ${ui.inputProcessingSummary}", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun GuidedStepCard(
+    label: String,
+    modifier: Modifier = Modifier,
+    isActive: Boolean
+) {
+    Card(
+        modifier = modifier
+            .height(120.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isActive) Color(0xFF00C853) else Color(0x33FFFFFF)
+        )
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = if (isActive) "$label\nFAIS DU BRUIT" else label,
+                textAlign = TextAlign.Center,
+                color = Color.White,
+                fontWeight = FontWeight.Bold
+            )
         }
     }
 }

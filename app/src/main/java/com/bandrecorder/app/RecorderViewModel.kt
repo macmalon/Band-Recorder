@@ -56,6 +56,17 @@ data class MicTestHistoryEntry(
     val warning: String?
 )
 
+enum class GuidedStereoStep {
+    IDLE,
+    PREP_LEFT,
+    CAPTURE_LEFT,
+    PREP_RIGHT,
+    CAPTURE_RIGHT,
+    PREP_CENTER,
+    CAPTURE_CENTER,
+    DONE
+}
+
 data class RecorderUiState(
     val isRecording: Boolean = false,
     val isCalibrating: Boolean = false,
@@ -92,6 +103,7 @@ data class RecorderUiState(
     val stereoActualChannels: Int = 1,
     val stereoProbeMessage: String = "Stereo not tested yet",
     val stereoGuidedTestResult: String? = null,
+    val guidedStereoStep: GuidedStereoStep = GuidedStereoStep.IDLE,
     val inputSourceLabel: String = "Unknown",
     val inputPreferredDeviceSet: Boolean = false,
     val inputRoutedDevice: String = "Unknown",
@@ -218,21 +230,22 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 it.copy(
                     isRunningStereoGuidedTest = true,
                     stereoGuidedTestResult = null,
+                    guidedStereoStep = GuidedStereoStep.PREP_LEFT,
                     status = "Guided stereo test: prepare LEFT side (2s)"
                 )
             }
             delay(2000)
-            _uiState.update { it.copy(status = "Guided stereo test: capture LEFT (3s)") }
+            _uiState.update { it.copy(guidedStereoStep = GuidedStereoStep.CAPTURE_LEFT, status = "Guided stereo test: capture LEFT (3s)") }
             val left = engine.measureStereoWindow(durationSeconds = 3, preferredDevice = preferredDevice)
 
-            _uiState.update { it.copy(status = "Guided stereo test: prepare RIGHT side (2s)") }
+            _uiState.update { it.copy(guidedStereoStep = GuidedStereoStep.PREP_RIGHT, status = "Guided stereo test: prepare RIGHT side (2s)") }
             delay(2000)
-            _uiState.update { it.copy(status = "Guided stereo test: capture RIGHT (3s)") }
+            _uiState.update { it.copy(guidedStereoStep = GuidedStereoStep.CAPTURE_RIGHT, status = "Guided stereo test: capture RIGHT (3s)") }
             val right = engine.measureStereoWindow(durationSeconds = 3, preferredDevice = preferredDevice)
 
-            _uiState.update { it.copy(status = "Guided stereo test: prepare CENTER (2s)") }
+            _uiState.update { it.copy(guidedStereoStep = GuidedStereoStep.PREP_CENTER, status = "Guided stereo test: prepare CENTER (2s)") }
             delay(2000)
-            _uiState.update { it.copy(status = "Guided stereo test: capture CENTER (3s)") }
+            _uiState.update { it.copy(guidedStereoStep = GuidedStereoStep.CAPTURE_CENTER, status = "Guided stereo test: capture CENTER (3s)") }
             val center = engine.measureStereoWindow(durationSeconds = 3, preferredDevice = preferredDevice)
 
             if (left == null || right == null || center == null) {
@@ -240,6 +253,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(
                         isRunningStereoGuidedTest = false,
                         stereoGuidedTestResult = "Guided stereo test failed: stereo capture route unavailable.",
+                        guidedStereoStep = GuidedStereoStep.DONE,
                         status = "Guided stereo test failed"
                     )
                 }
@@ -305,7 +319,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     } ?: it.inputRoutedDevice,
                     inputProcessingSummary = inputDiag?.let { d ->
                         "AGC=${d.agcEnabled ?: "n/a"} NS=${d.nsEnabled ?: "n/a"} AEC=${d.aecEnabled ?: "n/a"}"
-                    } ?: it.inputProcessingSummary
+                    } ?: it.inputProcessingSummary,
+                    guidedStereoStep = GuidedStereoStep.DONE
                 )
             }
 
