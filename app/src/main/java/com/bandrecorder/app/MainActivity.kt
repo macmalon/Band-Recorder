@@ -33,6 +33,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredHeight
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -620,15 +622,37 @@ private fun RecIndicatorV2(isRecording: Boolean, isPausedVisual: Boolean) {
 private fun VuMetersPanelV2(leftVu: Float, rightVu: Float, modifier: Modifier = Modifier) {
     Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.SpaceEvenly
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        VUMeterV2(label = "LEFT", value = leftVu)
-        VUMeterV2(label = "RIGHT", value = rightVu)
+        Box(
+            modifier = Modifier.weight(1f),
+            contentAlignment = Alignment.Center
+        ) {
+            VUMeterV2(
+                label = "LEFT",
+                value = leftVu,
+                modifier = Modifier
+                    .width(VintageDimensions.vuWidth)
+                    .height(VintageDimensions.vuHeight)
+            )
+        }
+        Box(
+            modifier = Modifier.weight(1f),
+            contentAlignment = Alignment.Center
+        ) {
+            VUMeterV2(
+                label = "RIGHT",
+                value = rightVu,
+                modifier = Modifier
+                    .width(VintageDimensions.vuWidth)
+                    .height(VintageDimensions.vuHeight)
+            )
+        }
     }
 }
 
 @Composable
-private fun VUMeterV2(label: String, value: Float) {
+private fun VUMeterV2(label: String, value: Float, modifier: Modifier = Modifier) {
     val safeValue = value.coerceIn(0f, 1f)
     val animatedValue by animateFloatAsState(
         targetValue = safeValue,
@@ -641,45 +665,86 @@ private fun VUMeterV2(label: String, value: Float) {
 
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(VintageDimensions.smallSpacing)) {
         Box(
-            modifier = Modifier
-                .width(VintageDimensions.vuWidth)
-                .height(VintageDimensions.vuHeight)
-                .shadow(2.dp, RoundedCornerShape(VintageDimensions.vuCornerRadius))
+            modifier = modifier
+                .requiredWidth(VintageDimensions.vuWidth)
+                .requiredHeight(VintageDimensions.vuHeight)
+                .shadow(6.dp, RoundedCornerShape(VintageDimensions.vuCornerRadius))
                 .clip(RoundedCornerShape(VintageDimensions.vuCornerRadius))
                 .background(
                     Brush.verticalGradient(
-                        listOf(Color(0xFF3F3B34), Color(0xFF2A2824), Color(0xFF1F1C1A))
+                        listOf(Color(0xFF5B5A58), Color(0xFF2A2824), Color(0xFF151414))
                     )
                 )
                 .border(BorderStroke(1.dp, AmpMetalDark), RoundedCornerShape(VintageDimensions.vuCornerRadius))
-                .padding(VintageDimensions.smallSpacing)
+                .padding(7.dp)
         ) {
             Canvas(modifier = Modifier.fillMaxSize()) {
+                // Bevel frame
                 drawRoundRect(
-                    brush = Brush.verticalGradient(listOf(Color(0xFFF5D99A), Color(0xFFD9AE59), Color(0xFF8A5D2D)),
+                    brush = Brush.verticalGradient(
+                        listOf(Color(0x88FFFFFF), Color.Transparent, Color(0x88000000))
                     ),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(10f, 10f)
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(12f, 12f),
+                    style = Stroke(width = 3f)
+                )
+
+                val panelInset = 8f
+                val panelSize = Size(size.width - panelInset * 2f, size.height - panelInset * 2f)
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        listOf(Color(0xFFF5D99A), Color(0xFFF0C873), Color(0xFFB57A35))
+                    ),
+                    topLeft = Offset(panelInset, panelInset),
+                    size = panelSize,
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(8f, 8f)
                 )
                 drawRoundRect(
                     brush = Brush.verticalGradient(
-                        colors = listOf(Color.White.copy(alpha = 0.18f), Color.Transparent, Color.Black.copy(alpha = 0.16f))
+                        colors = listOf(Color.White.copy(alpha = 0.20f), Color.Transparent, Color.Black.copy(alpha = 0.18f))
                     ),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(10f, 10f)
+                    topLeft = Offset(panelInset, panelInset),
+                    size = panelSize,
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(8f, 8f)
                 )
 
-                val center = Offset(size.width * VintageDimensions.vuNeedlePivotX, size.height * VintageDimensions.vuNeedlePivotY)
-                val needleLength = size.width * 0.34f
-                rotate(degrees = angle, pivot = center) {
+                // Scale marks
+                val center = Offset(size.width * 0.5f, size.height * 0.90f)
+                val radius = size.width * 0.42f
+                for (i in 0..10) {
+                    val tickAngle = -45f + (i * 9f)
+                    val rad = Math.toRadians(tickAngle.toDouble())
+                    val p1 = Offset(
+                        x = center.x + (cos(rad).toFloat() * (radius - 18f)),
+                        y = center.y + (sin(rad).toFloat() * (radius - 18f))
+                    )
+                    val p2 = Offset(
+                        x = center.x + (cos(rad).toFloat() * (radius - 3f)),
+                        y = center.y + (sin(rad).toFloat() * (radius - 3f))
+                    )
                     drawLine(
-                        color = Color(0xFF2A1A16),
-                        start = center,
-                        end = Offset(center.x + needleLength, center.y - needleLength * 0.72f),
-                        strokeWidth = 3.6f,
+                        color = if (i >= 8) Color(0xFF8B1E18) else Color(0xFF1B1A18),
+                        start = p1,
+                        end = p2,
+                        strokeWidth = if (i % 2 == 0) 2f else 1.2f
+                    )
+                }
+
+                val needlePivot = Offset(
+                    size.width * VintageDimensions.vuNeedlePivotX,
+                    size.height * VintageDimensions.vuNeedlePivotY
+                )
+                val needleLength = size.width * 0.33f
+                rotate(degrees = angle, pivot = needlePivot) {
+                    drawLine(
+                        color = Color(0xFF241512),
+                        start = needlePivot,
+                        end = Offset(needlePivot.x + needleLength, needlePivot.y - needleLength * 0.78f),
+                        strokeWidth = 3.2f,
                         cap = StrokeCap.Round
                     )
                 }
-                drawCircle(color = Color(0xFF261F1B), center = center, radius = 8f)
-                drawCircle(color = Color(0xFFA48A62), center = center, radius = 4.5f)
+                drawCircle(color = Color(0xFF261F1B), center = needlePivot, radius = 8f)
+                drawCircle(color = Color(0xFFB69A70), center = needlePivot, radius = 4.2f)
             }
         }
         Text(label, color = AmpMetalLight, fontWeight = FontWeight.Bold)
@@ -693,21 +758,39 @@ private fun RecordButtonV2(
     onRecordToggle: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Button(
-        onClick = onRecordToggle,
-        enabled = !isBusy || isRecording,
+    val enabled = !isBusy || isRecording
+    Box(
         modifier = modifier
             .shadow(6.dp, RoundedCornerShape(percent = 50))
             .shadow(2.dp, RoundedCornerShape(percent = 50))
-            .size(VintageDimensions.recordButtonSize),
-        shape = RoundedCornerShape(percent = 50),
-        colors = ButtonDefaults.buttonColors(containerColor = if (isRecording) Color(0xFFB42522) else Color(0xFF3A3F46))
+            .size(VintageDimensions.recordButtonSize)
+            .clip(RoundedCornerShape(percent = 50))
+            .background(
+                Brush.radialGradient(
+                    colors = listOf(Color(0xFFE6E8EB), Color(0xFF848B94), Color(0xFF2A2D31))
+                )
+            )
+            .border(BorderStroke(2.dp, Color(0x66FFFFFF)), RoundedCornerShape(percent = 50))
+            .padding(14.dp)
+            .clip(RoundedCornerShape(percent = 50))
+            .background(
+                Brush.radialGradient(
+                    colors = if (isRecording) {
+                        listOf(Color(0xFFFF6F63), Color(0xFFD92E24), Color(0xFF6F120E))
+                    } else {
+                        listOf(Color(0xFF5D3F3E), Color(0xFF3D2A2A), Color(0xFF211818))
+                    }
+                )
+            )
+            .border(BorderStroke(1.dp, Color(0x99FFFFFF)), RoundedCornerShape(percent = 50))
+            .clickable(enabled = enabled, onClick = onRecordToggle),
+        contentAlignment = Alignment.Center
     ) {
         Text(
             text = if (isRecording) "STOP" else "REC",
             fontWeight = FontWeight.ExtraBold,
             fontSize = 26.sp,
-            color = Color.White
+            color = Color(0xFFF5F0E8)
         )
     }
 }
@@ -733,9 +816,24 @@ private fun KnobControlV2(label: String, onClick: () -> Unit) {
             modifier = Modifier.size(VintageDimensions.knobSize),
             contentAlignment = Alignment.Center
         ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val c = Offset(size.width / 2f, size.height / 2f)
+                val r = size.minDimension / 2f - 4f
+                for (i in 0..20) {
+                    val a = Math.toRadians((-140 + i * 14).toDouble())
+                    val p1 = Offset(c.x + cos(a).toFloat() * (r - 12f), c.y + sin(a).toFloat() * (r - 12f))
+                    val p2 = Offset(c.x + cos(a).toFloat() * r, c.y + sin(a).toFloat() * r)
+                    drawLine(
+                        color = if (i % 2 == 0) Color(0xFFE6DCC8) else Color(0xFF8A8377),
+                        start = p1,
+                        end = p2,
+                        strokeWidth = if (i % 2 == 0) 2.2f else 1.2f
+                    )
+                }
+            }
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .size(VintageDimensions.knobSize * 0.78f)
                     .shadow(6.dp, RoundedCornerShape(percent = 50))
                     .shadow(2.dp, RoundedCornerShape(percent = 50))
                     .clip(RoundedCornerShape(percent = 50))
@@ -753,7 +851,14 @@ private fun KnobControlV2(label: String, onClick: () -> Unit) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val cx = size.width / 2f
                     val cy = size.height / 2f
-                    val len = size.minDimension * 0.32f
+                    val len = size.minDimension * 0.35f
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            listOf(Color(0x55FFFFFF), Color.Transparent)
+                        ),
+                        radius = size.minDimension * 0.46f,
+                        center = Offset(cx, cy)
+                    )
                     rotate(degrees = rotation, pivot = Offset(cx, cy)) {
                         drawLine(
                             color = Color(0xFF1D2024),
@@ -772,27 +877,43 @@ private fun KnobControlV2(label: String, onClick: () -> Unit) {
 
 @Composable
 private fun LinkSwitchV2(onClick: () -> Unit) {
-    OutlinedButton(
-        onClick = onClick,
+    Box(
         modifier = Modifier
             .width(VintageDimensions.switchWidth)
-            .height(VintageDimensions.switchHeight),
-        border = BorderStroke(1.dp, AmpPanelBorder),
-        colors = ButtonDefaults.outlinedButtonColors(containerColor = Color(0xFF2A2D32), contentColor = AmpAccentAmber)
+            .height(VintageDimensions.switchHeight)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Brush.verticalGradient(listOf(Color(0xFF41454B), Color(0xFF24272C))))
+            .border(BorderStroke(1.dp, Color(0xFF111316)), RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
     ) {
-        Text("LINK")
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .padding(start = 8.dp)
+                .size(width = 24.dp, height = 28.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(Brush.verticalGradient(listOf(Color(0xFFE2E4E8), Color(0xFF646C77))))
+        )
+        Text("LINK", color = AmpAccentAmber, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.CenterEnd).padding(end = 10.dp))
     }
 }
 
 @Composable
 private fun HardwareButtonV2(label: String, onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
+    Box(
         modifier = Modifier.height(VintageDimensions.navButtonHeight),
-        shape = RoundedCornerShape(VintageDimensions.hardwareButtonCorner),
-        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3D424A), contentColor = AmpAccentAmber)
+        contentAlignment = Alignment.Center
     ) {
-        Text(label, fontWeight = FontWeight.Bold)
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(VintageDimensions.hardwareButtonCorner))
+                .background(Brush.verticalGradient(listOf(Color(0xFF616875), Color(0xFF2A2F37))))
+                .border(BorderStroke(1.dp, Color(0x9912151A)), RoundedCornerShape(VintageDimensions.hardwareButtonCorner))
+                .clickable(onClick = onClick)
+                .padding(horizontal = 14.dp, vertical = 9.dp)
+        ) {
+            Text(label, fontWeight = FontWeight.Bold, color = AmpAccentAmber)
+        }
     }
 }
 
