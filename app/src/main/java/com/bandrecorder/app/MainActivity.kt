@@ -14,6 +14,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +32,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -36,12 +41,14 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -53,8 +60,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -65,6 +77,8 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import java.io.File
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.roundToInt
 
 private enum class PendingAction {
@@ -87,10 +101,15 @@ private sealed class AppRoute(val route: String) {
     data object Link : AppRoute("link")
 }
 
-private enum class BalanceSection {
-    GLOBAL,
-    INSTRUMENTS
-}
+private val AmpBgDark = Color(0xFF202226)
+private val AmpBgMid = Color(0xFF2B2E33)
+private val AmpPanelDark = Color(0xFF17191C)
+private val AmpPanelBorder = Color(0xFF43474E)
+private val AmpAccentAmber = Color(0xFFF2B63D)
+private val AmpAccentAmberSoft = Color(0x66F2B63D)
+private val AmpMetalLight = Color(0xFFC9CDD2)
+private val AmpMetalDark = Color(0xFF878D95)
+private val AmpText = Color(0xFFF4F6F8)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -234,19 +253,12 @@ private fun HomeScreen(
     onOpenSettings: () -> Unit,
     onOpenLink: () -> Unit
 ) {
-    val gradient = Brush.verticalGradient(
-        colors = listOf(
-            Color(0xFF8BCF2F),
-            Color(0xFFFFF44F),
-            Color(0xFFFF8C42)
-        )
-    )
     val isBusy = ui.isCalibrating || ui.isTestingMic || ui.isRunningABTest || ui.isRunningStereoGuidedTest
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(gradient)
+            .background(Brush.verticalGradient(listOf(AmpBgDark, AmpBgMid, AmpBgDark)))
             .statusBarsPadding()
             .navigationBarsPadding()
             .padding(16.dp)
@@ -272,13 +284,13 @@ private fun HomeScreen(
                 text = formatTimer(ui.elapsedMs),
                 fontSize = 72.sp,
                 fontWeight = FontWeight.ExtraBold,
-                color = Color.White,
+                color = AmpText,
                 textAlign = TextAlign.Center
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = ui.status,
-                color = Color.White,
+                color = AmpAccentAmber,
                 style = MaterialTheme.typography.bodyLarge
             )
         }
@@ -291,13 +303,13 @@ private fun HomeScreen(
                 .width(170.dp)
                 .height(118.dp),
             shape = RoundedCornerShape(26.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE6006F))
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4A4E55))
         ) {
             Text(
                 text = if (ui.isRecording) "STOP" else "REC",
                 fontSize = 36.sp,
                 fontWeight = FontWeight.ExtraBold,
-                color = Color.White
+                color = AmpAccentAmber
             )
         }
 
@@ -309,13 +321,13 @@ private fun HomeScreen(
                 .fillMaxWidth()
                 .height(64.dp),
             shape = RoundedCornerShape(22.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE6006F))
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3C4046))
         ) {
             Text(
                 text = "BALANCE",
                 fontSize = 22.sp,
                 fontWeight = FontWeight.ExtraBold,
-                color = Color.White
+                color = AmpAccentAmber
             )
         }
 
@@ -340,8 +352,10 @@ private fun SmallActionButton(
         onClick = onClick,
         shape = RoundedCornerShape(20.dp),
         colors = ButtonDefaults.outlinedButtonColors(
-            contentColor = Color.White
-        )
+            contentColor = AmpAccentAmber,
+            containerColor = Color(0xFF2A2D32)
+        ),
+        border = BorderStroke(1.dp, AmpPanelBorder)
     ) {
         Text(text)
     }
@@ -354,180 +368,152 @@ private fun BalanceScreen(
     onSetBalanceDuration: (Int) -> Unit,
     onRunLevelBalance: () -> Unit
 ) {
-    val vuProgress = ((ui.peakDb + 60f) / 60f).coerceIn(0f, 1f)
-    val vuColor = when {
-        ui.peakDb > -3f -> Color(0xFFD32F2F)
-        ui.peakDb > -9f -> Color(0xFFFF9800)
-        else -> Color(0xFF2E7D32)
-    }
-    val saturationAlert = ui.peakDb > -3f
-    val lowLevelAlert = ui.rmsDb < -38f && ui.isRecording
-    var section by remember { mutableStateOf(BalanceSection.GLOBAL) }
-
     ScreenScaffold(title = "Balance", onBack = onBack) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (section == BalanceSection.GLOBAL) {
-                Button(onClick = { section = BalanceSection.GLOBAL }) { Text("Global") }
-                OutlinedButton(onClick = { section = BalanceSection.INSTRUMENTS }) { Text("Instruments") }
-            } else {
-                OutlinedButton(onClick = { section = BalanceSection.GLOBAL }) { Text("Global") }
-                Button(onClick = { section = BalanceSection.INSTRUMENTS }) { Text("Instruments") }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ui.availableBalanceDurationsSec.forEach { sec ->
+                if (sec == ui.balanceDurationSec) {
+                    Button(onClick = { onSetBalanceDuration(sec) }, modifier = Modifier.weight(1f)) { Text("${sec}s") }
+                } else {
+                    OutlinedButton(onClick = { onSetBalanceDuration(sec) }, modifier = Modifier.weight(1f)) { Text("${sec}s") }
+                }
             }
         }
 
-        when (section) {
-            BalanceSection.GLOBAL -> {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = Color(0x22FFFFFF)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text("Vérification niveau", fontWeight = FontWeight.Bold)
-                        Text(
-                            "Objectif: éviter la saturation pendant la prise. Le traitement créatif est réservé au Lecteur.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
+        Button(
+            onClick = onRunLevelBalance,
+            enabled = !ui.isRecording && !ui.isCalibrating && !ui.isRunningLevelBalance && !ui.isRunningABTest && !ui.isRunningStereoGuidedTest,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3D424A), contentColor = AmpAccentAmber)
+        ) {
+            Text(if (ui.isRunningLevelBalance) "Balance en cours..." else "Faire les balances", fontWeight = FontWeight.ExtraBold)
+        }
 
-                        Text("Durée balance", fontWeight = FontWeight.SemiBold)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            ui.availableBalanceDurationsSec.forEach { sec ->
-                                if (sec == ui.balanceDurationSec) {
-                                    Button(
-                                        onClick = { onSetBalanceDuration(sec) },
-                                        modifier = Modifier.weight(1f)
-                                    ) { Text("${sec}s") }
-                                } else {
-                                    OutlinedButton(
-                                        onClick = { onSetBalanceDuration(sec) },
-                                        modifier = Modifier.weight(1f)
-                                    ) { Text("${sec}s") }
-                                }
-                            }
-                        }
+        AnalogVuMeter(
+            peakDb = ui.peakDb,
+            isRunning = ui.isRunningLevelBalance,
+            modifier = Modifier.fillMaxWidth().height(170.dp)
+        )
 
-                        Button(
-                            onClick = onRunLevelBalance,
-                            enabled = !ui.isRecording && !ui.isCalibrating && !ui.isRunningLevelBalance && !ui.isRunningABTest && !ui.isRunningStereoGuidedTest,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(if (ui.isRunningLevelBalance) "Balance en cours..." else "Lancer balance niveau")
-                        }
+        Text(
+            "RMS ${"%.1f".format(ui.rmsDb)} dBFS   |   Peak ${"%.1f".format(ui.peakDb)} dBFS   |   Headroom ${"%.1f".format(ui.headroomDb)} dB",
+            style = MaterialTheme.typography.bodySmall,
+            color = AmpText
+        )
 
-                        if (ui.isRunningLevelBalance) {
-                            Text("Progression: ${ui.balanceProgress}%")
-                            LinearProgressIndicator(
-                                progress = { ui.balanceProgress / 100f },
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
+        if (ui.isRunningLevelBalance) {
+            Text("Mesure en cours... ${ui.balanceProgress}%", color = AmpAccentAmber, fontWeight = FontWeight.SemiBold)
+            LinearProgressIndicator(progress = { ui.balanceProgress / 100f }, color = AmpAccentAmber, modifier = Modifier.fillMaxWidth())
+        }
 
-                        ui.balanceDecisionLabel?.let { label ->
-                            val color = when (label) {
-                                "Peak > -3 dBFS" -> Color(0xFFD32F2F)
-                                "Peak entre -6 et -3 dBFS" -> Color(0xFFFF9800)
-                                "Peak entre -12 et -6 dBFS (idéal)" -> Color(0xFF2E7D32)
-                                "Peak entre -18 et -12 dBFS" -> Color(0xFF607D8B)
-                                else -> Color(0xFF1565C0)
-                            }
-                            Text("Interprétation: $label", color = color, fontWeight = FontWeight.Bold)
-                        }
-                        ui.balanceRecommendationText?.let {
-                            Text(it, style = MaterialTheme.typography.bodySmall)
-                        }
-                        Text(
-                            "Référence Peak max: > -3 dBFS = trop fort | -6..-3 = limite | -12..-6 = idéal | -18..-12 = un peu bas | < -18 = trop faible",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("Status: ${ui.status}")
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Text("RMS: ${"%.1f".format(ui.rmsDb)} dBFS")
-                Text("Peak: ${"%.1f".format(ui.peakDb)} dBFS")
-                Text("Headroom: ${"%.1f".format(ui.headroomDb)} dB")
-                Text("Peak max balance: ${"%.1f".format(ui.balancePeakMaxDb)} dBFS")
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Text("VU meter")
-                LinearProgressIndicator(
-                    progress = { vuProgress },
-                    color = vuColor,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-
-                ui.recommendedGainDb?.let {
-                    val signed = if (it >= 0f) "+${"%.1f".format(it)}" else "${"%.1f".format(it)}"
-                    Text("Gain recommandé: $signed dB", fontWeight = FontWeight.SemiBold)
-                }
-
-                if (saturationAlert) {
-                    Text("Alerte: risque de saturation", color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold)
-                } else if (lowLevelAlert) {
-                    Text("Alerte: niveau trop faible", color = Color(0xFFFF9800), fontWeight = FontWeight.Bold)
-                }
-
-                ui.lastOutputPath?.let {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text("Dernier fichier: $it", style = MaterialTheme.typography.bodySmall)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF2A2D32))
+        ) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Résultat balance", color = AmpMetalLight, fontWeight = FontWeight.Bold)
+                if (ui.balanceDecisionLabel == null) {
+                    Text("Aucun résultat pour le moment.", color = AmpText)
+                } else {
+                    Text(ui.balanceDecisionLabel, color = AmpAccentAmber, fontWeight = FontWeight.Bold)
+                    Text(ui.balanceRecommendationText ?: "", color = AmpText, style = MaterialTheme.typography.bodySmall)
                 }
             }
+        }
 
-            BalanceSection.INSTRUMENTS -> {
-                Text(
-                    "Balances instrument (affinage par type). Référence rapide basée sur RMS/Peak actuels.",
-                    style = MaterialTheme.typography.bodySmall
+        Text(
+            "Référence Peak max: > -3 dBFS trop fort | -6..-3 limite | -12..-6 idéal | -18..-12 un peu bas | < -18 trop faible",
+            color = AmpMetalLight,
+            style = MaterialTheme.typography.bodySmall
+        )
+
+        ui.lastOutputPath?.let {
+            Text("Dernier fichier: $it", style = MaterialTheme.typography.bodySmall, color = AmpMetalDark)
+        }
+    }
+}
+
+@Composable
+private fun AnalogVuMeter(
+    peakDb: Float,
+    isRunning: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val normalized = ((peakDb + 36f) / 36f).coerceIn(0f, 1f)
+    val targetAngle = -120f + (normalized * 240f)
+    val animatedAngle by animateFloatAsState(
+        targetValue = targetAngle,
+        animationSpec = tween(durationMillis = 140),
+        label = "vu_needle_angle"
+    )
+
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0xFF262A30))
+            .border(BorderStroke(1.dp, AmpPanelBorder), RoundedCornerShape(18.dp))
+            .padding(12.dp)
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            val center = Offset(w * 0.5f, h * 0.88f)
+            val radius = (w.coerceAtMost(h * 1.8f) * 0.42f)
+
+            // Warm backlight.
+            drawArc(
+                brush = Brush.radialGradient(
+                    colors = listOf(AmpAccentAmberSoft, Color.Transparent),
+                    center = Offset(w * 0.5f, h * 0.56f),
+                    radius = radius * 1.4f
+                ),
+                startAngle = 0f,
+                sweepAngle = 360f,
+                useCenter = true,
+                topLeft = Offset(0f, 0f),
+                size = Size(w, h)
+            )
+
+            val meterColor = if (isRunning) AmpAccentAmber else AmpMetalDark
+            drawArc(
+                color = meterColor,
+                startAngle = 210f,
+                sweepAngle = 120f,
+                useCenter = false,
+                topLeft = Offset(center.x - radius, center.y - radius),
+                size = Size(radius * 2f, radius * 2f),
+                style = Stroke(width = 4f, cap = StrokeCap.Round)
+            )
+
+            for (i in 0..6) {
+                val a = Math.toRadians((210 + i * 20).toDouble())
+                val p1 = Offset(
+                    x = center.x + (cos(a).toFloat() * (radius - 18f)),
+                    y = center.y + (sin(a).toFloat() * (radius - 18f))
                 )
-                val profiles = listOf(
-                    Triple("Voix lead", Pair(-24f, -16f), Pair(-12f, -6f)),
-                    Triple("Guitare électrique", Pair(-22f, -14f), Pair(-10f, -6f)),
-                    Triple("Basse", Pair(-20f, -14f), Pair(-9f, -5f)),
-                    Triple("Kick", Pair(-18f, -12f), Pair(-8f, -4f)),
-                    Triple("Snare", Pair(-20f, -14f), Pair(-10f, -5f)),
-                    Triple("Overheads", Pair(-26f, -18f), Pair(-14f, -8f)),
-                    Triple("Piano/Clavier", Pair(-24f, -16f), Pair(-12f, -7f)),
-                    Triple("Sax/Trompette", Pair(-22f, -14f), Pair(-10f, -6f))
+                val p2 = Offset(
+                    x = center.x + (cos(a).toFloat() * (radius - 5f)),
+                    y = center.y + (sin(a).toFloat() * (radius - 5f))
                 )
-
-                profiles.forEach { (name, rmsRange, peakRange) ->
-                    val rmsOk = ui.rmsDb in rmsRange.first..rmsRange.second
-                    val peakOk = ui.peakDb in peakRange.first..peakRange.second
-                    val label = when {
-                        rmsOk && peakOk -> "OK"
-                        ui.peakDb > peakRange.second -> "Trop fort"
-                        ui.rmsDb < rmsRange.first -> "Trop faible"
-                        else -> "À ajuster"
-                    }
-                    val color = when (label) {
-                        "OK" -> Color(0xFF2E7D32)
-                        "Trop fort" -> Color(0xFFD32F2F)
-                        else -> Color(0xFFFF9800)
-                    }
-
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0x14FFFFFF))
-                            .padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(name, fontWeight = FontWeight.SemiBold)
-                        Text("Cible RMS: ${rmsRange.first.toInt()} à ${rmsRange.second.toInt()} dBFS", style = MaterialTheme.typography.bodySmall)
-                        Text("Cible Peak: ${peakRange.first.toInt()} à ${peakRange.second.toInt()} dBFS", style = MaterialTheme.typography.bodySmall)
-                        Text("État actuel: $label", color = color, fontWeight = FontWeight.Bold)
-                    }
-                }
+                drawLine(color = AmpMetalLight, start = p1, end = p2, strokeWidth = 2f)
             }
+
+            val needleRadians = Math.toRadians((90 + animatedAngle).toDouble())
+            val needleEnd = Offset(
+                x = center.x + (cos(needleRadians).toFloat() * (radius - 24f)),
+                y = center.y + (sin(needleRadians).toFloat() * (radius - 24f))
+            )
+            drawLine(
+                color = Color(0xFFD64C32),
+                start = center,
+                end = needleEnd,
+                strokeWidth = 5f,
+                cap = StrokeCap.Round
+            )
+            drawCircle(color = AmpMetalLight, radius = 7f, center = center)
         }
     }
 }
@@ -558,20 +544,12 @@ private fun MicSettingsScreen(
         }
     }
 
-    val pageGradient = Brush.verticalGradient(
-        colors = listOf(
-            Color(0x338BCF2F),
-            Color(0x33FFF44F),
-            Color(0x33FF8C42)
-        )
-    )
-
     Column(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
             .navigationBarsPadding()
-            .background(pageGradient)
+            .background(Brush.verticalGradient(listOf(AmpBgDark, AmpBgMid, AmpBgDark)))
             .padding(16.dp)
     ) {
         Row(
@@ -579,7 +557,7 @@ private fun MicSettingsScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Réglages micro", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text("Réglages micro", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = AmpMetalLight)
             OutlinedButton(onClick = onBack) { Text("Retour") }
         }
 
@@ -589,144 +567,145 @@ private fun MicSettingsScreen(
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .clip(RoundedCornerShape(16.dp))
-                .background(Color(0x22FFFFFF))
+                .background(Color(0xFF2A2D32))
                 .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            val compatibilityText = when {
-                verificationRunning -> "Vérification automatique en cours..."
-                ui.stereoSupported -> "Capture stéréo compatible sur cet appareil."
-                else -> "Capture stéréo non confirmée."
-            }
-            Text(compatibilityText, fontWeight = FontWeight.Bold)
-            Text("Pour valider totalement la stéréo, lance le test stéréo guidé en utilisant ta voix.")
-
-            if (ui.guidedStereoPassed) {
-                Text("Téléphone totalement compatible stéréo.", fontWeight = FontWeight.SemiBold, color = Color(0xFF1B5E20))
-                Text(
-                    "Paramètres optimaux enregistrés automatiquement: stéréo ${if (ui.stereoModeRequested) "ON" else "OFF"}, " +
-                        "swap ${if (ui.stereoChannelsSwapped) "ON" else "OFF"}, micro ${ui.effectiveMicLabel ?: "Auto"}."
-                )
-            }
-
-            if (!ui.autoMicSetupMessage.isNullOrBlank()) {
-                Text(ui.autoMicSetupMessage, color = Color(0xFFB00020))
-                OutlinedButton(onClick = onRequestAutoMicSetup, enabled = !verificationRunning && !busyAudioAction) {
-                    Text("Réessayer")
+            CompositionLocalProvider(LocalContentColor provides AmpText) {
+                val compatibilityText = when {
+                    verificationRunning -> "Vérification automatique en cours..."
+                    ui.stereoSupported -> "Capture stéréo compatible sur cet appareil."
+                    else -> "Capture stéréo non confirmée."
                 }
-            }
+                Text(compatibilityText, fontWeight = FontWeight.Bold)
+                Text("Pour valider totalement la stéréo, lance le test stéréo guidé en utilisant ta voix.")
 
-            Button(
-                onClick = onOpenGuidedStereoTest,
-                enabled = !busyAudioAction,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Lancer test stéréo guidé")
-            }
+                if (ui.guidedStereoPassed) {
+                    Text("Téléphone totalement compatible stéréo.", fontWeight = FontWeight.SemiBold, color = AmpAccentAmber)
+                    Text(
+                        "Paramètres optimaux enregistrés automatiquement: stéréo ${if (ui.stereoModeRequested) "ON" else "OFF"}, " +
+                            "swap ${if (ui.stereoChannelsSwapped) "ON" else "OFF"}, micro ${ui.effectiveMicLabel ?: "Auto"}."
+                    )
+                }
 
-            OutlinedButton(
-                onClick = { advancedExpanded = !advancedExpanded },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(if (advancedExpanded) "Masquer Avancé" else "Afficher Avancé")
-            }
-
-            if (advancedExpanded) {
-                Text("Avancé", fontWeight = FontWeight.Bold)
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (ui.stereoModeRequested) {
-                        Button(onClick = { onToggleStereoRequested(true) }) { Text("Stéréo ON") }
-                        OutlinedButton(onClick = { onToggleStereoRequested(false) }) { Text("Stéréo OFF") }
-                    } else {
-                        OutlinedButton(onClick = { onToggleStereoRequested(true) }) { Text("Stéréo ON") }
-                        Button(onClick = { onToggleStereoRequested(false) }) { Text("Stéréo OFF") }
+                if (!ui.autoMicSetupMessage.isNullOrBlank()) {
+                    Text(ui.autoMicSetupMessage, color = AmpAccentAmber)
+                    OutlinedButton(onClick = onRequestAutoMicSetup, enabled = !verificationRunning && !busyAudioAction) {
+                        Text("Réessayer")
                     }
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (ui.stereoChannelsSwapped) {
-                        Button(onClick = { onToggleStereoSwap(true) }) { Text("Swap L/R ON") }
-                        OutlinedButton(onClick = { onToggleStereoSwap(false) }) { Text("Swap L/R OFF") }
-                    } else {
-                        OutlinedButton(onClick = { onToggleStereoSwap(true) }) { Text("Swap L/R ON") }
-                        Button(onClick = { onToggleStereoSwap(false) }) { Text("Swap L/R OFF") }
-                    }
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onRefreshMics, enabled = !busyAudioAction) { Text("Scan") }
-                    Button(onClick = onRequestTestMic, enabled = !busyAudioAction) {
-                        Text(if (ui.isTestingMic) "Test..." else "Test mic")
-                    }
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ui.availableTestDurationsSec.forEach { sec ->
-                        if (sec == ui.selectedTestDurationSec) {
-                            Button(onClick = { onSetTestDuration(sec) }) { Text("${sec}s") }
-                        } else {
-                            OutlinedButton(onClick = { onSetTestDuration(sec) }) { Text("${sec}s") }
-                        }
-                    }
-                }
-
-                OutlinedButton(
-                    onClick = onRequestProbeStereo,
+                Button(
+                    onClick = onOpenGuidedStereoTest,
                     enabled = !busyAudioAction,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Probe stéréo")
+                    Text("Lancer test stéréo guidé")
                 }
 
-                Text("Résultat probe: ${ui.stereoProbeMessage}", style = MaterialTheme.typography.bodySmall)
-                Text("Source input: ${ui.inputSourceLabel}", style = MaterialTheme.typography.bodySmall)
-                Text("Route active: ${ui.inputRoutedDevice}", style = MaterialTheme.typography.bodySmall)
-                Text("Traitements: ${ui.inputProcessingSummary}", style = MaterialTheme.typography.bodySmall)
-
-                OutlinedButton(onClick = { onSelectMic(null) }) {
-                    val autoLabel = ui.effectiveMicLabel ?: "none"
-                    Text(if (ui.selectedMicId == null) "Auto (actif -> $autoLabel)" else "Auto")
+                OutlinedButton(
+                    onClick = { advancedExpanded = !advancedExpanded },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (advancedExpanded) "Masquer Avancé" else "Afficher Avancé")
                 }
 
-                if (ui.microphones.isEmpty()) {
-                    Text("Aucun microphone détecté")
-                } else {
-                    ui.microphones.forEach { mic ->
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 6.dp),
-                            verticalArrangement = Arrangement.spacedBy(3.dp)
-                        ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                val selected = mic.id == ui.selectedMicId
-                                if (selected) {
-                                    Button(onClick = { onSelectMic(mic.id) }) { Text("Sélectionné") }
-                                } else {
-                                    OutlinedButton(onClick = { onSelectMic(mic.id) }) { Text("Choisir") }
-                                }
-                                Text(mic.displayName, fontWeight = FontWeight.SemiBold)
-                            }
-                            Text("Type: ${mic.typeLabel} (${mic.typeCode})")
-                            Text("ID: ${mic.id}")
-                            Text("Description: ${mic.description ?: "N/A"}")
-                            Text("Location: ${mic.locationLabel ?: "N/A"}")
-                            Text("Directionality: ${mic.directionalityLabel ?: "N/A"}")
-                            Text("Raw channels: ${mic.rawChannelCounts ?: "N/A"}")
-                            Text("Raw sample rates: ${mic.rawSampleRates ?: "N/A"}")
-                            if (!mic.warning.isNullOrBlank()) {
-                                Text("Warning: ${mic.warning}", color = Color(0xFFD32F2F), style = MaterialTheme.typography.bodySmall)
+                if (advancedExpanded) {
+                    Text("Avancé", fontWeight = FontWeight.Bold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (ui.stereoModeRequested) {
+                            Button(onClick = { onToggleStereoRequested(true) }) { Text("Stéréo ON") }
+                            OutlinedButton(onClick = { onToggleStereoRequested(false) }) { Text("Stéréo OFF") }
+                        } else {
+                            OutlinedButton(onClick = { onToggleStereoRequested(true) }) { Text("Stéréo ON") }
+                            Button(onClick = { onToggleStereoRequested(false) }) { Text("Stéréo OFF") }
+                        }
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (ui.stereoChannelsSwapped) {
+                            Button(onClick = { onToggleStereoSwap(true) }) { Text("Swap L/R ON") }
+                            OutlinedButton(onClick = { onToggleStereoSwap(false) }) { Text("Swap L/R OFF") }
+                        } else {
+                            OutlinedButton(onClick = { onToggleStereoSwap(true) }) { Text("Swap L/R ON") }
+                            Button(onClick = { onToggleStereoSwap(false) }) { Text("Swap L/R OFF") }
+                        }
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = onRefreshMics, enabled = !busyAudioAction) { Text("Scan") }
+                        Button(onClick = onRequestTestMic, enabled = !busyAudioAction) {
+                            Text(if (ui.isTestingMic) "Test..." else "Test mic")
+                        }
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ui.availableTestDurationsSec.forEach { sec ->
+                            if (sec == ui.selectedTestDurationSec) {
+                                Button(onClick = { onSetTestDuration(sec) }) { Text("${sec}s") }
+                            } else {
+                                OutlinedButton(onClick = { onSetTestDuration(sec) }) { Text("${sec}s") }
                             }
                         }
                     }
-                }
 
-                ui.micTestResult?.let {
-                    Text("Résultat test: $it", style = MaterialTheme.typography.bodySmall)
-                }
-                ui.stereoGuidedTestResult?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(
+                        onClick = onRequestProbeStereo,
+                        enabled = !busyAudioAction,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Probe stéréo")
+                    }
+
+                    Text("Résultat probe: ${ui.stereoProbeMessage}", style = MaterialTheme.typography.bodySmall)
+                    Text("Source input: ${ui.inputSourceLabel}", style = MaterialTheme.typography.bodySmall)
+                    Text("Route active: ${ui.inputRoutedDevice}", style = MaterialTheme.typography.bodySmall)
+                    Text("Traitements: ${ui.inputProcessingSummary}", style = MaterialTheme.typography.bodySmall)
+
+                    OutlinedButton(onClick = { onSelectMic(null) }) {
+                        val autoLabel = ui.effectiveMicLabel ?: "none"
+                        Text(if (ui.selectedMicId == null) "Auto (actif -> $autoLabel)" else "Auto")
+                    }
+
+                    if (ui.microphones.isEmpty()) {
+                        Text("Aucun microphone détecté")
+                    } else {
+                        ui.microphones.forEach { mic ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp),
+                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    val selected = mic.id == ui.selectedMicId
+                                    if (selected) {
+                                        Button(onClick = { onSelectMic(mic.id) }) { Text("Sélectionné") }
+                                    } else {
+                                        OutlinedButton(onClick = { onSelectMic(mic.id) }) { Text("Choisir") }
+                                    }
+                                    Text(mic.displayName, fontWeight = FontWeight.SemiBold)
+                                }
+                                Text("Type: ${mic.typeLabel} (${mic.typeCode})")
+                                Text("ID: ${mic.id}")
+                                Text("Description: ${mic.description ?: "N/A"}")
+                                Text("Location: ${mic.locationLabel ?: "N/A"}")
+                                Text("Directionality: ${mic.directionalityLabel ?: "N/A"}")
+                                Text("Raw channels: ${mic.rawChannelCounts ?: "N/A"}")
+                                Text("Raw sample rates: ${mic.rawSampleRates ?: "N/A"}")
+                                if (!mic.warning.isNullOrBlank()) {
+                                    Text("Warning: ${mic.warning}", color = AmpAccentAmber, style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                    }
+
+                    ui.micTestResult?.let {
+                        Text("Résultat test: $it", style = MaterialTheme.typography.bodySmall)
+                    }
+                    ui.stereoGuidedTestResult?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             }
         }
@@ -1190,6 +1169,7 @@ private fun ScreenScaffold(
             .fillMaxSize()
             .statusBarsPadding()
             .navigationBarsPadding()
+            .background(Brush.verticalGradient(listOf(AmpBgDark, AmpBgMid, AmpBgDark)))
             .padding(16.dp)
     ) {
         Row(
@@ -1197,11 +1177,23 @@ private fun ScreenScaffold(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            OutlinedButton(onClick = onBack) {
+            OutlinedButton(
+                onClick = onBack,
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = AmpAccentAmber, containerColor = Color(0xFF2A2D32)),
+                border = BorderStroke(1.dp, AmpPanelBorder)
+            ) {
                 Text("Retour")
             }
             Spacer(modifier = Modifier.width(8.dp))
-            Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Brush.verticalGradient(listOf(AmpMetalLight, AmpMetalDark, AmpMetalLight)))
+                    .padding(vertical = 8.dp, horizontal = 12.dp)
+            ) {
+                Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Color(0xFF1F2328))
+            }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -1209,12 +1201,15 @@ private fun ScreenScaffold(
             modifier = Modifier
                 .fillMaxSize()
                 .clip(RoundedCornerShape(16.dp))
-                .background(Color(0x10FFFFFF))
+                .background(Color(0xFF24282D))
+                .border(BorderStroke(1.dp, AmpPanelBorder), RoundedCornerShape(16.dp))
                 .padding(14.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            content()
+            CompositionLocalProvider(LocalContentColor provides AmpText) {
+                content()
+            }
         }
     }
 }
