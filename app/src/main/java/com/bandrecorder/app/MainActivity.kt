@@ -78,6 +78,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import java.io.File
 import kotlin.math.cos
+import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.roundToInt
 
@@ -487,8 +488,8 @@ private fun AnalogVuMeter(
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(10f, 10f)
             )
 
-            val center = Offset(panelLeft + panelWidth * 0.5f, panelTop + panelHeight * 0.92f)
-            val radius = panelWidth * 0.46f
+            val center = Offset(panelLeft + panelWidth * 0.5f, panelTop + panelHeight * 1.08f)
+            val radius = min(panelWidth * 0.46f, panelHeight * 0.95f)
 
             // Main scale arc + red overload segment on the right.
             drawArc(
@@ -508,6 +509,20 @@ private fun AnalogVuMeter(
                 topLeft = Offset(center.x - radius, center.y - radius),
                 size = Size(radius * 2f, radius * 2f),
                 style = Stroke(width = 3f, cap = StrokeCap.Round)
+            )
+
+            val peakOn = peakDb > -3f
+            val peakCenter = Offset(panelLeft + panelWidth * 0.90f, panelTop + panelHeight * 0.32f)
+            drawCircle(
+                color = if (peakOn) Color(0xFFE23A2E) else Color(0xFF7A4B48),
+                radius = 7f,
+                center = peakCenter
+            )
+            drawCircle(
+                color = Color(0xFF2A1A19),
+                radius = 9f,
+                center = peakCenter,
+                style = Stroke(width = 1.2f)
             )
 
             for (i in 0..10) {
