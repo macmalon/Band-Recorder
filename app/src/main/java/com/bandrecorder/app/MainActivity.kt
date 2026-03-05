@@ -63,12 +63,16 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -95,6 +99,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -150,7 +155,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
+            MaterialTheme(
+                colorScheme = darkColorScheme(
+                    primary = AmpAccentAmber,
+                    secondary = AmpAccentAmber,
+                    tertiary = AmpAccentAmber,
+                    primaryContainer = AmpAccentAmberSoft,
+                    secondaryContainer = AmpAccentAmberSoft
+                )
+            ) {
                 Surface {
                     MainScreen()
                 }
@@ -234,7 +247,8 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onRequestTestMic = { requestAudioPermission(PendingAction.TEST_MIC) },
                 onRequestProbeStereo = { requestAudioPermission(PendingAction.PROBE_STEREO) },
                 onOpenGuidedStereoTest = { navController.navigate(AppRoute.GuidedStereoTest.route) },
-                onRequestAutoMicSetup = { requestAudioPermission(PendingAction.AUTO_MIC_SETUP) }
+                onRequestAutoMicSetup = { requestAudioPermission(PendingAction.AUTO_MIC_SETUP) },
+                onRequestRunABTest = { requestAudioPermission(PendingAction.RUN_AB_TEST) }
             )
         }
         composable(AppRoute.GuidedStereoTest.route) {
@@ -253,8 +267,7 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onToggleSplitOnSilence = vm::setSplitOnSilenceEnabled,
                 onToggleDiagnostic = vm::setDiagnosticMode,
                 onToggleAdvanced = vm::setShowAdvancedInternals,
-                onToggleVintageV2 = vm::setUiVintageV2Enabled,
-                onRequestRunABTest = { requestAudioPermission(PendingAction.RUN_AB_TEST) }
+                onToggleVintageV2 = vm::setUiVintageV2Enabled
             )
         }
         composable(AppRoute.Player.route) {
@@ -1191,7 +1204,8 @@ private fun MicSettingsScreen(
     onRequestTestMic: () -> Unit,
     onRequestProbeStereo: () -> Unit,
     onOpenGuidedStereoTest: () -> Unit,
-    onRequestAutoMicSetup: () -> Unit
+    onRequestAutoMicSetup: () -> Unit,
+    onRequestRunABTest: () -> Unit
 ) {
     var advancedExpanded by remember { mutableStateOf(false) }
     var autoSetupTriggered by remember { mutableStateOf(false) }
@@ -1294,9 +1308,9 @@ private fun MicSettingsScreen(
                     }
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = onRefreshMics, enabled = !busyAudioAction) { Text("Scan") }
+                        OutlinedButton(onClick = onRefreshMics, enabled = !busyAudioAction) { Text("Scanner") }
                         Button(onClick = onRequestTestMic, enabled = !busyAudioAction) {
-                            Text(if (ui.isTestingMic) "Test..." else "Test mic")
+                            Text(if (ui.isTestingMic) "Test..." else "Tester le micro")
                         }
                     }
 
@@ -1315,7 +1329,26 @@ private fun MicSettingsScreen(
                         enabled = !busyAudioAction,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Probe stéréo")
+                        Text("Sonder la stéréo")
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("Comparaison A/B des micros internes", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Comment l'utiliser: place le téléphone à l'endroit réel d'enregistrement, " +
+                            "laisse 2 secondes de silence puis joue 6 secondes. " +
+                            "Le test compare deux micros internes et recommande le plus propre.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(
+                        onClick = onRequestRunABTest,
+                        enabled = !busyAudioAction,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (ui.isRunningABTest) "Comparaison A/B en cours..." else "Lancer comparaison A/B")
+                    }
+                    ui.abTestResult?.let {
+                        Text("Résultat A/B: $it", style = MaterialTheme.typography.bodySmall)
                     }
 
                     Text("Résultat probe: ${ui.stereoProbeMessage}", style = MaterialTheme.typography.bodySmall)
@@ -1956,118 +1989,118 @@ private fun SettingsScreen(
     onToggleSplitOnSilence: (Boolean) -> Unit,
     onToggleDiagnostic: (Boolean) -> Unit,
     onToggleAdvanced: (Boolean) -> Unit,
-    onToggleVintageV2: (Boolean) -> Unit,
-    onRequestRunABTest: () -> Unit
+    onToggleVintageV2: (Boolean) -> Unit
 ) {
     ScreenScaffold(title = "Paramètres", onBack = onBack) {
-        Text("Emplacement d'enregistrement", fontWeight = FontWeight.Bold)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (ui.storageLocation == StorageLocation.DOWNLOADS) {
-                Button(onClick = { onStorageChange(StorageLocation.DOWNLOADS) }) { Text("Downloads") }
-                OutlinedButton(onClick = { onStorageChange(StorageLocation.APP_PRIVATE) }) { Text("App private") }
-            } else {
-                OutlinedButton(onClick = { onStorageChange(StorageLocation.DOWNLOADS) }) { Text("Downloads") }
-                Button(onClick = { onStorageChange(StorageLocation.APP_PRIVATE) }) { Text("App private") }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(4.dp))
-        Text("Paramètres d'enregistrement", fontWeight = FontWeight.Bold)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (ui.ignoreSilenceEnabled) {
-                Button(onClick = { onToggleIgnoreSilence(true) }) { Text("Ignorer les blancs ON") }
-                OutlinedButton(onClick = { onToggleIgnoreSilence(false) }) { Text("Ignorer les blancs OFF") }
-            } else {
-                OutlinedButton(onClick = { onToggleIgnoreSilence(true) }) { Text("Ignorer les blancs ON") }
-                Button(onClick = { onToggleIgnoreSilence(false) }) { Text("Ignorer les blancs OFF") }
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val splitEnabled = ui.ignoreSilenceEnabled
-            if (ui.splitOnSilenceEnabled) {
-                Button(
-                    onClick = { onToggleSplitOnSilence(true) },
-                    enabled = splitEnabled
-                ) { Text("Découper ON") }
-                OutlinedButton(
-                    onClick = { onToggleSplitOnSilence(false) },
-                    enabled = splitEnabled
-                ) { Text("Découper OFF") }
-            } else {
-                OutlinedButton(
-                    onClick = { onToggleSplitOnSilence(true) },
-                    enabled = splitEnabled
-                ) { Text("Découper ON") }
-                Button(
-                    onClick = { onToggleSplitOnSilence(false) },
-                    enabled = splitEnabled
-                ) { Text("Découper OFF") }
-            }
-        }
-        if (!ui.ignoreSilenceEnabled) {
-            Text("Active d'abord « Ignorer les blancs » pour autoriser « Découper ».", style = MaterialTheme.typography.bodySmall)
-        }
-
-        Spacer(modifier = Modifier.height(4.dp))
-        Text("Diagnostic", fontWeight = FontWeight.Bold)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (ui.diagnosticModeEnabled) {
-                Button(onClick = { onToggleDiagnostic(true) }) { Text("Diagnostic ON") }
-                OutlinedButton(onClick = { onToggleDiagnostic(false) }) { Text("Diagnostic OFF") }
-            } else {
-                OutlinedButton(onClick = { onToggleDiagnostic(true) }) { Text("Diagnostic ON") }
-                Button(onClick = { onToggleDiagnostic(false) }) { Text("Diagnostic OFF") }
-            }
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (ui.showAdvancedInternals) {
-                Button(onClick = { onToggleAdvanced(true) }) { Text("Advanced ON") }
-                OutlinedButton(onClick = { onToggleAdvanced(false) }) { Text("Advanced OFF") }
-            } else {
-                OutlinedButton(onClick = { onToggleAdvanced(true) }) { Text("Advanced ON") }
-                Button(onClick = { onToggleAdvanced(false) }) { Text("Advanced OFF") }
-            }
-        }
-
-        Text("UI Vintage V2", fontWeight = FontWeight.Bold)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (ui.uiVintageV2Enabled) {
-                Button(onClick = { onToggleVintageV2(true) }) { Text("Vintage ON") }
-                OutlinedButton(onClick = { onToggleVintageV2(false) }) { Text("Vintage OFF") }
-            } else {
-                OutlinedButton(onClick = { onToggleVintageV2(true) }) { Text("Vintage ON") }
-                Button(onClick = { onToggleVintageV2(false) }) { Text("Vintage OFF") }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(6.dp))
-        Text("External A/B built-in test", fontWeight = FontWeight.Bold)
-        Button(
-            onClick = onRequestRunABTest,
-            enabled = !ui.isRecording && !ui.isCalibrating && !ui.isTestingMic && !ui.isRunningABTest && !ui.isRunningStereoGuidedTest
+        CompositionLocalProvider(
+            androidx.compose.material3.LocalTextStyle provides TextStyle(fontSize = 12.sp)
         ) {
-            Text(if (ui.isRunningABTest) "Running A/B..." else "Run external A/B")
-        }
-        ui.abTestResult?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-
-        Spacer(modifier = Modifier.height(6.dp))
-        Text("Historique des tests", fontWeight = FontWeight.Bold)
-        if (ui.testHistory.isEmpty()) {
-            Text("Aucun test pour le moment")
-        } else {
-            ui.testHistory.forEach { entry ->
+            Text("Paramètres d'enregistrement", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            SettingToggleRow(
+                label = "Ignorer les blancs",
+                checked = ui.ignoreSilenceEnabled,
+                onCheckedChange = onToggleIgnoreSilence
+            )
+            SettingToggleRow(
+                label = "Découper",
+                checked = ui.splitOnSilenceEnabled,
+                enabled = ui.ignoreSilenceEnabled,
+                onCheckedChange = onToggleSplitOnSilence
+            )
+            if (!ui.ignoreSilenceEnabled) {
                 Text(
-                    "${entry.timestampIso} | ${entry.micLabel} | ${entry.durationSec}s | RMS ${"%.1f".format(entry.rmsDb)} | Peak ${"%.1f".format(entry.peakDb)}",
+                    "Active d'abord « Ignorer les blancs » pour autoriser « Découper ».",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
-        }
 
-        ui.lastDiagnosticReportPath?.let {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("Emplacement d'enregistrement", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            SettingToggleRow(
+                label = "Stockage app privée",
+                checked = ui.storageLocation == StorageLocation.APP_PRIVATE,
+                onCheckedChange = { isPrivate ->
+                    onStorageChange(if (isPrivate) StorageLocation.APP_PRIVATE else StorageLocation.DOWNLOADS)
+                }
+            )
+            Text(
+                if (ui.storageLocation == StorageLocation.APP_PRIVATE) "Actuel: stockage privé app" else "Actuel: Downloads",
+                style = MaterialTheme.typography.bodySmall
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("Diagnostic", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            SettingToggleRow(
+                label = "Diagnostic",
+                checked = ui.diagnosticModeEnabled,
+                onCheckedChange = onToggleDiagnostic
+            )
+            SettingToggleRow(
+                label = "Avancé",
+                checked = ui.showAdvancedInternals,
+                onCheckedChange = onToggleAdvanced
+            )
+            SettingToggleRow(
+                label = "UI Vintage V2",
+                checked = ui.uiVintageV2Enabled,
+                onCheckedChange = onToggleVintageV2
+            )
+
             Spacer(modifier = Modifier.height(6.dp))
-            Text("Dernier rapport: $it", style = MaterialTheme.typography.bodySmall)
+            Text("Historique des tests", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            if (ui.testHistory.isEmpty()) {
+                Text("Aucun test pour le moment")
+            } else {
+                ui.testHistory.forEach { entry ->
+                    Text(
+                        "${entry.timestampIso} | ${entry.micLabel} | ${entry.durationSec}s | RMS ${"%.1f".format(entry.rmsDb)} | Peak ${"%.1f".format(entry.peakDb)}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+
+            ui.lastDiagnosticReportPath?.let {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("Dernier rapport: $it", style = MaterialTheme.typography.bodySmall)
+            }
         }
+    }
+}
+
+@Composable
+private fun SettingToggleRow(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            fontSize = 12.sp,
+            color = if (enabled) LocalContentColor.current else LocalContentColor.current.copy(alpha = 0.55f)
+        )
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = AmpAccentAmber,
+                checkedTrackColor = AmpAccentAmberSoft,
+                checkedBorderColor = AmpAccentAmber,
+                uncheckedThumbColor = AmpMetalLight,
+                uncheckedTrackColor = Color(0xFF3A3E44),
+                uncheckedBorderColor = AmpPanelBorder,
+                disabledCheckedThumbColor = AmpAccentAmber.copy(alpha = 0.5f),
+                disabledCheckedTrackColor = AmpAccentAmberSoft.copy(alpha = 0.35f),
+                disabledUncheckedThumbColor = AmpMetalLight.copy(alpha = 0.45f),
+                disabledUncheckedTrackColor = Color(0xFF3A3E44).copy(alpha = 0.45f)
+            )
+        )
     }
 }
 

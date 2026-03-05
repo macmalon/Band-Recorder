@@ -967,8 +967,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         if (builtIns.size < 2) {
             _uiState.update {
                 it.copy(
-                    status = "A/B test requires at least 2 built-in microphones",
-                    abTestResult = "A/B unavailable: less than 2 built-in microphones detected"
+                    status = "Test A/B indisponible: 2 micros internes minimum",
+                    abTestResult = "A/B indisponible: moins de 2 micros internes détectés"
                 )
             }
             return
@@ -981,14 +981,14 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             _uiState.update {
                 it.copy(
                     isRunningABTest = true,
-                    status = "A/B: ${micA.displayName} silence 2s, then external signal 6s",
+                    status = "A/B: ${micA.displayName} silence 2s, puis signal 6s",
                     abTestResult = null
                 )
             }
             val measureA = runGuidedABMeasure(micA)
 
             _uiState.update {
-                it.copy(status = "A/B: ${micB.displayName} silence 2s, then external signal 6s")
+                it.copy(status = "A/B: ${micB.displayName} silence 2s, puis signal 6s")
             }
             val measureB = runGuidedABMeasure(micB)
 
@@ -996,7 +996,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
             if (measureA == null || measureB == null) {
                 _uiState.update {
-                    it.copy(status = "A/B test failed", abTestResult = "A/B failed: measurement error")
+                    it.copy(status = "Échec du test A/B", abTestResult = "A/B échoué: erreur de mesure")
                 }
                 return@launch
             }
@@ -1006,15 +1006,15 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             val winner = if (scoreA >= scoreB) micA else micB
 
             val result = buildString {
-                appendLine("A/B external test complete")
-                appendLine("Mic A: ${micA.displayName} | score ${"%.1f".format(scoreA)} | noise ${"%.1f".format(measureA.noise.rmsDb)} | signal ${"%.1f".format(measureA.signal.rmsDb)}")
-                appendLine("Mic B: ${micB.displayName} | score ${"%.1f".format(scoreB)} | noise ${"%.1f".format(measureB.noise.rmsDb)} | signal ${"%.1f".format(measureB.signal.rmsDb)}")
-                appendLine("Recommended mic: ${winner.displayName}")
+                appendLine("Test externe A/B terminé")
+                appendLine("Micro A: ${micA.displayName} | score ${"%.1f".format(scoreA)} | bruit ${"%.1f".format(measureA.noise.rmsDb)} | signal ${"%.1f".format(measureA.signal.rmsDb)}")
+                appendLine("Micro B: ${micB.displayName} | score ${"%.1f".format(scoreB)} | bruit ${"%.1f".format(measureB.noise.rmsDb)} | signal ${"%.1f".format(measureB.signal.rmsDb)}")
+                appendLine("Micro recommandé: ${winner.displayName}")
             }
 
             _uiState.update {
                 it.copy(
-                    status = "A/B test complete",
+                    status = "Test A/B terminé",
                     abTestResult = result
                 )
             }
