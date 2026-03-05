@@ -443,7 +443,8 @@ private fun AnalogVuMeter(
     modifier: Modifier = Modifier
 ) {
     val normalized = ((peakDb + 36f) / 36f).coerceIn(0f, 1f)
-    val targetAngle = -120f + (normalized * 240f)
+    // Classic VU sweep: left to right on the upper arc only.
+    val targetAngle = 210f + (normalized * 120f)
     val animatedAngle by animateFloatAsState(
         targetValue = targetAngle,
         animationSpec = tween(durationMillis = 140),
@@ -453,55 +454,78 @@ private fun AnalogVuMeter(
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(18.dp))
-            .background(Color(0xFF262A30))
+            .background(Color(0xFF1C1C1C))
             .border(BorderStroke(1.dp, AmpPanelBorder), RoundedCornerShape(18.dp))
             .padding(12.dp)
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
             val h = size.height
-            val center = Offset(w * 0.5f, h * 0.88f)
-            val radius = (w.coerceAtMost(h * 1.8f) * 0.42f)
+            val panelInset = 8f
+            val panelTop = panelInset
+            val panelLeft = panelInset
+            val panelWidth = w - panelInset * 2f
+            val panelHeight = h - panelInset * 2f
 
-            // Warm backlight.
-            drawArc(
-                brush = Brush.radialGradient(
-                    colors = listOf(AmpAccentAmberSoft, Color.Transparent),
-                    center = Offset(w * 0.5f, h * 0.56f),
-                    radius = radius * 1.4f
-                ),
-                startAngle = 0f,
-                sweepAngle = 360f,
-                useCenter = true,
-                topLeft = Offset(0f, 0f),
-                size = Size(w, h)
+            // Cream meter face.
+            drawRoundRect(
+                color = Color(0xFFF2E9C9),
+                topLeft = Offset(panelLeft, panelTop),
+                size = Size(panelWidth, panelHeight),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(10f, 10f)
             )
 
-            val meterColor = if (isRunning) AmpAccentAmber else AmpMetalDark
+            // Soft amber backlight.
+            drawRoundRect(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color(0x66FFD56A), Color.Transparent),
+                    center = Offset(panelLeft + panelWidth * 0.5f, panelTop + panelHeight * 0.45f),
+                    radius = panelWidth * 0.6f
+                ),
+                topLeft = Offset(panelLeft, panelTop),
+                size = Size(panelWidth, panelHeight),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(10f, 10f)
+            )
+
+            val center = Offset(panelLeft + panelWidth * 0.5f, panelTop + panelHeight * 0.92f)
+            val radius = panelWidth * 0.46f
+
+            // Main scale arc + red overload segment on the right.
             drawArc(
-                color = meterColor,
+                color = Color(0xFF2A2A2A),
                 startAngle = 210f,
-                sweepAngle = 120f,
+                sweepAngle = 92f,
                 useCenter = false,
                 topLeft = Offset(center.x - radius, center.y - radius),
                 size = Size(radius * 2f, radius * 2f),
-                style = Stroke(width = 4f, cap = StrokeCap.Round)
+                style = Stroke(width = 3f, cap = StrokeCap.Round)
+            )
+            drawArc(
+                color = Color(0xFFB83A2B),
+                startAngle = 302f,
+                sweepAngle = 28f,
+                useCenter = false,
+                topLeft = Offset(center.x - radius, center.y - radius),
+                size = Size(radius * 2f, radius * 2f),
+                style = Stroke(width = 3f, cap = StrokeCap.Round)
             )
 
-            for (i in 0..6) {
-                val a = Math.toRadians((210 + i * 20).toDouble())
+            for (i in 0..10) {
+                val angleDeg = 210f + (i * 12f)
+                val a = Math.toRadians(angleDeg.toDouble())
                 val p1 = Offset(
-                    x = center.x + (cos(a).toFloat() * (radius - 18f)),
-                    y = center.y + (sin(a).toFloat() * (radius - 18f))
+                    x = center.x + (cos(a).toFloat() * (radius - 16f)),
+                    y = center.y + (sin(a).toFloat() * (radius - 16f))
                 )
                 val p2 = Offset(
-                    x = center.x + (cos(a).toFloat() * (radius - 5f)),
-                    y = center.y + (sin(a).toFloat() * (radius - 5f))
+                    x = center.x + (cos(a).toFloat() * (radius - 2f)),
+                    y = center.y + (sin(a).toFloat() * (radius - 2f))
                 )
-                drawLine(color = AmpMetalLight, start = p1, end = p2, strokeWidth = 2f)
+                drawLine(color = Color(0xFF2D2D2D), start = p1, end = p2, strokeWidth = if (i % 2 == 0) 2.2f else 1.5f)
             }
 
-            val needleRadians = Math.toRadians((90 + animatedAngle).toDouble())
+            // Needle constrained to the same arc.
+            val needleRadians = Math.toRadians(animatedAngle.toDouble())
             val needleEnd = Offset(
                 x = center.x + (cos(needleRadians).toFloat() * (radius - 24f)),
                 y = center.y + (sin(needleRadians).toFloat() * (radius - 24f))
@@ -513,7 +537,17 @@ private fun AnalogVuMeter(
                 strokeWidth = 5f,
                 cap = StrokeCap.Round
             )
-            drawCircle(color = AmpMetalLight, radius = 7f, center = center)
+            drawCircle(color = Color(0xFF2E2E2E), radius = 10f, center = center)
+            drawCircle(color = Color(0xFFD1D1D1), radius = 5f, center = center)
+
+            // Bottom label.
+            val labelY = panelTop + panelHeight * 0.63f
+            drawLine(
+                color = if (isRunning) Color(0x55F2B63D) else Color(0x33000000),
+                start = Offset(panelLeft + panelWidth * 0.18f, labelY),
+                end = Offset(panelLeft + panelWidth * 0.82f, labelY),
+                strokeWidth = 1.2f
+            )
         }
     }
 }
