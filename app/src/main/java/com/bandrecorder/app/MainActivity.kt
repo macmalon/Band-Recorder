@@ -488,16 +488,17 @@ private fun AnalogVuMeter(
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(10f, 10f)
             )
 
-            val center = Offset(panelLeft + panelWidth * 0.5f, panelTop + panelHeight * 1.08f)
-            val radius = min(panelWidth * 0.46f, panelHeight * 0.95f)
+            val center = Offset(panelLeft + panelWidth * 0.5f, panelTop + panelHeight * 0.92f)
+            val radius = min(panelWidth * 0.46f, panelHeight * 0.86f)
 
             // Main scale arc + red overload segment on the right.
+            val arcTopLeft = Offset(center.x - radius, center.y - radius - 10f)
             drawArc(
                 color = Color(0xFF2A2A2A),
                 startAngle = 210f,
                 sweepAngle = 92f,
                 useCenter = false,
-                topLeft = Offset(center.x - radius, center.y - radius),
+                topLeft = arcTopLeft,
                 size = Size(radius * 2f, radius * 2f),
                 style = Stroke(width = 3f, cap = StrokeCap.Round)
             )
@@ -506,7 +507,7 @@ private fun AnalogVuMeter(
                 startAngle = 302f,
                 sweepAngle = 28f,
                 useCenter = false,
-                topLeft = Offset(center.x - radius, center.y - radius),
+                topLeft = arcTopLeft,
                 size = Size(radius * 2f, radius * 2f),
                 style = Stroke(width = 3f, cap = StrokeCap.Round)
             )
@@ -541,9 +542,10 @@ private fun AnalogVuMeter(
 
             // Needle constrained to the same arc.
             val needleRadians = Math.toRadians(animatedAngle.toDouble())
+            val needleLength = radius - 40f
             val needleEnd = Offset(
-                x = center.x + (cos(needleRadians).toFloat() * (radius - 24f)),
-                y = center.y + (sin(needleRadians).toFloat() * (radius - 24f))
+                x = center.x + (cos(needleRadians).toFloat() * needleLength),
+                y = center.y + (sin(needleRadians).toFloat() * needleLength)
             )
             drawLine(
                 color = Color(0xFFD64C32),
