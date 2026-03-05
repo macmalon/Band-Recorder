@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -35,11 +36,20 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -59,6 +69,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
@@ -71,6 +82,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.text.font.FontWeight
@@ -84,12 +97,16 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.bandrecorder.app.ui.vintage.VintageDimensions
+import com.bandrecorder.app.ui.vintage.VintageColors
 import java.io.File
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.cos
 import kotlin.math.absoluteValue
 import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.roundToInt
+import kotlin.random.Random
 
 private enum class PendingAction {
     RUN_LEVEL_BALANCE,
@@ -352,62 +369,73 @@ private fun RecorderScreenV2(
     onOpenLink: () -> Unit
 ) {
     val isBusy = ui.isCalibrating || ui.isTestingMic || ui.isRunningABTest || ui.isRunningStereoGuidedTest
-    Column(
+    var recPressedFeedback by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
             .navigationBarsPadding()
-            .background(Brush.verticalGradient(listOf(AmpBgDark, AmpBgMid, AmpBgDark)))
             .padding(VintageDimensions.screenPadding),
-        verticalArrangement = Arrangement.spacedBy(VintageDimensions.sectionSpacing)
+        contentAlignment = Alignment.TopCenter
     ) {
-        Row(
+        TolexBackgroundV2()
+
+        Column(
             modifier = Modifier
+                .fillMaxHeight()
                 .fillMaxWidth()
-                .height(VintageDimensions.topPanelHeight),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .widthIn(max = VintageDimensions.facadeMaxWidth),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            RecIndicatorV2(isRecording = ui.isRecording)
-            Text(
-                text = formatTimer(ui.elapsedMs),
-                color = AmpMetalLight,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 32.sp
+            TopMetalPanelV2(
+                modifier = Modifier.fillMaxWidth(),
+                isRecording = ui.isRecording,
+                isPausedVisual = recPressedFeedback && !ui.isRecording,
+                timerText = formatTimer(ui.elapsedMs)
             )
-        }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
-            VUMeterV2(label = "LEFT", value = ui.leftVu)
-            VUMeterV2(label = "RIGHT", value = ui.rightVu)
-        }
+            Spacer(modifier = Modifier.height(VintageDimensions.topToVuSpacing))
 
-        RecordButtonV2(
-            isRecording = ui.isRecording,
-            isBusy = isBusy,
-            onRecordToggle = onRecordToggle,
-            modifier = Modifier.align(Alignment.CenterHorizontally)
-        )
+            VuMetersPanelV2(
+                leftVu = ui.leftVu,
+                rightVu = ui.rightVu,
+                modifier = Modifier.fillMaxWidth()
+            )
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
-            KnobControlV2(label = "GAIN", onClick = onOpenBalance)
-            KnobControlV2(label = "MIC", onClick = onOpenMicSettings)
-        }
+            Spacer(modifier = Modifier.height(VintageDimensions.vuToRecordSpacing))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            LinkSwitchV2(onClick = onOpenLink)
-            HardwareButtonV2(label = "LECTEUR", onClick = onOpenPlayer)
-            HardwareButtonV2(label = "PARAMS", onClick = onOpenSettings)
+            RecordButtonV2(
+                isRecording = ui.isRecording,
+                isBusy = isBusy,
+                onRecordToggle = {
+                    recPressedFeedback = true
+                    onRecordToggle()
+                    scope.launch {
+                        delay(420)
+                        recPressedFeedback = false
+                    }
+                },
+                modifier = Modifier.align(Alignment.CenterHorizontally)
+            )
+
+            Spacer(modifier = Modifier.height(VintageDimensions.recordToKnobSpacing))
+
+            KnobPanelV2(
+                onOpenBalance = onOpenBalance,
+                onOpenMicSettings = onOpenMicSettings,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(VintageDimensions.knobToHardwareSpacing))
+
+            HardwareBarV2(
+                onOpenLink = onOpenLink,
+                onOpenPlayer = onOpenPlayer,
+                onOpenSettings = onOpenSettings,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
     }
 }
@@ -446,38 +474,212 @@ private fun PlayerScreenV2(
 }
 
 @Composable
-private fun RecIndicatorV2(isRecording: Boolean) {
+private fun TolexBackgroundV2() {
+    val safeScale = VintageDimensions.tolexScale.coerceIn(
+        VintageDimensions.tolexMinScale,
+        VintageDimensions.tolexMaxScale
+    )
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                scaleX = safeScale
+                scaleY = safeScale
+                translationX = VintageDimensions.tolexTranslationXPx
+                translationY = VintageDimensions.tolexTranslationYPx
+            }
+            .background(Brush.verticalGradient(listOf(AmpBgDark, AmpBgMid, AmpBgDark)))
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val step = 22f
+            var y = 0f
+            while (y < size.height + step) {
+                var x = 0f
+                while (x < size.width + step) {
+                    drawCircle(
+                        color = Color(0x22000000),
+                        radius = 3.4f,
+                        center = Offset(x + (if (((x / step).toInt() + (y / step).toInt()) % 2 == 0) 5f else 0f), y + 4f)
+                    )
+                    x += step
+                }
+                y += step
+            }
+
+            val noiseStep = 16f
+            var ny = 0f
+            while (ny < size.height + noiseStep) {
+                var nx = 0f
+                while (nx < size.width + noiseStep) {
+                    val alpha = if (((nx / noiseStep).toInt() + (ny / noiseStep).toInt()) % 2 == 0) {
+                        VintageDimensions.tolexNoiseAlpha
+                    } else {
+                        VintageDimensions.tolexNoiseAlpha * 0.55f
+                    }
+                    drawRect(
+                        color = Color.White.copy(alpha = alpha),
+                        topLeft = Offset(nx, ny),
+                        size = Size(1.2f, 1.2f)
+                    )
+                    nx += noiseStep
+                }
+                ny += noiseStep
+            }
+        }
+    }
+}
+
+@Composable
+private fun TopMetalPanelV2(
+    modifier: Modifier = Modifier,
+    isRecording: Boolean,
+    isPausedVisual: Boolean,
+    timerText: String
+) {
+    Row(
+        modifier = modifier
+            .height(VintageDimensions.topPanelHeight)
+            .shadow(2.dp, RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        VintageColors.panelTopHighlight,
+                        VintageColors.panelTop,
+                        VintageColors.panelTopShadow
+                    )
+                )
+            )
+            .border(BorderStroke(1.dp, AmpPanelBorder), RoundedCornerShape(12.dp))
+            .padding(horizontal = 14.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RecIndicatorV2(isRecording = isRecording, isPausedVisual = isPausedVisual)
+        Text(
+            text = timerText,
+            color = AmpMetalLight,
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = 30.sp
+        )
+    }
+}
+
+@Composable
+private fun RecIndicatorV2(isRecording: Boolean, isPausedVisual: Boolean) {
+    val pulse = rememberInfiniteTransition(label = "led_pulse")
+    val pulseProgress by pulse.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = VintageDimensions.ledPulseDurationMs, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "led_progress"
+    )
+
+    val pulseAlpha = VintageDimensions.ledPulseMinAlpha +
+        (VintageDimensions.ledPulseMaxAlpha - VintageDimensions.ledPulseMinAlpha) * pulseProgress
+    val glowPulse = (1f - VintageDimensions.ledGlowVariation) +
+        (2f * VintageDimensions.ledGlowVariation * pulseProgress)
+
+    val ledColor = when {
+        isRecording -> VintageColors.ledRec
+        isPausedVisual -> VintageColors.ledRec
+        else -> VintageColors.ledOff
+    }
+    val ledAlpha = when {
+        isRecording -> 1f
+        isPausedVisual -> pulseAlpha
+        else -> 1f
+    }
+    val glowAlpha = when {
+        isRecording -> 0.32f
+        isPausedVisual -> 0.32f * glowPulse
+        else -> 0.08f
+    }
+
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(VintageDimensions.smallSpacing)) {
-        Canvas(modifier = Modifier.size(VintageDimensions.recLedSize)) {
-            drawCircle(color = if (isRecording) Color(0xFFE23A2E) else Color(0xFF5B2A28))
+        Box(contentAlignment = Alignment.Center) {
+            Canvas(modifier = Modifier.size(VintageDimensions.recLedSize * 1.9f)) {
+                drawCircle(color = VintageColors.ledRec.copy(alpha = glowAlpha))
+            }
+            Canvas(modifier = Modifier.size(VintageDimensions.recLedSize)) {
+                drawCircle(color = ledColor.copy(alpha = ledAlpha))
+            }
         }
         Text(
-            text = if (isRecording) "REC" else "STBY",
-            color = if (isRecording) Color(0xFFE23A2E) else AmpMetalDark,
+            text = if (isRecording || isPausedVisual) "REC" else "STBY",
+            color = if (isRecording || isPausedVisual) VintageColors.ledRec else AmpMetalDark,
             fontWeight = FontWeight.ExtraBold
         )
     }
 }
 
 @Composable
+private fun VuMetersPanelV2(leftVu: Float, rightVu: Float, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.SpaceEvenly
+    ) {
+        VUMeterV2(label = "LEFT", value = leftVu)
+        VUMeterV2(label = "RIGHT", value = rightVu)
+    }
+}
+
+@Composable
 private fun VUMeterV2(label: String, value: Float) {
+    val safeValue = value.coerceIn(0f, 1f)
+    val animatedValue by animateFloatAsState(
+        targetValue = safeValue,
+        animationSpec = tween(durationMillis = VintageDimensions.vuAnimationDurationMs, easing = FastOutSlowInEasing),
+        label = "vu_meter_value"
+    )
+    val angle = VintageDimensions.vuMinAngle +
+        animatedValue * (VintageDimensions.vuMaxAngle - VintageDimensions.vuMinAngle) +
+        VintageDimensions.vuNeedleBaseAngleOffset
+
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(VintageDimensions.smallSpacing)) {
         Box(
             modifier = Modifier
                 .width(VintageDimensions.vuWidth)
                 .height(VintageDimensions.vuHeight)
+                .shadow(2.dp, RoundedCornerShape(VintageDimensions.vuCornerRadius))
                 .clip(RoundedCornerShape(VintageDimensions.vuCornerRadius))
-                .background(Color(0xFF201A12))
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color(0xFF3F3B34), Color(0xFF2A2824), Color(0xFF1F1C1A))
+                    )
+                )
                 .border(BorderStroke(1.dp, AmpMetalDark), RoundedCornerShape(VintageDimensions.vuCornerRadius))
                 .padding(VintageDimensions.smallSpacing)
         ) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                val y = size.height * (1f - value.coerceIn(0f, 1f))
-                drawRect(
-                    brush = Brush.verticalGradient(listOf(Color(0xFFB53E2D), Color(0xFFEAB44A), Color(0xFF4B2A18))),
-                    topLeft = Offset(0f, y),
-                    size = Size(size.width, size.height - y)
+                drawRoundRect(
+                    brush = Brush.verticalGradient(listOf(Color(0xFFF5D99A), Color(0xFFD9AE59), Color(0xFF8A5D2D)),
+                    ),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(10f, 10f)
                 )
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(Color.White.copy(alpha = 0.18f), Color.Transparent, Color.Black.copy(alpha = 0.16f))
+                    ),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(10f, 10f)
+                )
+
+                val center = Offset(size.width * VintageDimensions.vuNeedlePivotX, size.height * VintageDimensions.vuNeedlePivotY)
+                val needleLength = size.width * 0.34f
+                rotate(degrees = angle, pivot = center) {
+                    drawLine(
+                        color = Color(0xFF2A1A16),
+                        start = center,
+                        end = Offset(center.x + needleLength, center.y - needleLength * 0.72f),
+                        strokeWidth = 3.6f,
+                        cap = StrokeCap.Round
+                    )
+                }
+                drawCircle(color = Color(0xFF261F1B), center = center, radius = 8f)
+                drawCircle(color = Color(0xFFA48A62), center = center, radius = 4.5f)
             }
         }
         Text(label, color = AmpMetalLight, fontWeight = FontWeight.Bold)
@@ -494,7 +696,10 @@ private fun RecordButtonV2(
     Button(
         onClick = onRecordToggle,
         enabled = !isBusy || isRecording,
-        modifier = modifier.size(VintageDimensions.recordButtonSize),
+        modifier = modifier
+            .shadow(6.dp, RoundedCornerShape(percent = 50))
+            .shadow(2.dp, RoundedCornerShape(percent = 50))
+            .size(VintageDimensions.recordButtonSize),
         shape = RoundedCornerShape(percent = 50),
         colors = ButtonDefaults.buttonColors(containerColor = if (isRecording) Color(0xFFB42522) else Color(0xFF3A3F46))
     ) {
@@ -509,15 +714,59 @@ private fun RecordButtonV2(
 
 @Composable
 private fun KnobControlV2(label: String, onClick: () -> Unit) {
+    var kickTarget by remember { mutableStateOf(0f) }
+    val scope = rememberCoroutineScope()
+    val outDurationMs = (VintageDimensions.knobFeedbackDurationMs * VintageDimensions.knobTapOutRatio).toInt()
+    val returnDurationMs = (VintageDimensions.knobFeedbackDurationMs - outDurationMs).coerceAtLeast(1)
+    val kick by animateFloatAsState(
+        targetValue = kickTarget,
+        animationSpec = tween(
+            durationMillis = if (kickTarget == 0f) returnDurationMs else outDurationMs,
+            easing = if (kickTarget == 0f) FastOutSlowInEasing else FastOutLinearInEasing
+        ),
+        label = "knob_kick"
+    )
+    val rotation = VintageDimensions.knobBaseAngle + kick
+
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(VintageDimensions.smallSpacing)) {
-        Button(
-            onClick = onClick,
+        Box(
             modifier = Modifier.size(VintageDimensions.knobSize),
-            shape = RoundedCornerShape(percent = 50),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4A4F57), contentColor = AmpAccentAmber)
+            contentAlignment = Alignment.Center
         ) {
-            Text(label, fontWeight = FontWeight.Bold)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .shadow(6.dp, RoundedCornerShape(percent = 50))
+                    .shadow(2.dp, RoundedCornerShape(percent = 50))
+                    .clip(RoundedCornerShape(percent = 50))
+                    .background(Brush.radialGradient(listOf(Color(0xFFD7D9DD), Color(0xFF646A73), Color(0xFF2E3238))))
+                    .clickable {
+                        onClick()
+                        val direction = if (Random.nextBoolean()) 1f else -1f
+                        kickTarget = direction * VintageDimensions.knobTapAmplitudeDeg
+                        scope.launch {
+                            delay(outDurationMs.toLong())
+                            kickTarget = 0f
+                        }
+                    }
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val cx = size.width / 2f
+                    val cy = size.height / 2f
+                    val len = size.minDimension * 0.32f
+                    rotate(degrees = rotation, pivot = Offset(cx, cy)) {
+                        drawLine(
+                            color = Color(0xFF1D2024),
+                            start = Offset(cx, cy - size.minDimension * 0.05f),
+                            end = Offset(cx, cy - len),
+                            strokeWidth = 6f,
+                            cap = StrokeCap.Round
+                        )
+                    }
+                }
+            }
         }
+        Text(label, fontWeight = FontWeight.Bold, color = AmpMetalLight)
     }
 }
 
@@ -544,6 +793,71 @@ private fun HardwareButtonV2(label: String, onClick: () -> Unit) {
         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3D424A), contentColor = AmpAccentAmber)
     ) {
         Text(label, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun KnobPanelV2(
+    onOpenBalance: () -> Unit,
+    onOpenMicSettings: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.SpaceEvenly
+    ) {
+        KnobControlV2(label = "GAIN", onClick = onOpenBalance)
+        KnobControlV2(label = "MIC", onClick = onOpenMicSettings)
+    }
+}
+
+@Composable
+private fun HardwareBarV2(
+    onOpenLink: () -> Unit,
+    onOpenPlayer: () -> Unit,
+    onOpenSettings: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .height(74.dp)
+            .shadow(2.dp, RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                Brush.verticalGradient(
+                    listOf(VintageColors.hardwareBarHighlight, VintageColors.hardwareBar, VintageColors.hardwareBarShadow)
+                )
+            )
+            .border(BorderStroke(1.dp, AmpPanelBorder), RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            LinkSwitchV2(onClick = onOpenLink)
+            HardwareButtonV2(label = "LECTEUR", onClick = onOpenPlayer)
+            HardwareButtonV2(label = "PARAMS", onClick = onOpenSettings)
+        }
+
+        Canvas(modifier = Modifier.matchParentSize()) {
+            val screws = listOf(
+                Offset(12f, 12f),
+                Offset(size.width - 12f, 12f),
+                Offset(12f, size.height - 12f),
+                Offset(size.width - 12f, size.height - 12f)
+            )
+            screws.forEach { c ->
+                drawCircle(color = VintageColors.screwDark, radius = 5.2f, center = c)
+                drawLine(
+                    color = Color(0x66222222),
+                    start = Offset(c.x - 2.6f, c.y - 2.6f),
+                    end = Offset(c.x + 2.6f, c.y + 2.6f),
+                    strokeWidth = 1.3f
+                )
+            }
+        }
     }
 }
 
