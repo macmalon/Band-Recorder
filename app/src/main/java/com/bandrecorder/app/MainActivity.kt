@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -74,6 +75,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -897,8 +899,7 @@ private fun PlayerScreen(
         }
     }
 
-    val playerScreenTitle = selected?.title ?: "Lecteur"
-    ScreenScaffold(title = playerScreenTitle, onBack = onBack) {
+    ScreenScaffold(title = "Lecteur", onBack = onBack) {
         if (selected == null) {
             Text("Enregistrements", fontWeight = FontWeight.Bold)
             if (ui.playerRecordings.isEmpty()) {
@@ -939,7 +940,18 @@ private fun PlayerScreen(
 
         val current = selected!!
         val cfg = ui.playerFxConfig
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = current.title,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
             OutlinedButton(onClick = {
                 playback.release()
                 selected = null
@@ -1034,10 +1046,39 @@ private fun PlayerScreen(
 
         if (toolsOpen) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("Preset", "EQ tonal", "Compression", "De-esser", "Boost").forEach { name ->
-                    if (tool == name) Button(onClick = { tool = name }, modifier = Modifier.weight(1f)) { Text(name) }
-                    else OutlinedButton(onClick = { tool = name }, modifier = Modifier.weight(1f)) { Text(name) }
-                }
+                CompactToolButton(
+                    label = "Preset",
+                    selected = tool == "Preset",
+                    modifier = Modifier.weight(1f),
+                    onClick = { tool = "Preset" }
+                )
+                CompactToolButton(
+                    label = "EQ tonal",
+                    selected = tool == "EQ tonal",
+                    modifier = Modifier.weight(1f),
+                    onClick = { tool = "EQ tonal" }
+                )
+                CompactToolButton(
+                    label = "Compression",
+                    selected = tool == "Compression",
+                    modifier = Modifier.weight(1f),
+                    onClick = { tool = "Compression" }
+                )
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CompactToolButton(
+                    label = "De-esser",
+                    selected = tool == "De-esser",
+                    modifier = Modifier.weight(1f),
+                    onClick = { tool = "De-esser" }
+                )
+                CompactToolButton(
+                    label = "Boost",
+                    selected = tool == "Boost",
+                    modifier = Modifier.weight(1f),
+                    onClick = { tool = "Boost" }
+                )
+                Spacer(modifier = Modifier.weight(1f))
             }
             Text(tool, fontWeight = FontWeight.Bold)
             when (tool) {
@@ -1080,6 +1121,37 @@ private fun presetButton(
         Button(onClick = onClick, modifier = modifier) { Text(label) }
     } else {
         OutlinedButton(onClick = onClick, modifier = modifier) { Text(label) }
+    }
+}
+
+@Composable
+private fun CompactToolButton(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val content: @Composable () -> Unit = {
+        Text(
+            text = label,
+            fontSize = 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            softWrap = false
+        )
+    }
+    if (selected) {
+        Button(
+            onClick = onClick,
+            modifier = modifier.height(34.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+        ) { content() }
+    } else {
+        OutlinedButton(
+            onClick = onClick,
+            modifier = modifier.height(34.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+        ) { content() }
     }
 }
 
