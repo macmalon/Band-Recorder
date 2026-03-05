@@ -1272,8 +1272,15 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             MediaStore.Files.FileColumns.MIME_TYPE,
             MediaStore.Files.FileColumns.RELATIVE_PATH
         )
-        val selection = "${MediaStore.Files.FileColumns.MIME_TYPE}=? AND ${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE ?"
-        val args = arrayOf("audio/wav", "%Band Recorder%")
+        val selection = buildString {
+            append("(")
+            append("${MediaStore.Files.FileColumns.MIME_TYPE}=? OR ")
+            append("${MediaStore.Files.FileColumns.MIME_TYPE}=? OR ")
+            append("${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?")
+            append(") AND ")
+            append("${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE ?")
+        }
+        val args = arrayOf("audio/wav", "audio/x-wav", "%.wav", "%Band Recorder%")
         val sort = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
 
         val out = mutableListOf<RecordingListItem>()
