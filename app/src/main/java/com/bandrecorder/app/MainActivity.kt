@@ -249,6 +249,8 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 ui = ui,
                 onBack = { navController.popBackStack() },
                 onStorageChange = vm::setStorageLocation,
+                onToggleIgnoreSilence = vm::setIgnoreSilenceEnabled,
+                onToggleSplitOnSilence = vm::setSplitOnSilenceEnabled,
                 onToggleDiagnostic = vm::setDiagnosticMode,
                 onToggleAdvanced = vm::setShowAdvancedInternals,
                 onToggleVintageV2 = vm::setUiVintageV2Enabled,
@@ -1950,6 +1952,8 @@ private fun SettingsScreen(
     ui: RecorderUiState,
     onBack: () -> Unit,
     onStorageChange: (StorageLocation) -> Unit,
+    onToggleIgnoreSilence: (Boolean) -> Unit,
+    onToggleSplitOnSilence: (Boolean) -> Unit,
     onToggleDiagnostic: (Boolean) -> Unit,
     onToggleAdvanced: (Boolean) -> Unit,
     onToggleVintageV2: (Boolean) -> Unit,
@@ -1965,6 +1969,43 @@ private fun SettingsScreen(
                 OutlinedButton(onClick = { onStorageChange(StorageLocation.DOWNLOADS) }) { Text("Downloads") }
                 Button(onClick = { onStorageChange(StorageLocation.APP_PRIVATE) }) { Text("App private") }
             }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+        Text("Paramètres d'enregistrement", fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (ui.ignoreSilenceEnabled) {
+                Button(onClick = { onToggleIgnoreSilence(true) }) { Text("Ignorer les blancs ON") }
+                OutlinedButton(onClick = { onToggleIgnoreSilence(false) }) { Text("Ignorer les blancs OFF") }
+            } else {
+                OutlinedButton(onClick = { onToggleIgnoreSilence(true) }) { Text("Ignorer les blancs ON") }
+                Button(onClick = { onToggleIgnoreSilence(false) }) { Text("Ignorer les blancs OFF") }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val splitEnabled = ui.ignoreSilenceEnabled
+            if (ui.splitOnSilenceEnabled) {
+                Button(
+                    onClick = { onToggleSplitOnSilence(true) },
+                    enabled = splitEnabled
+                ) { Text("Découper ON") }
+                OutlinedButton(
+                    onClick = { onToggleSplitOnSilence(false) },
+                    enabled = splitEnabled
+                ) { Text("Découper OFF") }
+            } else {
+                OutlinedButton(
+                    onClick = { onToggleSplitOnSilence(true) },
+                    enabled = splitEnabled
+                ) { Text("Découper ON") }
+                Button(
+                    onClick = { onToggleSplitOnSilence(false) },
+                    enabled = splitEnabled
+                ) { Text("Découper OFF") }
+            }
+        }
+        if (!ui.ignoreSilenceEnabled) {
+            Text("Active d'abord « Ignorer les blancs » pour autoriser « Découper ».", style = MaterialTheme.typography.bodySmall)
         }
 
         Spacer(modifier = Modifier.height(4.dp))

@@ -13,6 +13,8 @@ enum class StorageLocation {
 
 data class AppSettings(
     val storageLocation: StorageLocation = StorageLocation.DOWNLOADS,
+    val ignoreSilenceEnabled: Boolean = false,
+    val splitOnSilenceEnabled: Boolean = false,
     val selectedMicId: Int? = null,
     val diagnosticMode: Boolean = true,
     val showAdvancedInternals: Boolean = false,
@@ -33,6 +35,8 @@ class AppSettingsStore(app: Application) {
         val storageRaw = prefs.getString(KEY_STORAGE_LOCATION, StorageLocation.DOWNLOADS.name)
         val storage = runCatching { StorageLocation.valueOf(storageRaw ?: StorageLocation.DOWNLOADS.name) }
             .getOrDefault(StorageLocation.DOWNLOADS)
+        val ignoreSilenceEnabled = prefs.getBoolean(KEY_IGNORE_SILENCE_ENABLED, false)
+        val splitOnSilenceEnabled = prefs.getBoolean(KEY_SPLIT_ON_SILENCE_ENABLED, false) && ignoreSilenceEnabled
         val micId = if (prefs.contains(KEY_MIC_ID)) prefs.getInt(KEY_MIC_ID, -1).takeIf { it >= 0 } else null
         val diagnosticMode = prefs.getBoolean(KEY_DIAGNOSTIC_MODE, true)
         val showAdvanced = prefs.getBoolean(KEY_SHOW_ADVANCED_INTERNALS, false)
@@ -87,6 +91,8 @@ class AppSettingsStore(app: Application) {
         val favorites = prefs.getStringSet(KEY_PLAYER_FAVORITES, emptySet())?.toSet() ?: emptySet()
         return AppSettings(
             storageLocation = storage,
+            ignoreSilenceEnabled = ignoreSilenceEnabled,
+            splitOnSilenceEnabled = splitOnSilenceEnabled,
             selectedMicId = micId,
             diagnosticMode = diagnosticMode,
             showAdvancedInternals = showAdvanced,
@@ -103,6 +109,14 @@ class AppSettingsStore(app: Application) {
 
     fun setStorageLocation(location: StorageLocation) {
         prefs.edit().putString(KEY_STORAGE_LOCATION, location.name).apply()
+    }
+
+    fun setIgnoreSilenceEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_IGNORE_SILENCE_ENABLED, enabled).apply()
+    }
+
+    fun setSplitOnSilenceEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_SPLIT_ON_SILENCE_ENABLED, enabled).apply()
     }
 
     fun setSelectedMicId(micId: Int?) {
@@ -184,6 +198,8 @@ class AppSettingsStore(app: Application) {
 
     private companion object {
         const val KEY_STORAGE_LOCATION = "storage_location"
+        const val KEY_IGNORE_SILENCE_ENABLED = "ignore_silence_enabled"
+        const val KEY_SPLIT_ON_SILENCE_ENABLED = "split_on_silence_enabled"
         const val KEY_MIC_ID = "selected_mic_id"
         const val KEY_DIAGNOSTIC_MODE = "diagnostic_mode"
         const val KEY_SHOW_ADVANCED_INTERNALS = "show_advanced_internals"

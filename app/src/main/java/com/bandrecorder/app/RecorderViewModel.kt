@@ -109,6 +109,8 @@ data class RecorderUiState(
     val recommendedGainDb: Float? = null,
     val lastOutputPath: String? = null,
     val storageLocation: StorageLocation = StorageLocation.DOWNLOADS,
+    val ignoreSilenceEnabled: Boolean = false,
+    val splitOnSilenceEnabled: Boolean = false,
     val microphones: List<MicrophoneOption> = emptyList(),
     val selectedMicId: Int? = null,
     val effectiveMicLabel: String? = null,
@@ -172,6 +174,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.update {
             it.copy(
                 storageLocation = settings.storageLocation,
+                ignoreSilenceEnabled = settings.ignoreSilenceEnabled,
+                splitOnSilenceEnabled = settings.splitOnSilenceEnabled,
                 selectedMicId = settings.selectedMicId,
                 diagnosticModeEnabled = settings.diagnosticMode,
                 showAdvancedInternals = settings.showAdvancedInternals,
@@ -248,6 +252,26 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     fun setStorageLocation(location: StorageLocation) {
         settingsStore.setStorageLocation(location)
         _uiState.update { it.copy(storageLocation = location) }
+    }
+
+    fun setIgnoreSilenceEnabled(enabled: Boolean) {
+        settingsStore.setIgnoreSilenceEnabled(enabled)
+        if (!enabled) {
+            settingsStore.setSplitOnSilenceEnabled(false)
+        }
+        _uiState.update {
+            it.copy(
+                ignoreSilenceEnabled = enabled,
+                splitOnSilenceEnabled = if (enabled) it.splitOnSilenceEnabled else false
+            )
+        }
+    }
+
+    fun setSplitOnSilenceEnabled(enabled: Boolean) {
+        val canEnable = _uiState.value.ignoreSilenceEnabled
+        val finalValue = enabled && canEnable
+        settingsStore.setSplitOnSilenceEnabled(finalValue)
+        _uiState.update { it.copy(splitOnSilenceEnabled = finalValue) }
     }
 
     fun setDiagnosticMode(enabled: Boolean) {
