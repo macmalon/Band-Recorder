@@ -8,6 +8,7 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.MicrophoneInfo
 import android.os.Environment
+import android.os.PowerManager
 import android.provider.MediaStore
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
@@ -161,10 +162,12 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private val engine = WavRecorderEngine()
     private val settingsStore = AppSettingsStore(app)
     private val historyFile = File(app.filesDir, "mic_test_history.tsv")
+    private val powerManager = app.getSystemService(PowerManager::class.java)
 
     private var pendingTempFile: File? = null
     private var pendingDisplayName: String? = null
     private var lastCpuGuardState: Boolean = false
+    private var recordingWakeLock: PowerManager.WakeLock? = null
 
     private val _uiState = MutableStateFlow(RecorderUiState())
     val uiState: StateFlow<RecorderUiState> = _uiState.asStateFlow()
@@ -1133,6 +1136,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             _uiState.update { it.copy(status = "Stereo requested but not confirmed. Falling back to mono.") }
         }
 
+        acquireRecordingWakeLock()
+
         when (_uiState.value.storageLocation) {
             StorageLocation.DOWNLOADS -> {
                 val (displayName, output) = buildTempOutputFile()
@@ -1170,6 +1175,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+
+        if (!engine.statusFlow().value.isRecording) {
+            releaseRecordingWakeLock()
+            _uiState.update { it.copy(status = "Impossible de démarrer l'enregistrement") }
+        }
     }
 
     fun stopRecording() {
@@ -1186,6 +1196,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             } else {
                 _uiState.update { it.copy(status = "Stopped") }
             }
+            releaseRecordingWakeLock()
             refreshPlayerRecordings()
             if (_uiState.value.diagnosticModeEnabled) {
                 exportDiagnosticReport(event = "recording_stop", entry = null, recordingPath = _uiState.value.lastOutputPath)
@@ -1587,6 +1598,29 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         engine.stopRecording()
+        releaseRecordingWakeLock()
         super.onCleared()
+    }
+
+    private fun acquireRecordingWakeLock() {
+        if (recordingWakeLock?.isHeld == true) return
+        val lock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BandRecorder:RecordingWakeLock")
+        lock.setReferenceCounted(false)
+        runCatching {
+            // Safety timeout to prevent leaked lock in edge cases.
+            lock.acquire(4L * 60L * 60L * 1000L)
+            recordingWakeLock = lock
+        }.onFailure {
+            runCatching { lock.release() }
+            recordingWakeLock = null
+        }
+    }
+
+    private fun releaseRecordingWakeLock() {
+        val lock = recordingWakeLock ?: return
+        if (lock.isHeld) {
+            runCatching { lock.release() }
+        }
+        recordingWakeLock = null
     }
 }
