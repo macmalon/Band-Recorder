@@ -1173,11 +1173,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun decisionFromPeak(peakDb: Float): Pair<String, String> = when {
-        peakDb > -3f -> "Danger" to "Peak > -3 dBFS: éloigne le téléphone de 20 à 50 cm et vise moins les cymbales/amplis."
-        peakDb > -6f -> "Chaud" to "Peak entre -6 et -3 dBFS: ajoute un peu de distance (10 à 20 cm), puis reteste."
-        peakDb > -12f -> "Idéal" to "Peak entre -12 et -6 dBFS: niveau recommandé, tu peux lancer REC."
-        peakDb > -18f -> "Safe bas" to "Peak entre -18 et -12 dBFS: sûr mais possiblement un peu loin; rapproche légèrement si besoin."
-        else -> "Faible" to "Peak < -18 dBFS: rapproche le téléphone ou améliore l’orientation vers la source utile."
+        peakDb > -3f -> "Peak > -3 dBFS" to "Niveau trop fort: éloigne le téléphone de 20 à 50 cm et vise moins les cymbales/amplis."
+        peakDb > -6f -> "Peak entre -6 et -3 dBFS" to "Niveau limite: ajoute un peu de distance (10 à 20 cm), puis reteste."
+        peakDb > -12f -> "Peak entre -12 et -6 dBFS (idéal)" to "Niveau recommandé: tu peux lancer REC."
+        peakDb > -18f -> "Peak entre -18 et -12 dBFS" to "Niveau sûr mais un peu bas: rapproche légèrement si besoin."
+        else -> "Peak < -18 dBFS" to "Niveau trop faible: rapproche le téléphone ou améliore l’orientation vers la source utile."
     }
 
     private fun loadHistory(): List<MicTestHistoryEntry> {

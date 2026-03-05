@@ -68,7 +68,6 @@ import java.io.File
 import kotlin.math.roundToInt
 
 private enum class PendingAction {
-    CALIBRATE,
     RUN_LEVEL_BALANCE,
     START_RECORDING,
     TEST_MIC,
@@ -123,7 +122,6 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
             return@rememberLauncherForActivityResult
         }
         when (pendingAction) {
-            PendingAction.CALIBRATE -> vm.runCalibration()
             PendingAction.RUN_LEVEL_BALANCE -> vm.runLevelBalance()
             PendingAction.START_RECORDING -> vm.startRecording()
             PendingAction.TEST_MIC -> vm.testSelectedMicrophone()
@@ -166,7 +164,6 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
             BalanceScreen(
                 ui = ui,
                 onBack = { navController.popBackStack() },
-                onRequestCalibrate = { requestAudioPermission(PendingAction.CALIBRATE) },
                 onSetBalanceDuration = vm::setBalanceDuration,
                 onRunLevelBalance = { requestAudioPermission(PendingAction.RUN_LEVEL_BALANCE) }
             )
@@ -354,7 +351,6 @@ private fun SmallActionButton(
 private fun BalanceScreen(
     ui: RecorderUiState,
     onBack: () -> Unit,
-    onRequestCalibrate: () -> Unit,
     onSetBalanceDuration: (Int) -> Unit,
     onRunLevelBalance: () -> Unit
 ) {
@@ -433,19 +429,19 @@ private fun BalanceScreen(
 
                         ui.balanceDecisionLabel?.let { label ->
                             val color = when (label) {
-                                "Danger" -> Color(0xFFD32F2F)
-                                "Chaud" -> Color(0xFFFF9800)
-                                "Idéal" -> Color(0xFF2E7D32)
-                                "Safe bas" -> Color(0xFF607D8B)
+                                "Peak > -3 dBFS" -> Color(0xFFD32F2F)
+                                "Peak entre -6 et -3 dBFS" -> Color(0xFFFF9800)
+                                "Peak entre -12 et -6 dBFS (idéal)" -> Color(0xFF2E7D32)
+                                "Peak entre -18 et -12 dBFS" -> Color(0xFF607D8B)
                                 else -> Color(0xFF1565C0)
                             }
-                            Text("Zone: $label", color = color, fontWeight = FontWeight.Bold)
+                            Text("Interprétation: $label", color = color, fontWeight = FontWeight.Bold)
                         }
                         ui.balanceRecommendationText?.let {
                             Text(it, style = MaterialTheme.typography.bodySmall)
                         }
                         Text(
-                            "Grille: > -3 Danger | -6..-3 Chaud | -12..-6 Idéal | -18..-12 Safe bas | < -18 Faible",
+                            "Référence Peak max: > -3 dBFS = trop fort | -6..-3 = limite | -12..-6 = idéal | -18..-12 = un peu bas | < -18 = trop faible",
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
@@ -468,22 +464,6 @@ private fun BalanceScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(12.dp))
-
-                if (ui.isCalibrating) {
-                    Text("Calibration en cours: ${ui.calibrationProgress}%")
-                    LinearProgressIndicator(
-                        progress = { ui.calibrationProgress / 100f },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-
-                Button(
-                    onClick = onRequestCalibrate,
-                    enabled = !ui.isCalibrating && !ui.isTestingMic && !ui.isRecording && !ui.isRunningABTest && !ui.isRunningStereoGuidedTest
-                ) {
-                    Text("Calibrage 30s")
-                }
 
                 ui.recommendedGainDb?.let {
                     val signed = if (it >= 0f) "+${"%.1f".format(it)}" else "${"%.1f".format(it)}"
