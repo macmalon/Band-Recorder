@@ -99,6 +99,8 @@ data class RecorderUiState(
     val balanceRecommendationText: String? = null,
     val rmsDb: Float = -90f,
     val peakDb: Float = -90f,
+    val leftVu: Float = 0f,
+    val rightVu: Float = 0f,
     val headroomDb: Float = 90f,
     val elapsedMs: Long = 0L,
     val status: String = "Ready",
@@ -122,6 +124,7 @@ data class RecorderUiState(
     val lastDiagnosticReportPath: String? = null,
     val stereoModeRequested: Boolean = false,
     val stereoChannelsSwapped: Boolean = false,
+    val uiVintageV2Enabled: Boolean = false,
     val isAutoMicScanRunning: Boolean = false,
     val isAutoStereoProbeRunning: Boolean = false,
     val autoMicSetupMessage: String? = null,
@@ -176,6 +179,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 balanceDurationSec = normalizeBalanceDuration(settings.balanceDurationSec),
                 stereoModeRequested = settings.stereoModeRequested,
                 stereoChannelsSwapped = settings.stereoChannelsSwapped,
+                uiVintageV2Enabled = settings.uiVintageV2Enabled,
                 globalBalanceConfig = settings.globalBalanceConfig,
                 playerFxConfig = settings.playerFxConfig,
                 favoriteRecordingKeys = settings.favoriteRecordingKeys,
@@ -189,10 +193,16 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             engine.statusFlow().collect { status ->
                 _uiState.update {
+                    val newLeftVu = normalizeVu(status.leftPeakDb)
+                    val newRightVu = normalizeVu(status.rightPeakDb)
+                    val smoothedLeftVu = smoothVu(previous = it.leftVu, newValue = newLeftVu)
+                    val smoothedRightVu = smoothVu(previous = it.rightVu, newValue = newRightVu)
                     it.copy(
                         isRecording = status.isRecording,
                         rmsDb = status.rmsDb,
                         peakDb = status.peakDb,
+                        leftVu = smoothedLeftVu,
+                        rightVu = smoothedRightVu,
                         headroomDb = status.headroomDb,
                         elapsedMs = status.elapsedMs,
                         status = if (status.isRecording) "Recording" else it.status,
@@ -343,6 +353,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     fun setStereoChannelsSwapped(enabled: Boolean) {
         settingsStore.setStereoChannelsSwapped(enabled)
         _uiState.update { it.copy(stereoChannelsSwapped = enabled) }
+    }
+
+    fun setUiVintageV2Enabled(enabled: Boolean) {
+        settingsStore.setUiVintageV2Enabled(enabled)
+        _uiState.update { it.copy(uiVintageV2Enabled = enabled) }
     }
 
     fun setAutoBalance(enabled: Boolean) {
@@ -1218,6 +1233,10 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         30, 60, 90 -> seconds
         else -> 30
     }
+
+    private fun normalizeVu(db: Float): Float = ((db + 60f) / 60f).coerceIn(0f, 1f)
+
+    private fun smoothVu(previous: Float, newValue: Float): Float = (0.8f * previous + 0.2f * newValue).coerceIn(0f, 1f)
 
     private fun queryDownloadsRecordings(favorites: Set<String>): List<RecordingListItem> {
         val resolver = getApplication<Application>().contentResolver

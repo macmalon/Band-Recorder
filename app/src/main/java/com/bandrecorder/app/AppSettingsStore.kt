@@ -20,6 +20,7 @@ data class AppSettings(
     val balanceDurationSec: Int = 30,
     val stereoModeRequested: Boolean = false,
     val stereoChannelsSwapped: Boolean = false,
+    val uiVintageV2Enabled: Boolean = false,
     val globalBalanceConfig: GlobalBalanceConfig = GlobalBalanceConfig(),
     val playerFxConfig: PlayerFxConfig = PlayerFxConfig(),
     val favoriteRecordingKeys: Set<String> = emptySet()
@@ -39,6 +40,7 @@ class AppSettingsStore(app: Application) {
         val balanceDurationSec = normalizeBalanceDuration(prefs.getInt(KEY_BALANCE_DURATION_SEC, 30))
         val stereoRequested = prefs.getBoolean(KEY_STEREO_MODE_REQUESTED, false)
         val stereoChannelsSwapped = prefs.getBoolean(KEY_STEREO_CHANNELS_SWAPPED, false)
+        val uiVintageV2Enabled = prefs.getBoolean(KEY_UI_VINTAGE_V2_ENABLED, false)
         val dspOutput = runCatching {
             DspOutputMode.valueOf(
                 prefs.getString(KEY_DSP_OUTPUT_MODE, DspOutputMode.MONITORING_ONLY.name)
@@ -92,6 +94,7 @@ class AppSettingsStore(app: Application) {
             balanceDurationSec = balanceDurationSec,
             stereoModeRequested = stereoRequested,
             stereoChannelsSwapped = stereoChannelsSwapped,
+            uiVintageV2Enabled = uiVintageV2Enabled,
             globalBalanceConfig = globalBalanceConfig,
             playerFxConfig = playerFxConfig,
             favoriteRecordingKeys = favorites
@@ -130,6 +133,10 @@ class AppSettingsStore(app: Application) {
 
     fun setStereoChannelsSwapped(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_STEREO_CHANNELS_SWAPPED, enabled).apply()
+    }
+
+    fun setUiVintageV2Enabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_UI_VINTAGE_V2_ENABLED, enabled).apply()
     }
 
     fun setGlobalBalanceConfig(config: GlobalBalanceConfig) {
@@ -184,6 +191,7 @@ class AppSettingsStore(app: Application) {
         const val KEY_BALANCE_DURATION_SEC = "balance_duration_sec"
         const val KEY_STEREO_MODE_REQUESTED = "stereo_mode_requested"
         const val KEY_STEREO_CHANNELS_SWAPPED = "stereo_channels_swapped"
+        const val KEY_UI_VINTAGE_V2_ENABLED = "ui_vintage_v2_enabled"
         const val KEY_AUTO_BALANCE = "global_auto_balance"
         const val KEY_COMPRESSOR = "global_compression"
         const val KEY_DE_ESSER = "global_de_esser"

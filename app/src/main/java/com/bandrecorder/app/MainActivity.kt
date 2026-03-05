@@ -83,6 +83,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.bandrecorder.app.ui.vintage.VintageDimensions
 import java.io.File
 import kotlin.math.cos
 import kotlin.math.absoluteValue
@@ -172,7 +173,7 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
         startDestination = AppRoute.Home.route
     ) {
         composable(AppRoute.Home.route) {
-            HomeScreen(
+            HomeRoute(
                 ui = ui,
                 onRecordToggle = {
                     if (ui.isRecording) {
@@ -225,11 +226,12 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onStorageChange = vm::setStorageLocation,
                 onToggleDiagnostic = vm::setDiagnosticMode,
                 onToggleAdvanced = vm::setShowAdvancedInternals,
+                onToggleVintageV2 = vm::setUiVintageV2Enabled,
                 onRequestRunABTest = { requestAudioPermission(PendingAction.RUN_AB_TEST) }
             )
         }
         composable(AppRoute.Player.route) {
-            PlayerScreen(
+            PlayerRoute(
                 ui = ui,
                 onBack = { navController.popBackStack() },
                 onRefreshRecordings = vm::refreshPlayerRecordings,
@@ -252,6 +254,296 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 navController = navController
             )
         }
+    }
+}
+
+@Composable
+private fun HomeRoute(
+    ui: RecorderUiState,
+    onRecordToggle: () -> Unit,
+    onOpenBalance: () -> Unit,
+    onOpenMicSettings: () -> Unit,
+    onOpenPlayer: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenLink: () -> Unit
+) {
+    if (ui.uiVintageV2Enabled) {
+        RecorderScreenV2(
+            ui = ui,
+            onRecordToggle = onRecordToggle,
+            onOpenBalance = onOpenBalance,
+            onOpenMicSettings = onOpenMicSettings,
+            onOpenPlayer = onOpenPlayer,
+            onOpenSettings = onOpenSettings,
+            onOpenLink = onOpenLink
+        )
+    } else {
+        HomeScreen(
+            ui = ui,
+            onRecordToggle = onRecordToggle,
+            onOpenBalance = onOpenBalance,
+            onOpenMicSettings = onOpenMicSettings,
+            onOpenPlayer = onOpenPlayer,
+            onOpenSettings = onOpenSettings,
+            onOpenLink = onOpenLink
+        )
+    }
+}
+
+@Composable
+private fun PlayerRoute(
+    ui: RecorderUiState,
+    onBack: () -> Unit,
+    onRefreshRecordings: () -> Unit,
+    onToggleFavorite: (String) -> Unit,
+    onSetPreset: (PlayerFxPreset) -> Unit,
+    onSetEqEnabled: (Boolean) -> Unit,
+    onSetCompressionEnabled: (Boolean) -> Unit,
+    onSetDeEsserEnabled: (Boolean) -> Unit,
+    onSetEqIntensity: (Float) -> Unit,
+    onSetCompressionIntensity: (Float) -> Unit,
+    onSetDeEsserIntensity: (Float) -> Unit,
+    onSetBoostIntensity: (Float) -> Unit,
+    onSetStatus: (String) -> Unit
+) {
+    if (ui.uiVintageV2Enabled) {
+        PlayerScreenV2(
+            ui = ui,
+            onBack = onBack,
+            onRefreshRecordings = onRefreshRecordings,
+            onToggleFavorite = onToggleFavorite,
+            onSetPreset = onSetPreset,
+            onSetEqEnabled = onSetEqEnabled,
+            onSetCompressionEnabled = onSetCompressionEnabled,
+            onSetDeEsserEnabled = onSetDeEsserEnabled,
+            onSetEqIntensity = onSetEqIntensity,
+            onSetCompressionIntensity = onSetCompressionIntensity,
+            onSetDeEsserIntensity = onSetDeEsserIntensity,
+            onSetBoostIntensity = onSetBoostIntensity,
+            onSetStatus = onSetStatus
+        )
+    } else {
+        PlayerScreen(
+            ui = ui,
+            onBack = onBack,
+            onRefreshRecordings = onRefreshRecordings,
+            onToggleFavorite = onToggleFavorite,
+            onSetPreset = onSetPreset,
+            onSetEqEnabled = onSetEqEnabled,
+            onSetCompressionEnabled = onSetCompressionEnabled,
+            onSetDeEsserEnabled = onSetDeEsserEnabled,
+            onSetEqIntensity = onSetEqIntensity,
+            onSetCompressionIntensity = onSetCompressionIntensity,
+            onSetDeEsserIntensity = onSetDeEsserIntensity,
+            onSetBoostIntensity = onSetBoostIntensity,
+            onSetStatus = onSetStatus
+        )
+    }
+}
+
+@Composable
+private fun RecorderScreenV2(
+    ui: RecorderUiState,
+    onRecordToggle: () -> Unit,
+    onOpenBalance: () -> Unit,
+    onOpenMicSettings: () -> Unit,
+    onOpenPlayer: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenLink: () -> Unit
+) {
+    val isBusy = ui.isCalibrating || ui.isTestingMic || ui.isRunningABTest || ui.isRunningStereoGuidedTest
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .background(Brush.verticalGradient(listOf(AmpBgDark, AmpBgMid, AmpBgDark)))
+            .padding(VintageDimensions.screenPadding),
+        verticalArrangement = Arrangement.spacedBy(VintageDimensions.sectionSpacing)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(VintageDimensions.topPanelHeight),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            RecIndicatorV2(isRecording = ui.isRecording)
+            Text(
+                text = formatTimer(ui.elapsedMs),
+                color = AmpMetalLight,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 32.sp
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            VUMeterV2(label = "LEFT", value = ui.leftVu)
+            VUMeterV2(label = "RIGHT", value = ui.rightVu)
+        }
+
+        RecordButtonV2(
+            isRecording = ui.isRecording,
+            isBusy = isBusy,
+            onRecordToggle = onRecordToggle,
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            KnobControlV2(label = "GAIN", onClick = onOpenBalance)
+            KnobControlV2(label = "MIC", onClick = onOpenMicSettings)
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            LinkSwitchV2(onClick = onOpenLink)
+            HardwareButtonV2(label = "LECTEUR", onClick = onOpenPlayer)
+            HardwareButtonV2(label = "PARAMS", onClick = onOpenSettings)
+        }
+    }
+}
+
+@Composable
+private fun PlayerScreenV2(
+    ui: RecorderUiState,
+    onBack: () -> Unit,
+    onRefreshRecordings: () -> Unit,
+    onToggleFavorite: (String) -> Unit,
+    onSetPreset: (PlayerFxPreset) -> Unit,
+    onSetEqEnabled: (Boolean) -> Unit,
+    onSetCompressionEnabled: (Boolean) -> Unit,
+    onSetDeEsserEnabled: (Boolean) -> Unit,
+    onSetEqIntensity: (Float) -> Unit,
+    onSetCompressionIntensity: (Float) -> Unit,
+    onSetDeEsserIntensity: (Float) -> Unit,
+    onSetBoostIntensity: (Float) -> Unit,
+    onSetStatus: (String) -> Unit
+) {
+    PlayerScreen(
+        ui = ui,
+        onBack = onBack,
+        onRefreshRecordings = onRefreshRecordings,
+        onToggleFavorite = onToggleFavorite,
+        onSetPreset = onSetPreset,
+        onSetEqEnabled = onSetEqEnabled,
+        onSetCompressionEnabled = onSetCompressionEnabled,
+        onSetDeEsserEnabled = onSetDeEsserEnabled,
+        onSetEqIntensity = onSetEqIntensity,
+        onSetCompressionIntensity = onSetCompressionIntensity,
+        onSetDeEsserIntensity = onSetDeEsserIntensity,
+        onSetBoostIntensity = onSetBoostIntensity,
+        onSetStatus = onSetStatus
+    )
+}
+
+@Composable
+private fun RecIndicatorV2(isRecording: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(VintageDimensions.smallSpacing)) {
+        Canvas(modifier = Modifier.size(VintageDimensions.recLedSize)) {
+            drawCircle(color = if (isRecording) Color(0xFFE23A2E) else Color(0xFF5B2A28))
+        }
+        Text(
+            text = if (isRecording) "REC" else "STBY",
+            color = if (isRecording) Color(0xFFE23A2E) else AmpMetalDark,
+            fontWeight = FontWeight.ExtraBold
+        )
+    }
+}
+
+@Composable
+private fun VUMeterV2(label: String, value: Float) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(VintageDimensions.smallSpacing)) {
+        Box(
+            modifier = Modifier
+                .width(VintageDimensions.vuWidth)
+                .height(VintageDimensions.vuHeight)
+                .clip(RoundedCornerShape(VintageDimensions.vuCornerRadius))
+                .background(Color(0xFF201A12))
+                .border(BorderStroke(1.dp, AmpMetalDark), RoundedCornerShape(VintageDimensions.vuCornerRadius))
+                .padding(VintageDimensions.smallSpacing)
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val y = size.height * (1f - value.coerceIn(0f, 1f))
+                drawRect(
+                    brush = Brush.verticalGradient(listOf(Color(0xFFB53E2D), Color(0xFFEAB44A), Color(0xFF4B2A18))),
+                    topLeft = Offset(0f, y),
+                    size = Size(size.width, size.height - y)
+                )
+            }
+        }
+        Text(label, color = AmpMetalLight, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun RecordButtonV2(
+    isRecording: Boolean,
+    isBusy: Boolean,
+    onRecordToggle: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Button(
+        onClick = onRecordToggle,
+        enabled = !isBusy || isRecording,
+        modifier = modifier.size(VintageDimensions.recordButtonSize),
+        shape = RoundedCornerShape(percent = 50),
+        colors = ButtonDefaults.buttonColors(containerColor = if (isRecording) Color(0xFFB42522) else Color(0xFF3A3F46))
+    ) {
+        Text(
+            text = if (isRecording) "STOP" else "REC",
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = 26.sp,
+            color = Color.White
+        )
+    }
+}
+
+@Composable
+private fun KnobControlV2(label: String, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(VintageDimensions.smallSpacing)) {
+        Button(
+            onClick = onClick,
+            modifier = Modifier.size(VintageDimensions.knobSize),
+            shape = RoundedCornerShape(percent = 50),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4A4F57), contentColor = AmpAccentAmber)
+        ) {
+            Text(label, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun LinkSwitchV2(onClick: () -> Unit) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = Modifier
+            .width(VintageDimensions.switchWidth)
+            .height(VintageDimensions.switchHeight),
+        border = BorderStroke(1.dp, AmpPanelBorder),
+        colors = ButtonDefaults.outlinedButtonColors(containerColor = Color(0xFF2A2D32), contentColor = AmpAccentAmber)
+    ) {
+        Text("LINK")
+    }
+}
+
+@Composable
+private fun HardwareButtonV2(label: String, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        modifier = Modifier.height(VintageDimensions.navButtonHeight),
+        shape = RoundedCornerShape(VintageDimensions.hardwareButtonCorner),
+        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3D424A), contentColor = AmpAccentAmber)
+    ) {
+        Text(label, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -1355,6 +1647,7 @@ private fun SettingsScreen(
     onStorageChange: (StorageLocation) -> Unit,
     onToggleDiagnostic: (Boolean) -> Unit,
     onToggleAdvanced: (Boolean) -> Unit,
+    onToggleVintageV2: (Boolean) -> Unit,
     onRequestRunABTest: () -> Unit
 ) {
     ScreenScaffold(title = "Paramètres", onBack = onBack) {
@@ -1388,6 +1681,17 @@ private fun SettingsScreen(
             } else {
                 OutlinedButton(onClick = { onToggleAdvanced(true) }) { Text("Advanced ON") }
                 Button(onClick = { onToggleAdvanced(false) }) { Text("Advanced OFF") }
+            }
+        }
+
+        Text("UI Vintage V2", fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (ui.uiVintageV2Enabled) {
+                Button(onClick = { onToggleVintageV2(true) }) { Text("Vintage ON") }
+                OutlinedButton(onClick = { onToggleVintageV2(false) }) { Text("Vintage OFF") }
+            } else {
+                OutlinedButton(onClick = { onToggleVintageV2(true) }) { Text("Vintage ON") }
+                Button(onClick = { onToggleVintageV2(false) }) { Text("Vintage OFF") }
             }
         }
 

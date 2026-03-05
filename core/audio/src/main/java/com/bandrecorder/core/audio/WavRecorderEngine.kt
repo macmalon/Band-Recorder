@@ -42,6 +42,8 @@ data class RecordingStatus(
     val isRecording: Boolean = false,
     val rmsDb: Float = -90f,
     val peakDb: Float = -90f,
+    val leftPeakDb: Float = -90f,
+    val rightPeakDb: Float = -90f,
     val headroomDb: Float = 90f,
     val elapsedMs: Long = 0L,
     val outputPath: String? = null,
@@ -398,6 +400,8 @@ class WavRecorderEngine {
         status.value = RecordingStatus(
             isRecording = true,
             outputPath = output.absolutePath,
+            leftPeakDb = -90f,
+            rightPeakDb = -90f,
             inputDiagnostics = inputDiagnostics,
             dspAvailable = false,
             dspOutputMode = DspOutputMode.MONITORING_ONLY
@@ -413,11 +417,14 @@ class WavRecorderEngine {
                     if (read <= 0) continue
 
                     val level = analyze(rawShorts, read)
+                    val channelPeaks = analyzeChannelPeaks(rawShorts, read, channelCount)
                     val elapsed = System.currentTimeMillis() - startMs
                     status.value = RecordingStatus(
                         isRecording = true,
                         rmsDb = level.rmsDb,
                         peakDb = level.peakDb,
+                        leftPeakDb = channelPeaks.first,
+                        rightPeakDb = channelPeaks.second,
                         headroomDb = level.headroomDb,
                         elapsedMs = elapsed,
                         outputPath = output.absolutePath,
@@ -468,6 +475,8 @@ class WavRecorderEngine {
                     isRecording = false,
                     rmsDb = levelOrDefault(status.value.rmsDb),
                     peakDb = levelOrDefault(status.value.peakDb),
+                    leftPeakDb = -90f,
+                    rightPeakDb = -90f,
                     headroomDb = levelOrDefault(status.value.headroomDb),
                     elapsedMs = status.value.elapsedMs,
                     outputPath = output.absolutePath,
@@ -523,6 +532,32 @@ class WavRecorderEngine {
         val peakDb = (20.0 * log10(peak.coerceAtLeast(1e-6))).toFloat()
 
         return AudioLevel(rmsDb = rmsDb, peakDb = peakDb, headroomDb = -peakDb)
+    }
+
+    private fun analyzeChannelPeaks(samples: ShortArray, size: Int, channels: Int): Pair<Float, Float> {
+        var leftPeak = 0.0
+        var rightPeak = 0.0
+        if (channels >= 2) {
+            val usable = size - (size % 2)
+            var i = 0
+            while (i < usable) {
+                val left = abs(samples[i] / Short.MAX_VALUE.toDouble())
+                val right = abs(samples[i + 1] / Short.MAX_VALUE.toDouble())
+                if (left > leftPeak) leftPeak = left
+                if (right > rightPeak) rightPeak = right
+                i += 2
+            }
+        } else {
+            for (i in 0 until size) {
+                val mono = abs(samples[i] / Short.MAX_VALUE.toDouble())
+                if (mono > leftPeak) leftPeak = mono
+            }
+            rightPeak = leftPeak
+        }
+
+        val leftDb = (20.0 * log10(leftPeak.coerceAtLeast(1e-6))).toFloat()
+        val rightDb = (20.0 * log10(rightPeak.coerceAtLeast(1e-6))).toFloat()
+        return Pair(leftDb, rightDb)
     }
 
     private fun rmsDbFromSumSquares(sumSquares: Double, sampleCount: Int): Float {
