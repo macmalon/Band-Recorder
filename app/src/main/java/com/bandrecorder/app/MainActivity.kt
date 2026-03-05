@@ -19,8 +19,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -115,7 +115,6 @@ import kotlin.math.absoluteValue
 import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.roundToInt
-import kotlin.random.Random
 
 private enum class PendingAction {
     RUN_LEVEL_BALANCE,
@@ -489,7 +488,7 @@ private fun TolexBackgroundV2() {
         VintageDimensions.tolexMaxScale
     )
     Image(
-        painter = painterResource(id = R.drawable.tolex_background_trim),
+        painter = painterResource(id = R.drawable.tolex_bg),
         contentDescription = null,
         contentScale = ContentScale.Crop,
         modifier = Modifier
@@ -516,7 +515,7 @@ private fun TopMetalPanelV2(
             .shadow(3.dp, RoundedCornerShape(10.dp))
     ) {
         Image(
-            painter = painterResource(id = R.drawable.title_bar_frame),
+            painter = painterResource(id = R.drawable.hardware_panel),
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier
@@ -642,6 +641,7 @@ private fun VUMeterV2(label: String, value: Float, modifier: Modifier = Modifier
             modifier = modifier
                 .requiredWidth(VintageDimensions.vuWidth)
                 .requiredHeight(VintageDimensions.vuHeight)
+                .clip(RoundedCornerShape(VintageDimensions.vuCornerRadius))
         ) {
             Image(
                 painter = painterResource(id = R.drawable.vu_meter_frame),
@@ -682,6 +682,7 @@ private fun RecordButtonV2(
     Box(
         modifier = modifier
             .size(VintageDimensions.recordButtonSize)
+            .clip(RoundedCornerShape(percent = 50))
             .pointerInput(enabled) {
                 detectTapGestures(
                     onPress = {
@@ -717,20 +718,6 @@ private fun RecordButtonV2(
 
 @Composable
 private fun KnobControlV2(label: String, onClick: () -> Unit) {
-    var kickTarget by remember { mutableStateOf(0f) }
-    val scope = rememberCoroutineScope()
-    val outDurationMs = (VintageDimensions.knobFeedbackDurationMs * VintageDimensions.knobTapOutRatio).toInt()
-    val returnDurationMs = (VintageDimensions.knobFeedbackDurationMs - outDurationMs).coerceAtLeast(1)
-    val kick by animateFloatAsState(
-        targetValue = kickTarget,
-        animationSpec = tween(
-            durationMillis = if (kickTarget == 0f) returnDurationMs else outDurationMs,
-            easing = if (kickTarget == 0f) FastOutSlowInEasing else FastOutLinearInEasing
-        ),
-        label = "knob_kick"
-    )
-    val rotation = VintageDimensions.knobBaseAngle + kick
-
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(VintageDimensions.smallSpacing)) {
         Box(
             modifier = Modifier.size(VintageDimensions.knobSize),
@@ -742,16 +729,8 @@ private fun KnobControlV2(label: String, onClick: () -> Unit) {
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
                     .matchParentSize()
-                    .graphicsLayer { rotationZ = rotation }
-                    .clickable {
-                        onClick()
-                        val direction = if (Random.nextBoolean()) 1f else -1f
-                        kickTarget = direction * VintageDimensions.knobTapAmplitudeDeg
-                        scope.launch {
-                            delay(outDurationMs.toLong())
-                            kickTarget = 0f
-                        }
-                    }
+                    .clip(RoundedCornerShape(percent = 50))
+                    .clickable(onClick = onClick)
             )
         }
         Text(label, fontWeight = FontWeight.Bold, color = AmpMetalLight)

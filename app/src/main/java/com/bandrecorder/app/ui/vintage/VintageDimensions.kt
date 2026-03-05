@@ -7,8 +7,8 @@ object VintageDimensions {
     val sectionSpacing = 12.dp
     val smallSpacing = 8.dp
 
-    val knobSize = 120.dp
-    val recordButtonSize = 180.dp
+    val knobSize = 110.dp
+    val recordButtonSize = 160.dp
     val vuWidth = 220.dp
     val vuHeight = 132.dp
 
