@@ -20,6 +20,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -75,6 +76,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -486,7 +489,7 @@ private fun TolexBackgroundV2() {
         VintageDimensions.tolexMaxScale
     )
     Image(
-        painter = painterResource(id = R.drawable.tolex_bg),
+        painter = painterResource(id = R.drawable.tolex_background_trim),
         contentDescription = null,
         contentScale = ContentScale.Crop,
         modifier = Modifier
@@ -513,7 +516,7 @@ private fun TopMetalPanelV2(
             .shadow(3.dp, RoundedCornerShape(10.dp))
     ) {
         Image(
-            painter = painterResource(id = R.drawable.hardware_panel),
+            painter = painterResource(id = R.drawable.title_bar_frame),
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier
@@ -673,14 +676,31 @@ private fun RecordButtonV2(
     modifier: Modifier = Modifier
 ) {
     val enabled = !isBusy || isRecording
+    var isPressed by remember { mutableStateOf(false) }
+    val haptics = LocalHapticFeedback.current
+    val imageRes = if (isPressed) R.drawable.record_button_pressed else R.drawable.record_button
     Box(
         modifier = modifier
             .size(VintageDimensions.recordButtonSize)
-            .clickable(enabled = enabled, onClick = onRecordToggle),
+            .pointerInput(enabled) {
+                detectTapGestures(
+                    onPress = {
+                        if (!enabled) return@detectTapGestures
+                        isPressed = true
+                        tryAwaitRelease()
+                        isPressed = false
+                    },
+                    onTap = {
+                        if (!enabled) return@detectTapGestures
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onRecordToggle()
+                    }
+                )
+            },
         contentAlignment = Alignment.Center
     ) {
         Image(
-            painter = painterResource(id = R.drawable.record_button),
+            painter = painterResource(id = imageRes),
             contentDescription = null,
             contentScale = ContentScale.Fit,
             modifier = Modifier.matchParentSize()
