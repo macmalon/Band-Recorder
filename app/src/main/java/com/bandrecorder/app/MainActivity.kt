@@ -21,6 +21,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -945,36 +946,73 @@ private fun PlayerScreen(
             }) { Text("Retour liste") }
         }
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(250.dp)
-                .clip(RoundedCornerShape(125.dp))
-                .background(Color(0xFF1F2329))
-                .border(BorderStroke(2.dp, AmpPanelBorder), RoundedCornerShape(125.dp))
-                .pointerInput(Unit) {
-                    detectDragGestures { change: PointerInputChange, dragAmount: Offset ->
-                        val delta = dragAmount.x - dragAmount.y
-                        val speedFactor = 1f + (delta.absoluteValue / 30f)
-                        val deltaMs = (delta * 15f * speedFactor).toLong()
-                        playback.scrubBy(deltaMs)
-                        positionMs = playback.currentPositionMs()
-                    }
-                },
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.Center
         ) {
-            Button(
-                onClick = {
-                    val ok = playback.togglePlay(current, cfg, onError = onSetStatus)
-                    onSetStatus(if (ok) "Lecture active" else "Lecture arrêtée")
-                    durationMs = maxOf(1L, playback.durationMs().coerceAtLeast(current.durationMs))
-                    positionMs = playback.currentPositionMs()
-                },
-                modifier = Modifier.size(110.dp),
-                shape = RoundedCornerShape(55.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3E434A), contentColor = AmpAccentAmber)
+            val wheelSize = (maxWidth * 0.82f).coerceAtMost(320.dp).coerceAtLeast(220.dp)
+            Box(
+                modifier = Modifier
+                    .size(wheelSize)
+                    .clip(RoundedCornerShape(percent = 50))
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(Color(0xFF4A4F57), Color(0xFF2A2E34), Color(0xFF1A1D22)),
+                            center = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
+                            radius = 900f
+                        )
+                    )
+                    .border(BorderStroke(2.dp, AmpPanelBorder), RoundedCornerShape(percent = 50))
+                    .pointerInput(Unit) {
+                        detectDragGestures { change: PointerInputChange, dragAmount: Offset ->
+                            val delta = dragAmount.x - dragAmount.y
+                            val speedFactor = 1f + (delta.absoluteValue / 26f)
+                            val deltaMs = (delta * 18f * speedFactor).toLong()
+                            playback.scrubBy(deltaMs)
+                            positionMs = playback.currentPositionMs()
+                        }
+                    },
+                contentAlignment = Alignment.Center
             ) {
-                Text(if (playback.isPlaying()) "⏸" else "▶", fontSize = 34.sp)
+                Canvas(modifier = Modifier.matchParentSize()) {
+                    val r = size.minDimension / 2f
+                    // Outer ring highlight.
+                    drawCircle(
+                        brush = Brush.sweepGradient(
+                            colors = listOf(Color(0x80FFFFFF), Color(0x20FFFFFF), Color(0x80FFFFFF))
+                        ),
+                        radius = r - 6f,
+                        style = Stroke(width = 10f)
+                    )
+                    // Finger groove ring.
+                    drawCircle(
+                        color = Color(0xAA0F1114),
+                        radius = r - 38f,
+                        style = Stroke(width = 28f)
+                    )
+                    drawArc(
+                        color = Color(0x66FFFFFF),
+                        startAngle = 220f,
+                        sweepAngle = 100f,
+                        useCenter = false,
+                        topLeft = Offset(r - (r - 38f), r - (r - 38f)),
+                        size = Size((r - 38f) * 2, (r - 38f) * 2),
+                        style = Stroke(width = 6f, cap = StrokeCap.Round)
+                    )
+                }
+                Button(
+                    onClick = {
+                        val ok = playback.togglePlay(current, cfg, onError = onSetStatus)
+                        onSetStatus(if (ok) "Lecture active" else "Lecture arrêtée")
+                        durationMs = maxOf(1L, playback.durationMs().coerceAtLeast(current.durationMs))
+                        positionMs = playback.currentPositionMs()
+                    },
+                    modifier = Modifier.size((wheelSize.value * 0.42f).dp),
+                    shape = RoundedCornerShape(percent = 50),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3E434A), contentColor = AmpAccentAmber)
+                ) {
+                    Text(if (playback.isPlaying()) "⏸" else "▶", fontSize = 34.sp)
+                }
             }
         }
 
