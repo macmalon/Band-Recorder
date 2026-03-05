@@ -897,7 +897,8 @@ private fun PlayerScreen(
         }
     }
 
-    ScreenScaffold(title = "Lecteur", onBack = onBack) {
+    val playerScreenTitle = selected?.title ?: "Lecteur"
+    ScreenScaffold(title = playerScreenTitle, onBack = onBack) {
         if (selected == null) {
             Text("Enregistrements", fontWeight = FontWeight.Bold)
             if (ui.playerRecordings.isEmpty()) {
@@ -938,8 +939,7 @@ private fun PlayerScreen(
 
         val current = selected!!
         val cfg = ui.playerFxConfig
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(current.title, fontWeight = FontWeight.Bold)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             OutlinedButton(onClick = {
                 playback.release()
                 selected = null
