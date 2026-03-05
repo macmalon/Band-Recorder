@@ -21,7 +21,8 @@ data class AppSettings(
     val stereoModeRequested: Boolean = false,
     val stereoChannelsSwapped: Boolean = false,
     val globalBalanceConfig: GlobalBalanceConfig = GlobalBalanceConfig(),
-    val playerFxConfig: PlayerFxConfig = PlayerFxConfig()
+    val playerFxConfig: PlayerFxConfig = PlayerFxConfig(),
+    val favoriteRecordingKeys: Set<String> = emptySet()
 )
 
 class AppSettingsStore(app: Application) {
@@ -78,8 +79,10 @@ class AppSettingsStore(app: Application) {
             deEsserEnabled = prefs.getBoolean(KEY_PLAYER_FX_DEESSER_ENABLED, true),
             eqIntensity = prefs.getFloat(KEY_PLAYER_FX_EQ_INTENSITY, 0.45f),
             compressionIntensity = prefs.getFloat(KEY_PLAYER_FX_COMP_INTENSITY, 0.35f),
-            deEsserIntensity = prefs.getFloat(KEY_PLAYER_FX_DEESSER_INTENSITY, 0.35f)
+            deEsserIntensity = prefs.getFloat(KEY_PLAYER_FX_DEESSER_INTENSITY, 0.35f),
+            boostIntensity = prefs.getFloat(KEY_PLAYER_FX_BOOST_INTENSITY, 0f)
         ).bounded()
+        val favorites = prefs.getStringSet(KEY_PLAYER_FAVORITES, emptySet())?.toSet() ?: emptySet()
         return AppSettings(
             storageLocation = storage,
             selectedMicId = micId,
@@ -90,7 +93,8 @@ class AppSettingsStore(app: Application) {
             stereoModeRequested = stereoRequested,
             stereoChannelsSwapped = stereoChannelsSwapped,
             globalBalanceConfig = globalBalanceConfig,
-            playerFxConfig = playerFxConfig
+            playerFxConfig = playerFxConfig,
+            favoriteRecordingKeys = favorites
         )
     }
 
@@ -158,7 +162,12 @@ class AppSettingsStore(app: Application) {
             .putFloat(KEY_PLAYER_FX_EQ_INTENSITY, bounded.eqIntensity)
             .putFloat(KEY_PLAYER_FX_COMP_INTENSITY, bounded.compressionIntensity)
             .putFloat(KEY_PLAYER_FX_DEESSER_INTENSITY, bounded.deEsserIntensity)
+            .putFloat(KEY_PLAYER_FX_BOOST_INTENSITY, bounded.boostIntensity)
             .apply()
+    }
+
+    fun setFavoriteRecordingKeys(keys: Set<String>) {
+        prefs.edit().putStringSet(KEY_PLAYER_FAVORITES, keys).apply()
     }
 
     private fun normalizeBalanceDuration(seconds: Int): Int = when (seconds) {
@@ -196,5 +205,7 @@ class AppSettingsStore(app: Application) {
         const val KEY_PLAYER_FX_EQ_INTENSITY = "player_fx_eq_intensity"
         const val KEY_PLAYER_FX_COMP_INTENSITY = "player_fx_comp_intensity"
         const val KEY_PLAYER_FX_DEESSER_INTENSITY = "player_fx_deesser_intensity"
+        const val KEY_PLAYER_FX_BOOST_INTENSITY = "player_fx_boost_intensity"
+        const val KEY_PLAYER_FAVORITES = "player_favorites"
     }
 }

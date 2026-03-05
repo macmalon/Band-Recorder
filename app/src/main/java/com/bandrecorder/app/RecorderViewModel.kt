@@ -1,12 +1,15 @@
 package com.bandrecorder.app
 
 import android.app.Application
+import android.content.ContentUris
 import android.content.ContentValues
+import android.media.MediaMetadataRetriever
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.MicrophoneInfo
 import android.os.Environment
 import android.provider.MediaStore
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.bandrecorder.core.audio.CalibrationProgress
@@ -57,6 +60,16 @@ data class MicTestHistoryEntry(
     val peakDb: Float,
     val recommended: Boolean,
     val warning: String?
+)
+
+data class RecordingListItem(
+    val key: String,
+    val title: String,
+    val dateLabel: String,
+    val durationMs: Long,
+    val sourceUri: Uri?,
+    val filePath: String?,
+    val isFavorite: Boolean
 )
 
 enum class GuidedStereoStep {
@@ -133,6 +146,8 @@ data class RecorderUiState(
     val dspStatusMessage: String? = null,
     val globalBalanceConfig: GlobalBalanceConfig = GlobalBalanceConfig(),
     val playerFxConfig: PlayerFxConfig = PlayerFxConfig(),
+    val playerRecordings: List<RecordingListItem> = emptyList(),
+    val favoriteRecordingKeys: Set<String> = emptySet(),
     val playerStatusMessage: String = "Prêt",
     val abTestResult: String? = null
 )
@@ -163,11 +178,13 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 stereoChannelsSwapped = settings.stereoChannelsSwapped,
                 globalBalanceConfig = settings.globalBalanceConfig,
                 playerFxConfig = settings.playerFxConfig,
+                favoriteRecordingKeys = settings.favoriteRecordingKeys,
                 testHistory = loadHistory()
             )
         }
 
         refreshMicrophones()
+        refreshPlayerRecordings()
 
         viewModelScope.launch {
             engine.statusFlow().collect { status ->
@@ -384,8 +401,36 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         updatePlayerFxConfig { it.copy(deEsserIntensity = value) }
     }
 
+    fun setPlayerBoostIntensity(value: Float) {
+        updatePlayerFxConfig { it.copy(boostIntensity = value) }
+    }
+
     fun setPlayerStatusMessage(message: String) {
         _uiState.update { it.copy(playerStatusMessage = message) }
+    }
+
+    fun refreshPlayerRecordings() {
+        viewModelScope.launch {
+            val favorites = _uiState.value.favoriteRecordingKeys
+            val items = mutableListOf<RecordingListItem>()
+            items += queryDownloadsRecordings(favorites)
+            items += queryAppPrivateRecordings(favorites)
+            val sorted = items.sortedByDescending { parseDateForSort(it.dateLabel) }
+            _uiState.update { it.copy(playerRecordings = sorted) }
+        }
+    }
+
+    fun toggleRecordingFavorite(key: String) {
+        val newSet = _uiState.value.favoriteRecordingKeys.toMutableSet().apply {
+            if (!add(key)) remove(key)
+        }.toSet()
+        settingsStore.setFavoriteRecordingKeys(newSet)
+        _uiState.update {
+            it.copy(
+                favoriteRecordingKeys = newSet,
+                playerRecordings = it.playerRecordings.map { rec -> if (rec.key == key) rec.copy(isFavorite = key in newSet) else rec }
+            )
+        }
     }
 
     fun markAutoSetupPermissionDenied() {
@@ -430,7 +475,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     "player_fx.deesser_enabled=${updated.deEsserEnabled}",
                     "player_fx.eq_intensity=${updated.eqIntensity}",
                     "player_fx.comp_intensity=${updated.compressionIntensity}",
-                    "player_fx.deesser_intensity=${updated.deEsserIntensity}"
+                    "player_fx.deesser_intensity=${updated.deEsserIntensity}",
+                    "player_fx.boost_intensity=${updated.boostIntensity}"
                 )
             )
         }
@@ -1101,6 +1147,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             } else {
                 _uiState.update { it.copy(status = "Stopped") }
             }
+            refreshPlayerRecordings()
             if (_uiState.value.diagnosticModeEnabled) {
                 exportDiagnosticReport(event = "recording_stop", entry = null, recordingPath = _uiState.value.lastOutputPath)
             }
@@ -1170,6 +1217,97 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private fun normalizeBalanceDuration(seconds: Int): Int = when (seconds) {
         30, 60, 90 -> seconds
         else -> 30
+    }
+
+    private fun queryDownloadsRecordings(favorites: Set<String>): List<RecordingListItem> {
+        val resolver = getApplication<Application>().contentResolver
+        val filesUri = MediaStore.Files.getContentUri("external")
+        val projection = arrayOf(
+            MediaStore.Files.FileColumns._ID,
+            MediaStore.Files.FileColumns.DISPLAY_NAME,
+            MediaStore.Files.FileColumns.DATE_MODIFIED,
+            MediaStore.Files.FileColumns.MIME_TYPE,
+            MediaStore.Files.FileColumns.RELATIVE_PATH
+        )
+        val selection = "${MediaStore.Files.FileColumns.MIME_TYPE}=? AND ${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE ?"
+        val args = arrayOf("audio/wav", "%Band Recorder%")
+        val sort = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
+
+        val out = mutableListOf<RecordingListItem>()
+        runCatching {
+            resolver.query(filesUri, projection, selection, args, sort)?.use { c ->
+                val idCol = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
+                val nameCol = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
+                val dateCol = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_MODIFIED)
+                while (c.moveToNext()) {
+                    val id = c.getLong(idCol)
+                    val name = c.getString(nameCol) ?: "Recording"
+                    val dateSec = c.getLong(dateCol)
+                    val uri = ContentUris.withAppendedId(filesUri, id)
+                    val duration = readDurationMs(uri = uri, path = null)
+                    val key = "ms:$id"
+                    out += RecordingListItem(
+                        key = key,
+                        title = name,
+                        dateLabel = formatDateFromEpochSec(dateSec),
+                        durationMs = duration,
+                        sourceUri = uri,
+                        filePath = null,
+                        isFavorite = key in favorites
+                    )
+                }
+            }
+        }
+        return out
+    }
+
+    private fun queryAppPrivateRecordings(favorites: Set<String>): List<RecordingListItem> {
+        val root = getApplication<Application>()
+            .getExternalFilesDir(Environment.DIRECTORY_MUSIC)
+            ?: getApplication<Application>().filesDir
+        val folder = File(root, "band_recordings")
+        if (!folder.exists()) return emptyList()
+        return folder.listFiles()
+            ?.filter { it.isFile && it.extension.lowercase(Locale.ROOT) == "wav" }
+            ?.sortedByDescending { it.lastModified() }
+            ?.map { f ->
+                val key = "fp:${f.absolutePath}"
+                RecordingListItem(
+                    key = key,
+                    title = f.name,
+                    dateLabel = formatDateFromEpochMs(f.lastModified()),
+                    durationMs = readDurationMs(uri = null, path = f.absolutePath),
+                    sourceUri = null,
+                    filePath = f.absolutePath,
+                    isFavorite = key in favorites
+                )
+            }
+            ?: emptyList()
+    }
+
+    private fun readDurationMs(uri: Uri?, path: String?): Long {
+        return runCatching {
+            val mmr = MediaMetadataRetriever()
+            if (uri != null) {
+                mmr.setDataSource(getApplication(), uri)
+            } else if (path != null) {
+                mmr.setDataSource(path)
+            }
+            val duration = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            mmr.release()
+            duration
+        }.getOrDefault(0L)
+    }
+
+    private fun formatDateFromEpochSec(epochSec: Long): String =
+        SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(epochSec * 1000L))
+
+    private fun formatDateFromEpochMs(epochMs: Long): String =
+        SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(epochMs))
+
+    private fun parseDateForSort(label: String): Long {
+        val f = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+        return runCatching { f.parse(label)?.time ?: 0L }.getOrDefault(0L)
     }
 
     private fun decisionFromPeak(peakDb: Float): Pair<String, String> = when {
@@ -1256,6 +1394,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             appendLine("player_fx.eq_enabled=${_uiState.value.playerFxConfig.eqEnabled}")
             appendLine("player_fx.comp_enabled=${_uiState.value.playerFxConfig.compressionEnabled}")
             appendLine("player_fx.deesser_enabled=${_uiState.value.playerFxConfig.deEsserEnabled}")
+            appendLine("player_fx.boost_intensity=${_uiState.value.playerFxConfig.boostIntensity}")
             appendLine("input_source=${_uiState.value.inputSourceLabel}")
             appendLine("input_preferred_device_set=${_uiState.value.inputPreferredDeviceSet}")
             appendLine("input_routed_device=${_uiState.value.inputRoutedDevice}")

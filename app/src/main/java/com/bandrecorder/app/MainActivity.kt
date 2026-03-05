@@ -3,6 +3,7 @@ package com.bandrecorder.app
 import android.Manifest
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import android.net.Uri
 import android.media.MediaPlayer
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
@@ -17,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -67,6 +69,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -78,6 +82,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import java.io.File
 import kotlin.math.cos
+import kotlin.math.absoluteValue
 import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.roundToInt
@@ -224,6 +229,8 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
             PlayerScreen(
                 ui = ui,
                 onBack = { navController.popBackStack() },
+                onRefreshRecordings = vm::refreshPlayerRecordings,
+                onToggleFavorite = vm::toggleRecordingFavorite,
                 onSetPreset = vm::setPlayerPreset,
                 onSetEqEnabled = vm::setPlayerEqEnabled,
                 onSetCompressionEnabled = vm::setPlayerCompressionEnabled,
@@ -231,6 +238,7 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onSetEqIntensity = vm::setPlayerEqIntensity,
                 onSetCompressionIntensity = vm::setPlayerCompressionIntensity,
                 onSetDeEsserIntensity = vm::setPlayerDeEsserIntensity,
+                onSetBoostIntensity = vm::setPlayerBoostIntensity,
                 onSetStatus = vm::setPlayerStatusMessage
             )
         }
@@ -856,6 +864,8 @@ private fun GuidedStepCard(
 private fun PlayerScreen(
     ui: RecorderUiState,
     onBack: () -> Unit,
+    onRefreshRecordings: () -> Unit,
+    onToggleFavorite: (String) -> Unit,
     onSetPreset: (PlayerFxPreset) -> Unit,
     onSetEqEnabled: (Boolean) -> Unit,
     onSetCompressionEnabled: (Boolean) -> Unit,
@@ -863,73 +873,161 @@ private fun PlayerScreen(
     onSetEqIntensity: (Float) -> Unit,
     onSetCompressionIntensity: (Float) -> Unit,
     onSetDeEsserIntensity: (Float) -> Unit,
+    onSetBoostIntensity: (Float) -> Unit,
     onSetStatus: (String) -> Unit
 ) {
-    val playback = remember { PlaybackController() }
+    val context = LocalContext.current
+    val playback = remember { PlaybackController(context) }
+    var selected by remember { mutableStateOf<RecordingListItem?>(null) }
+    var toolsOpen by remember { mutableStateOf(false) }
+    var tool by remember { mutableStateOf("Preset") }
+    var positionMs by remember { mutableStateOf(0L) }
+    var durationMs by remember { mutableStateOf(1L) }
 
     DisposableEffect(Unit) {
         onDispose { playback.release() }
     }
+    LaunchedEffect(Unit) { onRefreshRecordings() }
+    LaunchedEffect(playback.isPlaying()) {
+        while (playback.isPlaying()) {
+            positionMs = playback.currentPositionMs()
+            durationMs = maxOf(1L, playback.durationMs())
+            kotlinx.coroutines.delay(120)
+        }
+    }
 
     ScreenScaffold(title = "Lecteur", onBack = onBack) {
-        Text(
-            "Ces traitements n'altèrent pas la prise brute tant que vous n'exportez pas.",
-            style = MaterialTheme.typography.bodySmall
-        )
-
-        val cfg = ui.playerFxConfig
-        Text("Preset", fontWeight = FontWeight.SemiBold)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            presetButton("Flat", cfg.preset == PlayerFxPreset.FLAT, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.FLAT) }
-            presetButton("Rock", cfg.preset == PlayerFxPreset.ROCK, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.ROCK) }
-            presetButton("Pop", cfg.preset == PlayerFxPreset.POP, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.POP) }
+        if (selected == null) {
+            Text("Enregistrements", fontWeight = FontWeight.Bold)
+            if (ui.playerRecordings.isEmpty()) {
+                Text("Aucun enregistrement trouvé.")
+            } else {
+                ui.playerRecordings.forEach { item ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF2E3238))
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(item.title, fontWeight = FontWeight.SemiBold)
+                                Text("${item.dateLabel}  •  ${formatDuration(item.durationMs)}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            OutlinedButton(onClick = { onToggleFavorite(item.key) }) {
+                                Text(if (item.isFavorite) "★" else "☆")
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Button(onClick = {
+                                selected = item
+                                positionMs = 0L
+                                durationMs = maxOf(1L, item.durationMs)
+                                onSetStatus("Fichier sélectionné: ${item.title}")
+                            }) {
+                                Text("Ouvrir")
+                            }
+                        }
+                    }
+                }
+            }
+            return@ScreenScaffold
         }
 
-        ToggleRow("EQ tonal", cfg.eqEnabled, onSetEqEnabled)
-        AdvancedConfigSlider("EQ intensité", cfg.eqIntensity, 0f..1f, onSetEqIntensity)
+        val current = selected!!
+        val cfg = ui.playerFxConfig
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(current.title, fontWeight = FontWeight.Bold)
+            OutlinedButton(onClick = {
+                playback.release()
+                selected = null
+            }) { Text("Retour liste") }
+        }
 
-        ToggleRow("Compression légère", cfg.compressionEnabled, onSetCompressionEnabled)
-        AdvancedConfigSlider("Compression intensité", cfg.compressionIntensity, 0f..1f, onSetCompressionIntensity)
-
-        ToggleRow("De-esser cymbales", cfg.deEsserEnabled, onSetDeEsserEnabled)
-        AdvancedConfigSlider("De-esser intensité", cfg.deEsserIntensity, 0f..1f, onSetDeEsserIntensity)
-
-        val sourcePath = resolvePlaybackPath(ui.lastOutputPath)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(250.dp)
+                .clip(RoundedCornerShape(125.dp))
+                .background(Color(0xFF1F2329))
+                .border(BorderStroke(2.dp, AmpPanelBorder), RoundedCornerShape(125.dp))
+                .pointerInput(Unit) {
+                    detectDragGestures { change: PointerInputChange, dragAmount: Offset ->
+                        val delta = dragAmount.x - dragAmount.y
+                        val speedFactor = 1f + (delta.absoluteValue / 30f)
+                        val deltaMs = (delta * 15f * speedFactor).toLong()
+                        playback.scrubBy(deltaMs)
+                        positionMs = playback.currentPositionMs()
+                    }
+                },
+            contentAlignment = Alignment.Center
         ) {
             Button(
-                modifier = Modifier.weight(1f),
                 onClick = {
-                    val path = sourcePath
-                    if (path == null) {
-                        onSetStatus("Aucun enregistrement à lire")
-                        return@Button
-                    }
-                    val ok = playback.togglePlay(path, cfg, onError = onSetStatus)
-                    onSetStatus(if (ok) "Lecture avec traitements active" else "Lecture arrêtée")
-                }
+                    val ok = playback.togglePlay(current, cfg, onError = onSetStatus)
+                    onSetStatus(if (ok) "Lecture active" else "Lecture arrêtée")
+                    durationMs = maxOf(1L, playback.durationMs().coerceAtLeast(current.durationMs))
+                    positionMs = playback.currentPositionMs()
+                },
+                modifier = Modifier.size(110.dp),
+                shape = RoundedCornerShape(55.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3E434A), contentColor = AmpAccentAmber)
             ) {
-                Text(if (playback.isPlaying()) "Stop" else "Lire")
-            }
-            OutlinedButton(
-                modifier = Modifier.weight(1f),
-                onClick = {
-                    playback.refreshFx(cfg)
-                    onSetStatus("Paramètres appliqués")
-                }
-            ) {
-                Text("Appliquer FX")
+                Text(if (playback.isPlaying()) "⏸" else "▶", fontSize = 34.sp)
             }
         }
 
-        Text("Source: ${ui.lastOutputPath ?: "Aucun fichier"}", style = MaterialTheme.typography.bodySmall)
+        Slider(
+            value = positionMs.toFloat().coerceIn(0f, durationMs.toFloat()),
+            onValueChange = {
+                positionMs = it.toLong()
+                playback.seekTo(positionMs)
+            },
+            valueRange = 0f..durationMs.toFloat().coerceAtLeast(1f),
+            modifier = Modifier.fillMaxWidth().height(40.dp)
+        )
+        Text("${formatDuration(positionMs)} / ${formatDuration(durationMs)}", style = MaterialTheme.typography.bodySmall)
+
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { toolsOpen = !toolsOpen }, modifier = Modifier.weight(1f)) { Text("OUTILS") }
+            OutlinedButton(onClick = { onSetStatus("Découpe: placeholder") }, modifier = Modifier.weight(1f)) { Text("Découpe") }
+        }
+
+        if (toolsOpen) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("Preset", "EQ tonal", "Compression", "De-esser", "Boost").forEach { name ->
+                    if (tool == name) Button(onClick = { tool = name }, modifier = Modifier.weight(1f)) { Text(name) }
+                    else OutlinedButton(onClick = { tool = name }, modifier = Modifier.weight(1f)) { Text(name) }
+                }
+            }
+            Text(tool, fontWeight = FontWeight.Bold)
+            when (tool) {
+                "Preset" -> Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    presetButton("Flat", cfg.preset == PlayerFxPreset.FLAT, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.FLAT); playback.refreshFx(cfg.copy(preset = PlayerFxPreset.FLAT)) }
+                    presetButton("Rock", cfg.preset == PlayerFxPreset.ROCK, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.ROCK); playback.refreshFx(cfg.copy(preset = PlayerFxPreset.ROCK)) }
+                    presetButton("Pop", cfg.preset == PlayerFxPreset.POP, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.POP); playback.refreshFx(cfg.copy(preset = PlayerFxPreset.POP)) }
+                }
+                "EQ tonal" -> {
+                    ToggleRow("EQ tonal", cfg.eqEnabled, onSetEqEnabled)
+                    AdvancedConfigSlider("EQ intensité", cfg.eqIntensity, 0f..1f) { onSetEqIntensity(it); playback.refreshFx(cfg.copy(eqIntensity = it)) }
+                }
+                "Compression" -> {
+                    ToggleRow("Compression", cfg.compressionEnabled, onSetCompressionEnabled)
+                    AdvancedConfigSlider("Compression", cfg.compressionIntensity, 0f..1f) { onSetCompressionIntensity(it); playback.refreshFx(cfg.copy(compressionIntensity = it)) }
+                }
+                "De-esser" -> {
+                    ToggleRow("De-esser", cfg.deEsserEnabled, onSetDeEsserEnabled)
+                    AdvancedConfigSlider("De-esser", cfg.deEsserIntensity, 0f..1f) { onSetDeEsserIntensity(it); playback.refreshFx(cfg.copy(deEsserIntensity = it)) }
+                }
+                "Boost" -> {
+                    AdvancedConfigSlider("Boost", cfg.boostIntensity, 0f..1f) { onSetBoostIntensity(it); playback.refreshFx(cfg.copy(boostIntensity = it)) }
+                }
+            }
+        }
+
         Text("Statut lecteur: ${ui.playerStatusMessage}", style = MaterialTheme.typography.bodySmall)
-        Text("Export traité: roadmap", style = MaterialTheme.typography.bodySmall)
+        Text("Export traité: placeholder roadmap", style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -947,17 +1045,7 @@ private fun presetButton(
     }
 }
 
-private fun resolvePlaybackPath(lastOutputPath: String?): String? {
-    if (lastOutputPath.isNullOrBlank()) return null
-    return if (lastOutputPath.startsWith("Downloads/")) {
-        val relative = lastOutputPath.removePrefix("Downloads/").replace("/", File.separator)
-        File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), relative).absolutePath
-    } else {
-        lastOutputPath
-    }
-}
-
-private class PlaybackController {
+private class PlaybackController(private val context: android.content.Context) {
     private var mediaPlayer: MediaPlayer? = null
     private var equalizer: Equalizer? = null
     private var bassBoost: BassBoost? = null
@@ -965,15 +1053,33 @@ private class PlaybackController {
 
     fun isPlaying(): Boolean = mediaPlayer?.isPlaying == true
 
-    fun togglePlay(path: String, cfg: PlayerFxConfig, onError: (String) -> Unit): Boolean {
+    fun currentPositionMs(): Long = mediaPlayer?.currentPosition?.toLong() ?: 0L
+    fun durationMs(): Long = mediaPlayer?.duration?.toLong() ?: 0L
+    fun seekTo(ms: Long) {
+        runCatching { mediaPlayer?.seekTo(ms.toInt().coerceAtLeast(0)) }
+    }
+    fun scrubBy(deltaMs: Long) {
+        val next = currentPositionMs() + deltaMs
+        seekTo(next.coerceIn(0L, durationMs().coerceAtLeast(1L)))
+    }
+
+    fun togglePlay(item: RecordingListItem, cfg: PlayerFxConfig, onError: (String) -> Unit): Boolean {
         if (mediaPlayer?.isPlaying == true) {
-            release()
+            runCatching { mediaPlayer?.pause() }
             return false
+        }
+        if (mediaPlayer != null) {
+            runCatching { mediaPlayer?.start() }
+            return true
         }
         return runCatching {
             release()
             val player = MediaPlayer()
-            player.setDataSource(path)
+            when {
+                item.sourceUri != null -> player.setDataSource(context, item.sourceUri)
+                !item.filePath.isNullOrBlank() -> player.setDataSource(item.filePath)
+                else -> error("No data source")
+            }
             player.prepare()
             player.start()
             player.setOnCompletionListener { release() }
@@ -1021,8 +1127,8 @@ private class PlaybackController {
             setStrength((cfg.eqIntensity * 1000f).toInt().coerceIn(0, 1000).toShort())
         }
         loudness = LoudnessEnhancer(session).apply {
-            enabled = cfg.compressionEnabled
-            val gainMb = (cfg.compressionIntensity * 300f).toInt()
+            enabled = cfg.compressionEnabled || cfg.boostIntensity > 0f
+            val gainMb = (cfg.compressionIntensity * 300f + cfg.boostIntensity * 1200f).toInt()
             setTargetGain(gainMb)
         }
     }
@@ -1060,6 +1166,13 @@ private class PlaybackController {
         val scaled = (levelMb * intensity).toInt().toShort()
         runCatching { setBandLevel(idx.toShort(), scaled) }
     }
+}
+
+private fun formatDuration(ms: Long): String {
+    val totalSec = (ms / 1000L).coerceAtLeast(0L)
+    val m = totalSec / 60L
+    val s = totalSec % 60L
+    return "%02d:%02d".format(m, s)
 }
 
 @Composable
