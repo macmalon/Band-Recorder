@@ -99,8 +99,6 @@ class WavRecorderEngine {
     private var channelCount: Int = 1
     private var swapStereoChannels: Boolean = false
     private var inputDiagnostics: InputDiagnostics? = null
-    private var activeBalanceConfig: GlobalBalanceConfig = GlobalBalanceConfig()
-    private var liveDspEngine: LiveDspEngine? = null
 
     private data class AudioRecordInit(
         val record: AudioRecord,
@@ -361,8 +359,7 @@ class WavRecorderEngine {
         sampleRate: Int = 48_000,
         preferredDevice: AudioDeviceInfo? = null,
         requestedChannelCount: Int = 1,
-        swapStereoChannels: Boolean = false,
-        balanceConfig: GlobalBalanceConfig = GlobalBalanceConfig()
+        swapStereoChannels: Boolean = false
     ) {
         if (recordJob != null) return
 
@@ -384,8 +381,6 @@ class WavRecorderEngine {
         sampleRateHz = sampleRate
         channelCount = channels
         this.swapStereoChannels = swapStereoChannels
-        activeBalanceConfig = balanceConfig.bounded()
-        liveDspEngine = LiveDspEngine(sampleRateHz, channelCount, activeBalanceConfig)
         dataBytesWritten = 0
         inputDiagnostics = buildInputDiagnostics(
             record = record,
@@ -404,13 +399,12 @@ class WavRecorderEngine {
             isRecording = true,
             outputPath = output.absolutePath,
             inputDiagnostics = inputDiagnostics,
-            dspAvailable = true,
-            dspOutputMode = activeBalanceConfig.dspOutputMode
+            dspAvailable = false,
+            dspOutputMode = DspOutputMode.MONITORING_ONLY
         )
 
         recordJob = scope.launch {
             val rawShorts = ShortArray(bufferSize / 2)
-            val processedShorts = ShortArray(bufferSize / 2)
             val bytes = ByteArray(rawShorts.size * 2)
 
             try {
@@ -418,9 +412,7 @@ class WavRecorderEngine {
                     val read = record.read(rawShorts, 0, rawShorts.size)
                     if (read <= 0) continue
 
-                    val dspStats = liveDspEngine?.processInterleaved(rawShorts, read, processedShorts) ?: DspRuntimeStats()
-                    val effectiveForMeters = if (dspStats.active) processedShorts else rawShorts
-                    val level = analyze(effectiveForMeters, read)
+                    val level = analyze(rawShorts, read)
                     val elapsed = System.currentTimeMillis() - startMs
                     status.value = RecordingStatus(
                         isRecording = true,
@@ -430,28 +422,23 @@ class WavRecorderEngine {
                         elapsedMs = elapsed,
                         outputPath = output.absolutePath,
                         inputDiagnostics = inputDiagnostics,
-                        dspAvailable = true,
-                        dspRunning = dspStats.active && !dspStats.bypassed,
-                        dspCpuGuardActive = dspStats.cpuGuardActive,
-                        dspOutputMode = activeBalanceConfig.dspOutputMode,
-                        dspCompGainReductionDb = dspStats.compGainReductionDb,
-                        dspDeEsserGainReductionDb = dspStats.deEsserGainReductionDb,
-                        dspLimiterHits = dspStats.limiterHits,
-                        dspStatusMessage = dspStats.statusMessage
+                        dspAvailable = false,
+                        dspRunning = false,
+                        dspCpuGuardActive = false,
+                        dspOutputMode = DspOutputMode.MONITORING_ONLY,
+                        dspCompGainReductionDb = 0f,
+                        dspDeEsserGainReductionDb = 0f,
+                        dspLimiterHits = 0,
+                        dspStatusMessage = "Bypass"
                     )
-
-                    val writeSource = when {
-                        dspStats.active && activeBalanceConfig.dspOutputMode == DspOutputMode.MONITORING_AND_RECORDING -> processedShorts
-                        else -> rawShorts
-                    }
 
                     var bi = 0
                     if (channelCount == 2 && this@WavRecorderEngine.swapStereoChannels) {
                         val usable = read - (read % 2)
                         var i = 0
                         while (i < usable) {
-                            val left = writeSource[i].toInt()
-                            val right = writeSource[i + 1].toInt()
+                            val left = rawShorts[i].toInt()
+                            val right = rawShorts[i + 1].toInt()
                             // Write R then L to swap output channels.
                             bytes[bi++] = (right and 0xFF).toByte()
                             bytes[bi++] = ((right shr 8) and 0xFF).toByte()
@@ -461,7 +448,7 @@ class WavRecorderEngine {
                         }
                     } else {
                         for (i in 0 until read) {
-                            val s = writeSource[i].toInt()
+                            val s = rawShorts[i].toInt()
                             bytes[bi++] = (s and 0xFF).toByte()
                             bytes[bi++] = ((s shr 8) and 0xFF).toByte()
                         }
@@ -477,7 +464,6 @@ class WavRecorderEngine {
                 record.release()
                 audioRecord = null
                 recordJob = null
-                liveDspEngine = null
                 status.value = RecordingStatus(
                     isRecording = false,
                     rmsDb = levelOrDefault(status.value.rmsDb),
@@ -486,13 +472,13 @@ class WavRecorderEngine {
                     elapsedMs = status.value.elapsedMs,
                     outputPath = output.absolutePath,
                     inputDiagnostics = inputDiagnostics,
-                    dspAvailable = true,
+                    dspAvailable = false,
                     dspRunning = false,
-                    dspCpuGuardActive = status.value.dspCpuGuardActive,
-                    dspOutputMode = activeBalanceConfig.dspOutputMode,
-                    dspCompGainReductionDb = status.value.dspCompGainReductionDb,
-                    dspDeEsserGainReductionDb = status.value.dspDeEsserGainReductionDb,
-                    dspLimiterHits = status.value.dspLimiterHits,
+                    dspCpuGuardActive = false,
+                    dspOutputMode = DspOutputMode.MONITORING_ONLY,
+                    dspCompGainReductionDb = 0f,
+                    dspDeEsserGainReductionDb = 0f,
+                    dspLimiterHits = 0,
                     dspStatusMessage = "Bypass"
                 )
             }

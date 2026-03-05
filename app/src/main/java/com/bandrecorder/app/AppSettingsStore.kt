@@ -17,9 +17,11 @@ data class AppSettings(
     val diagnosticMode: Boolean = true,
     val showAdvancedInternals: Boolean = false,
     val testDurationSec: Int = 5,
+    val balanceDurationSec: Int = 30,
     val stereoModeRequested: Boolean = false,
     val stereoChannelsSwapped: Boolean = false,
-    val globalBalanceConfig: GlobalBalanceConfig = GlobalBalanceConfig()
+    val globalBalanceConfig: GlobalBalanceConfig = GlobalBalanceConfig(),
+    val playerFxConfig: PlayerFxConfig = PlayerFxConfig()
 )
 
 class AppSettingsStore(app: Application) {
@@ -33,6 +35,7 @@ class AppSettingsStore(app: Application) {
         val diagnosticMode = prefs.getBoolean(KEY_DIAGNOSTIC_MODE, true)
         val showAdvanced = prefs.getBoolean(KEY_SHOW_ADVANCED_INTERNALS, false)
         val testDurationSec = prefs.getInt(KEY_TEST_DURATION_SEC, 5).coerceIn(5, 30)
+        val balanceDurationSec = normalizeBalanceDuration(prefs.getInt(KEY_BALANCE_DURATION_SEC, 30))
         val stereoRequested = prefs.getBoolean(KEY_STEREO_MODE_REQUESTED, false)
         val stereoChannelsSwapped = prefs.getBoolean(KEY_STEREO_CHANNELS_SWAPPED, false)
         val dspOutput = runCatching {
@@ -63,15 +66,31 @@ class AppSettingsStore(app: Application) {
             limiterCeilingDb = prefs.getFloat(KEY_LIMITER_CEILING_DB, -1.5f),
             outputTrimDb = prefs.getFloat(KEY_OUTPUT_TRIM_DB, 0f)
         ).bounded()
+        val playerPreset = runCatching {
+            PlayerFxPreset.valueOf(
+                prefs.getString(KEY_PLAYER_FX_PRESET, PlayerFxPreset.ROCK.name) ?: PlayerFxPreset.ROCK.name
+            )
+        }.getOrDefault(PlayerFxPreset.ROCK)
+        val playerFxConfig = PlayerFxConfig(
+            preset = playerPreset,
+            eqEnabled = prefs.getBoolean(KEY_PLAYER_FX_EQ_ENABLED, true),
+            compressionEnabled = prefs.getBoolean(KEY_PLAYER_FX_COMP_ENABLED, true),
+            deEsserEnabled = prefs.getBoolean(KEY_PLAYER_FX_DEESSER_ENABLED, true),
+            eqIntensity = prefs.getFloat(KEY_PLAYER_FX_EQ_INTENSITY, 0.45f),
+            compressionIntensity = prefs.getFloat(KEY_PLAYER_FX_COMP_INTENSITY, 0.35f),
+            deEsserIntensity = prefs.getFloat(KEY_PLAYER_FX_DEESSER_INTENSITY, 0.35f)
+        ).bounded()
         return AppSettings(
             storageLocation = storage,
             selectedMicId = micId,
             diagnosticMode = diagnosticMode,
             showAdvancedInternals = showAdvanced,
             testDurationSec = testDurationSec,
+            balanceDurationSec = balanceDurationSec,
             stereoModeRequested = stereoRequested,
             stereoChannelsSwapped = stereoChannelsSwapped,
-            globalBalanceConfig = globalBalanceConfig
+            globalBalanceConfig = globalBalanceConfig,
+            playerFxConfig = playerFxConfig
         )
     }
 
@@ -95,6 +114,10 @@ class AppSettingsStore(app: Application) {
 
     fun setTestDurationSec(seconds: Int) {
         prefs.edit().putInt(KEY_TEST_DURATION_SEC, seconds.coerceIn(5, 30)).apply()
+    }
+
+    fun setBalanceDurationSec(seconds: Int) {
+        prefs.edit().putInt(KEY_BALANCE_DURATION_SEC, normalizeBalanceDuration(seconds)).apply()
     }
 
     fun setStereoModeRequested(enabled: Boolean) {
@@ -125,12 +148,31 @@ class AppSettingsStore(app: Application) {
             .apply()
     }
 
+    fun setPlayerFxConfig(config: PlayerFxConfig) {
+        val bounded = config.bounded()
+        prefs.edit()
+            .putString(KEY_PLAYER_FX_PRESET, bounded.preset.name)
+            .putBoolean(KEY_PLAYER_FX_EQ_ENABLED, bounded.eqEnabled)
+            .putBoolean(KEY_PLAYER_FX_COMP_ENABLED, bounded.compressionEnabled)
+            .putBoolean(KEY_PLAYER_FX_DEESSER_ENABLED, bounded.deEsserEnabled)
+            .putFloat(KEY_PLAYER_FX_EQ_INTENSITY, bounded.eqIntensity)
+            .putFloat(KEY_PLAYER_FX_COMP_INTENSITY, bounded.compressionIntensity)
+            .putFloat(KEY_PLAYER_FX_DEESSER_INTENSITY, bounded.deEsserIntensity)
+            .apply()
+    }
+
+    private fun normalizeBalanceDuration(seconds: Int): Int = when (seconds) {
+        30, 60, 90 -> seconds
+        else -> 30
+    }
+
     private companion object {
         const val KEY_STORAGE_LOCATION = "storage_location"
         const val KEY_MIC_ID = "selected_mic_id"
         const val KEY_DIAGNOSTIC_MODE = "diagnostic_mode"
         const val KEY_SHOW_ADVANCED_INTERNALS = "show_advanced_internals"
         const val KEY_TEST_DURATION_SEC = "test_duration_sec"
+        const val KEY_BALANCE_DURATION_SEC = "balance_duration_sec"
         const val KEY_STEREO_MODE_REQUESTED = "stereo_mode_requested"
         const val KEY_STEREO_CHANNELS_SWAPPED = "stereo_channels_swapped"
         const val KEY_AUTO_BALANCE = "global_auto_balance"
@@ -147,5 +189,12 @@ class AppSettingsStore(app: Application) {
         const val KEY_DE_ESSER_WIDTH_HZ = "global_de_esser_width_hz"
         const val KEY_LIMITER_CEILING_DB = "global_limiter_ceiling_db"
         const val KEY_OUTPUT_TRIM_DB = "global_output_trim_db"
+        const val KEY_PLAYER_FX_PRESET = "player_fx_preset"
+        const val KEY_PLAYER_FX_EQ_ENABLED = "player_fx_eq_enabled"
+        const val KEY_PLAYER_FX_COMP_ENABLED = "player_fx_comp_enabled"
+        const val KEY_PLAYER_FX_DEESSER_ENABLED = "player_fx_deesser_enabled"
+        const val KEY_PLAYER_FX_EQ_INTENSITY = "player_fx_eq_intensity"
+        const val KEY_PLAYER_FX_COMP_INTENSITY = "player_fx_comp_intensity"
+        const val KEY_PLAYER_FX_DEESSER_INTENSITY = "player_fx_deesser_intensity"
     }
 }

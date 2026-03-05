@@ -77,6 +77,13 @@ data class RecorderUiState(
     val isRunningABTest: Boolean = false,
     val isRunningStereoGuidedTest: Boolean = false,
     val calibrationProgress: Int = 0,
+    val isRunningLevelBalance: Boolean = false,
+    val balanceProgress: Int = 0,
+    val balanceDurationSec: Int = 30,
+    val availableBalanceDurationsSec: List<Int> = listOf(30, 60, 90),
+    val balancePeakMaxDb: Float = -90f,
+    val balanceDecisionLabel: String? = null,
+    val balanceRecommendationText: String? = null,
     val rmsDb: Float = -90f,
     val peakDb: Float = -90f,
     val headroomDb: Float = 90f,
@@ -125,6 +132,8 @@ data class RecorderUiState(
     val globalDspLimiterHits: Int = 0,
     val dspStatusMessage: String? = null,
     val globalBalanceConfig: GlobalBalanceConfig = GlobalBalanceConfig(),
+    val playerFxConfig: PlayerFxConfig = PlayerFxConfig(),
+    val playerStatusMessage: String = "Prêt",
     val abTestResult: String? = null
 )
 
@@ -149,9 +158,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 diagnosticModeEnabled = settings.diagnosticMode,
                 showAdvancedInternals = settings.showAdvancedInternals,
                 selectedTestDurationSec = normalizeDuration(settings.testDurationSec),
+                balanceDurationSec = normalizeBalanceDuration(settings.balanceDurationSec),
                 stereoModeRequested = settings.stereoModeRequested,
                 stereoChannelsSwapped = settings.stereoChannelsSwapped,
                 globalBalanceConfig = settings.globalBalanceConfig,
+                playerFxConfig = settings.playerFxConfig,
                 testHistory = loadHistory()
             )
         }
@@ -228,6 +239,85 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.update { it.copy(selectedTestDurationSec = normalized) }
     }
 
+    fun setBalanceDuration(seconds: Int) {
+        val normalized = normalizeBalanceDuration(seconds)
+        settingsStore.setBalanceDurationSec(normalized)
+        _uiState.update { it.copy(balanceDurationSec = normalized) }
+    }
+
+    fun runLevelBalance() {
+        if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest || _uiState.value.isRunningStereoGuidedTest || _uiState.value.isRunningLevelBalance) return
+
+        val durationSec = _uiState.value.balanceDurationSec
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isRunningLevelBalance = true,
+                    balanceProgress = 0,
+                    balancePeakMaxDb = -90f,
+                    balanceDecisionLabel = null,
+                    balanceRecommendationText = null,
+                    status = "Balance niveau (${durationSec}s)"
+                )
+            }
+
+            val result = engine.runCalibration(
+                durationSeconds = durationSec,
+                preferredDevice = resolveEffectiveMicDevice(),
+                onProgress = { progress ->
+                    _uiState.update { st ->
+                        st.copy(
+                            balanceProgress = progress.progressPercent,
+                            rmsDb = progress.rmsDb,
+                            peakDb = progress.peakDb,
+                            headroomDb = -progress.peakDb,
+                            balancePeakMaxDb = maxOf(st.balancePeakMaxDb, progress.peakDb)
+                        )
+                    }
+                }
+            )
+
+            if (result == null) {
+                _uiState.update {
+                    it.copy(
+                        isRunningLevelBalance = false,
+                        status = "Balance niveau impossible"
+                    )
+                }
+                return@launch
+            }
+
+            val peak = result.peakDb
+            val decision = decisionFromPeak(peak)
+            _uiState.update {
+                it.copy(
+                    isRunningLevelBalance = false,
+                    balanceProgress = 100,
+                    balancePeakMaxDb = peak,
+                    balanceDecisionLabel = decision.first,
+                    balanceRecommendationText = decision.second,
+                    recommendedGainDb = result.recommendedGainDb,
+                    status = "Balance niveau terminée"
+                )
+            }
+
+            if (_uiState.value.diagnosticModeEnabled) {
+                exportDiagnosticReport(
+                    event = "balance_level_check",
+                    entry = null,
+                    recordingPath = _uiState.value.lastOutputPath,
+                    extraLines = listOf(
+                        "balance.duration_sec=$durationSec",
+                        "balance.peak_db=$peak",
+                        "balance.rms_db=${result.rmsDb}",
+                        "balance.peak_zone=${decision.first}",
+                        "balance.recommendation=${decision.second}"
+                    )
+                )
+            }
+        }
+    }
+
     fun setStereoModeRequested(enabled: Boolean) {
         settingsStore.setStereoModeRequested(enabled)
         _uiState.update { it.copy(stereoModeRequested = enabled) }
@@ -266,6 +356,38 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         updateGlobalBalanceConfig { GlobalBalanceConfig() }
     }
 
+    fun setPlayerPreset(preset: PlayerFxPreset) {
+        updatePlayerFxConfig { it.copy(preset = preset) }
+    }
+
+    fun setPlayerEqEnabled(enabled: Boolean) {
+        updatePlayerFxConfig { it.copy(eqEnabled = enabled) }
+    }
+
+    fun setPlayerCompressionEnabled(enabled: Boolean) {
+        updatePlayerFxConfig { it.copy(compressionEnabled = enabled) }
+    }
+
+    fun setPlayerDeEsserEnabled(enabled: Boolean) {
+        updatePlayerFxConfig { it.copy(deEsserEnabled = enabled) }
+    }
+
+    fun setPlayerEqIntensity(value: Float) {
+        updatePlayerFxConfig { it.copy(eqIntensity = value) }
+    }
+
+    fun setPlayerCompressionIntensity(value: Float) {
+        updatePlayerFxConfig { it.copy(compressionIntensity = value) }
+    }
+
+    fun setPlayerDeEsserIntensity(value: Float) {
+        updatePlayerFxConfig { it.copy(deEsserIntensity = value) }
+    }
+
+    fun setPlayerStatusMessage(message: String) {
+        _uiState.update { it.copy(playerStatusMessage = message) }
+    }
+
     fun markAutoSetupPermissionDenied() {
         _uiState.update {
             it.copy(
@@ -288,6 +410,28 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 entry = null,
                 recordingPath = _uiState.value.lastOutputPath,
                 extraLines = buildGlobalDspDiagnosticLines(updated)
+            )
+        }
+    }
+
+    private fun updatePlayerFxConfig(transform: (PlayerFxConfig) -> PlayerFxConfig) {
+        val updated = transform(_uiState.value.playerFxConfig).bounded()
+        settingsStore.setPlayerFxConfig(updated)
+        _uiState.update { it.copy(playerFxConfig = updated) }
+        if (_uiState.value.diagnosticModeEnabled) {
+            exportDiagnosticReport(
+                event = "player_fx_config_changed",
+                entry = null,
+                recordingPath = _uiState.value.lastOutputPath,
+                extraLines = listOf(
+                    "player_fx.preset=${updated.preset}",
+                    "player_fx.eq_enabled=${updated.eqEnabled}",
+                    "player_fx.comp_enabled=${updated.compressionEnabled}",
+                    "player_fx.deesser_enabled=${updated.deEsserEnabled}",
+                    "player_fx.eq_intensity=${updated.eqIntensity}",
+                    "player_fx.comp_intensity=${updated.compressionIntensity}",
+                    "player_fx.deesser_intensity=${updated.deEsserIntensity}"
+                )
             )
         }
     }
@@ -913,8 +1057,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     output,
                     preferredDevice = selectedMic,
                     requestedChannelCount = channels,
-                    swapStereoChannels = _uiState.value.stereoChannelsSwapped,
-                    balanceConfig = _uiState.value.globalBalanceConfig
+                    swapStereoChannels = _uiState.value.stereoChannelsSwapped
                 )
                 _uiState.update {
                     it.copy(
@@ -931,8 +1074,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     output,
                     preferredDevice = selectedMic,
                     requestedChannelCount = channels,
-                    swapStereoChannels = _uiState.value.stereoChannelsSwapped,
-                    balanceConfig = _uiState.value.globalBalanceConfig
+                    swapStereoChannels = _uiState.value.stereoChannelsSwapped
                 )
                 _uiState.update {
                     it.copy(
@@ -1025,6 +1167,19 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         else -> 5
     }
 
+    private fun normalizeBalanceDuration(seconds: Int): Int = when (seconds) {
+        30, 60, 90 -> seconds
+        else -> 30
+    }
+
+    private fun decisionFromPeak(peakDb: Float): Pair<String, String> = when {
+        peakDb > -3f -> "Danger" to "Peak > -3 dBFS: éloigne le téléphone de 20 à 50 cm et vise moins les cymbales/amplis."
+        peakDb > -6f -> "Chaud" to "Peak entre -6 et -3 dBFS: ajoute un peu de distance (10 à 20 cm), puis reteste."
+        peakDb > -12f -> "Idéal" to "Peak entre -12 et -6 dBFS: niveau recommandé, tu peux lancer REC."
+        peakDb > -18f -> "Safe bas" to "Peak entre -18 et -12 dBFS: sûr mais possiblement un peu loin; rapproche légèrement si besoin."
+        else -> "Faible" to "Peak < -18 dBFS: rapproche le téléphone ou améliore l’orientation vers la source utile."
+    }
+
     private fun loadHistory(): List<MicTestHistoryEntry> {
         if (!historyFile.exists()) return emptyList()
         return historyFile.readLines()
@@ -1097,7 +1252,10 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             appendLine("stereo_supported=${_uiState.value.stereoSupported}")
             appendLine("stereo_actual_channels=${_uiState.value.stereoActualChannels}")
             appendLine("stereo_probe_message=${_uiState.value.stereoProbeMessage}")
-            buildGlobalDspDiagnosticLines().forEach { appendLine(it) }
+            appendLine("player_fx.preset=${_uiState.value.playerFxConfig.preset}")
+            appendLine("player_fx.eq_enabled=${_uiState.value.playerFxConfig.eqEnabled}")
+            appendLine("player_fx.comp_enabled=${_uiState.value.playerFxConfig.compressionEnabled}")
+            appendLine("player_fx.deesser_enabled=${_uiState.value.playerFxConfig.deEsserEnabled}")
             appendLine("input_source=${_uiState.value.inputSourceLabel}")
             appendLine("input_preferred_device_set=${_uiState.value.inputPreferredDeviceSet}")
             appendLine("input_routed_device=${_uiState.value.inputRoutedDevice}")
@@ -1110,6 +1268,9 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             appendLine("rms_db=${_uiState.value.rmsDb}")
             appendLine("peak_db=${_uiState.value.peakDb}")
             appendLine("headroom_db=${_uiState.value.headroomDb}")
+            appendLine("balance.duration_sec=${_uiState.value.balanceDurationSec}")
+            appendLine("balance.peak_zone=${_uiState.value.balanceDecisionLabel ?: ""}")
+            appendLine("balance.recommendation=${_uiState.value.balanceRecommendationText ?: ""}")
             appendLine("elapsed_ms=${_uiState.value.elapsedMs}")
             appendLine("recording_path=${recordingPath ?: ""}")
             if (entry != null) {

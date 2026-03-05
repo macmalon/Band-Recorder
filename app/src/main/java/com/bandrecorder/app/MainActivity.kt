@@ -3,7 +3,12 @@ package com.bandrecorder.app
 import android.Manifest
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import android.media.MediaPlayer
+import android.media.audiofx.BassBoost
+import android.media.audiofx.Equalizer
+import android.media.audiofx.LoudnessEnhancer
 import android.os.Bundle
+import android.os.Environment
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -59,13 +64,12 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.bandrecorder.core.audio.DspOutputMode
-import com.bandrecorder.core.audio.GlobalBalanceConfig
-import com.bandrecorder.core.audio.MixProfile
+import java.io.File
 import kotlin.math.roundToInt
 
 private enum class PendingAction {
     CALIBRATE,
+    RUN_LEVEL_BALANCE,
     START_RECORDING,
     TEST_MIC,
     PROBE_STEREO,
@@ -120,6 +124,7 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
         }
         when (pendingAction) {
             PendingAction.CALIBRATE -> vm.runCalibration()
+            PendingAction.RUN_LEVEL_BALANCE -> vm.runLevelBalance()
             PendingAction.START_RECORDING -> vm.startRecording()
             PendingAction.TEST_MIC -> vm.testSelectedMicrophone()
             PendingAction.PROBE_STEREO -> vm.probeStereoCapability()
@@ -162,13 +167,8 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 ui = ui,
                 onBack = { navController.popBackStack() },
                 onRequestCalibrate = { requestAudioPermission(PendingAction.CALIBRATE) },
-                onSetAutoBalance = vm::setAutoBalance,
-                onSetCompression = vm::setCompression,
-                onSetDeEsser = vm::setDeEsser,
-                onSetDspOutputMode = vm::setDspOutputMode,
-                onSetMixProfile = vm::setMixProfile,
-                onUpdateAdvancedConfig = vm::updateAdvancedBalanceConfig,
-                onResetProfile = vm::resetBalanceProfile
+                onSetBalanceDuration = vm::setBalanceDuration,
+                onRunLevelBalance = { requestAudioPermission(PendingAction.RUN_LEVEL_BALANCE) }
             )
         }
         composable(AppRoute.MicSettings.route) {
@@ -204,10 +204,17 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
             )
         }
         composable(AppRoute.Player.route) {
-            PlaceholderScreen(
-                title = "Lecteur",
-                subtitle = "Le lecteur sera ajouté dans une prochaine étape de la roadmap.",
-                navController = navController
+            PlayerScreen(
+                ui = ui,
+                onBack = { navController.popBackStack() },
+                onSetPreset = vm::setPlayerPreset,
+                onSetEqEnabled = vm::setPlayerEqEnabled,
+                onSetCompressionEnabled = vm::setPlayerCompressionEnabled,
+                onSetDeEsserEnabled = vm::setPlayerDeEsserEnabled,
+                onSetEqIntensity = vm::setPlayerEqIntensity,
+                onSetCompressionIntensity = vm::setPlayerCompressionIntensity,
+                onSetDeEsserIntensity = vm::setPlayerDeEsserIntensity,
+                onSetStatus = vm::setPlayerStatusMessage
             )
         }
         composable(AppRoute.Link.route) {
@@ -348,13 +355,8 @@ private fun BalanceScreen(
     ui: RecorderUiState,
     onBack: () -> Unit,
     onRequestCalibrate: () -> Unit,
-    onSetAutoBalance: (Boolean) -> Unit,
-    onSetCompression: (Boolean) -> Unit,
-    onSetDeEsser: (Boolean) -> Unit,
-    onSetDspOutputMode: (DspOutputMode) -> Unit,
-    onSetMixProfile: (MixProfile) -> Unit,
-    onUpdateAdvancedConfig: (GlobalBalanceConfig) -> Unit,
-    onResetProfile: () -> Unit
+    onSetBalanceDuration: (Int) -> Unit,
+    onRunLevelBalance: () -> Unit
 ) {
     val vuProgress = ((ui.peakDb + 60f) / 60f).coerceIn(0f, 1f)
     val vuColor = when {
@@ -365,8 +367,6 @@ private fun BalanceScreen(
     val saturationAlert = ui.peakDb > -3f
     val lowLevelAlert = ui.rmsDb < -38f && ui.isRecording
     var section by remember { mutableStateOf(BalanceSection.GLOBAL) }
-    var advancedOpen by remember { mutableStateOf(false) }
-    val cfg = ui.globalBalanceConfig
 
     ScreenScaffold(title = "Balance", onBack = onBack) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -389,154 +389,65 @@ private fun BalanceScreen(
                         modifier = Modifier.padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("Traitement live", fontWeight = FontWeight.Bold)
+                        Text("Vérification niveau", fontWeight = FontWeight.Bold)
                         Text(
-                            "Auto Balance ajuste le mix en temps réel pour une écoute claire sans saturation.",
+                            "Objectif: éviter la saturation pendant la prise. Le traitement créatif est réservé au Lecteur.",
                             style = MaterialTheme.typography.bodySmall
                         )
 
-                        ToggleRow(
-                            label = "Auto Balance",
-                            enabled = cfg.autoBalanceEnabled,
-                            onToggle = onSetAutoBalance
-                        )
-                        ToggleRow(
-                            label = "Compression légère",
-                            enabled = cfg.compressionEnabled,
-                            onToggle = onSetCompression
-                        )
-                        ToggleRow(
-                            label = "De-esser cymbales",
-                            enabled = cfg.deEsserEnabled,
-                            onToggle = onSetDeEsser
-                        )
-
-                        Text("Sortie DSP", fontWeight = FontWeight.SemiBold)
+                        Text("Durée balance", fontWeight = FontWeight.SemiBold)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            if (cfg.dspOutputMode == DspOutputMode.MONITORING_ONLY) {
-                                Button(
-                                    onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_ONLY) },
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("Monitoring") }
-                                OutlinedButton(
-                                    onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_AND_RECORDING) },
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("Monitoring+Fichier") }
-                            } else {
-                                OutlinedButton(
-                                    onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_ONLY) },
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("Monitoring") }
-                                Button(
-                                    onClick = { onSetDspOutputMode(DspOutputMode.MONITORING_AND_RECORDING) },
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("Monitoring+Fichier") }
+                            ui.availableBalanceDurationsSec.forEach { sec ->
+                                if (sec == ui.balanceDurationSec) {
+                                    Button(
+                                        onClick = { onSetBalanceDuration(sec) },
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("${sec}s") }
+                                } else {
+                                    OutlinedButton(
+                                        onClick = { onSetBalanceDuration(sec) },
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("${sec}s") }
+                                }
                             }
                         }
 
-                        val dspBadgeText = when {
-                            ui.isGlobalDspCpuGuardActive -> "CPU élevé"
-                            ui.isNearClipping -> "Risque saturation"
-                            ui.isGlobalDspRunning -> "Actif"
-                            else -> "Bypass"
-                        }
-                        val dspBadgeColor = when (dspBadgeText) {
-                            "Actif" -> Color(0xFF2E7D32)
-                            "Bypass" -> Color(0xFF546E7A)
-                            "CPU élevé" -> Color(0xFFFF9800)
-                            else -> Color(0xFFD32F2F)
-                        }
-                        Text("État DSP: $dspBadgeText", color = dspBadgeColor, fontWeight = FontWeight.Bold)
-                        ui.dspStatusMessage?.let { Text("Status moteur: $it", style = MaterialTheme.typography.bodySmall) }
-                        if (cfg.dspOutputMode == DspOutputMode.MONITORING_AND_RECORDING) {
-                            Text("Traitement imprimé dans le fichier.", style = MaterialTheme.typography.bodySmall, color = Color(0xFFB00020))
-                        }
-
-                        OutlinedButton(
-                            onClick = { advancedOpen = !advancedOpen },
+                        Button(
+                            onClick = onRunLevelBalance,
+                            enabled = !ui.isRecording && !ui.isCalibrating && !ui.isRunningLevelBalance && !ui.isRunningABTest && !ui.isRunningStereoGuidedTest,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text(if (advancedOpen) "Masquer Avancé" else "Afficher Avancé")
+                            Text(if (ui.isRunningLevelBalance) "Balance en cours..." else "Lancer balance niveau")
                         }
 
-                        if (advancedOpen) {
-                            Text("Profil cible", fontWeight = FontWeight.SemiBold)
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = { onSetMixProfile(MixProfile.ROCK_POP_BALANCED) },
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("Rock/Pop équilibré")
-                                }
-                                OutlinedButton(
-                                    onClick = onResetProfile,
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("Reset profil")
-                                }
+                        if (ui.isRunningLevelBalance) {
+                            Text("Progression: ${ui.balanceProgress}%")
+                            LinearProgressIndicator(
+                                progress = { ui.balanceProgress / 100f },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+
+                        ui.balanceDecisionLabel?.let { label ->
+                            val color = when (label) {
+                                "Danger" -> Color(0xFFD32F2F)
+                                "Chaud" -> Color(0xFFFF9800)
+                                "Idéal" -> Color(0xFF2E7D32)
+                                "Safe bas" -> Color(0xFF607D8B)
+                                else -> Color(0xFF1565C0)
                             }
-
-                            AdvancedConfigSlider(
-                                label = "EQ intensité",
-                                value = cfg.eqIntensity,
-                                range = 0f..1f,
-                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(eqIntensity = it)) }
-                            )
-                            AdvancedConfigSlider(
-                                label = "Comp intensité",
-                                value = cfg.compIntensity,
-                                range = 0f..1f,
-                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(compIntensity = it)) }
-                            )
-                            AdvancedConfigSlider(
-                                label = "De-esser intensité",
-                                value = cfg.deEsserIntensity,
-                                range = 0f..1f,
-                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(deEsserIntensity = it)) }
-                            )
-                            AdvancedConfigSlider(
-                                label = "Comp seuil (dB)",
-                                value = cfg.compressorThresholdDb,
-                                range = -40f..-6f,
-                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(compressorThresholdDb = it)) }
-                            )
-                            AdvancedConfigSlider(
-                                label = "Comp ratio",
-                                value = cfg.compressorRatio,
-                                range = 1.1f..6f,
-                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(compressorRatio = it)) }
-                            )
-                            AdvancedConfigSlider(
-                                label = "De-esser freq (Hz)",
-                                value = cfg.deEsserFrequencyHz,
-                                range = 3500f..11000f,
-                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(deEsserFrequencyHz = it)) }
-                            )
-                            AdvancedConfigSlider(
-                                label = "De-esser largeur (Hz)",
-                                value = cfg.deEsserWidthHz,
-                                range = 800f..6000f,
-                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(deEsserWidthHz = it)) }
-                            )
-                            AdvancedConfigSlider(
-                                label = "Limiteur (dB)",
-                                value = cfg.limiterCeilingDb,
-                                range = -6f..-0.2f,
-                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(limiterCeilingDb = it)) }
-                            )
-                            AdvancedConfigSlider(
-                                label = "Trim sortie (dB)",
-                                value = cfg.outputTrimDb,
-                                range = -12f..6f,
-                                onValueChange = { onUpdateAdvancedConfig(cfg.copy(outputTrimDb = it)) }
-                            )
+                            Text("Zone: $label", color = color, fontWeight = FontWeight.Bold)
                         }
+                        ui.balanceRecommendationText?.let {
+                            Text(it, style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text(
+                            "Grille: > -3 Danger | -6..-3 Chaud | -12..-6 Idéal | -18..-12 Safe bas | < -18 Faible",
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
 
@@ -547,9 +458,7 @@ private fun BalanceScreen(
                 Text("RMS: ${"%.1f".format(ui.rmsDb)} dBFS")
                 Text("Peak: ${"%.1f".format(ui.peakDb)} dBFS")
                 Text("Headroom: ${"%.1f".format(ui.headroomDb)} dB")
-                Text("Comp GR: ${"%.1f".format(ui.compGainReductionDb)} dB")
-                Text("De-esser GR: ${"%.1f".format(ui.deEsserGainReductionDb)} dB")
-                Text("Limiter hits: ${ui.globalDspLimiterHits}")
+                Text("Peak max balance: ${"%.1f".format(ui.balancePeakMaxDb)} dBFS")
                 Spacer(modifier = Modifier.height(6.dp))
 
                 Text("VU meter")
@@ -930,6 +839,216 @@ private fun GuidedStepCard(
                 fontWeight = FontWeight.Bold
             )
         }
+    }
+}
+
+@Composable
+private fun PlayerScreen(
+    ui: RecorderUiState,
+    onBack: () -> Unit,
+    onSetPreset: (PlayerFxPreset) -> Unit,
+    onSetEqEnabled: (Boolean) -> Unit,
+    onSetCompressionEnabled: (Boolean) -> Unit,
+    onSetDeEsserEnabled: (Boolean) -> Unit,
+    onSetEqIntensity: (Float) -> Unit,
+    onSetCompressionIntensity: (Float) -> Unit,
+    onSetDeEsserIntensity: (Float) -> Unit,
+    onSetStatus: (String) -> Unit
+) {
+    val playback = remember { PlaybackController() }
+
+    DisposableEffect(Unit) {
+        onDispose { playback.release() }
+    }
+
+    ScreenScaffold(title = "Lecteur", onBack = onBack) {
+        Text(
+            "Ces traitements n'altèrent pas la prise brute tant que vous n'exportez pas.",
+            style = MaterialTheme.typography.bodySmall
+        )
+
+        val cfg = ui.playerFxConfig
+        Text("Preset", fontWeight = FontWeight.SemiBold)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            presetButton("Flat", cfg.preset == PlayerFxPreset.FLAT, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.FLAT) }
+            presetButton("Rock", cfg.preset == PlayerFxPreset.ROCK, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.ROCK) }
+            presetButton("Pop", cfg.preset == PlayerFxPreset.POP, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.POP) }
+        }
+
+        ToggleRow("EQ tonal", cfg.eqEnabled, onSetEqEnabled)
+        AdvancedConfigSlider("EQ intensité", cfg.eqIntensity, 0f..1f, onSetEqIntensity)
+
+        ToggleRow("Compression légère", cfg.compressionEnabled, onSetCompressionEnabled)
+        AdvancedConfigSlider("Compression intensité", cfg.compressionIntensity, 0f..1f, onSetCompressionIntensity)
+
+        ToggleRow("De-esser cymbales", cfg.deEsserEnabled, onSetDeEsserEnabled)
+        AdvancedConfigSlider("De-esser intensité", cfg.deEsserIntensity, 0f..1f, onSetDeEsserIntensity)
+
+        val sourcePath = resolvePlaybackPath(ui.lastOutputPath)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                modifier = Modifier.weight(1f),
+                onClick = {
+                    val path = sourcePath
+                    if (path == null) {
+                        onSetStatus("Aucun enregistrement à lire")
+                        return@Button
+                    }
+                    val ok = playback.togglePlay(path, cfg, onError = onSetStatus)
+                    onSetStatus(if (ok) "Lecture avec traitements active" else "Lecture arrêtée")
+                }
+            ) {
+                Text(if (playback.isPlaying()) "Stop" else "Lire")
+            }
+            OutlinedButton(
+                modifier = Modifier.weight(1f),
+                onClick = {
+                    playback.refreshFx(cfg)
+                    onSetStatus("Paramètres appliqués")
+                }
+            ) {
+                Text("Appliquer FX")
+            }
+        }
+
+        Text("Source: ${ui.lastOutputPath ?: "Aucun fichier"}", style = MaterialTheme.typography.bodySmall)
+        Text("Statut lecteur: ${ui.playerStatusMessage}", style = MaterialTheme.typography.bodySmall)
+        Text("Export traité: roadmap", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun presetButton(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier,
+    onClick: () -> Unit
+) {
+    if (selected) {
+        Button(onClick = onClick, modifier = modifier) { Text(label) }
+    } else {
+        OutlinedButton(onClick = onClick, modifier = modifier) { Text(label) }
+    }
+}
+
+private fun resolvePlaybackPath(lastOutputPath: String?): String? {
+    if (lastOutputPath.isNullOrBlank()) return null
+    return if (lastOutputPath.startsWith("Downloads/")) {
+        val relative = lastOutputPath.removePrefix("Downloads/").replace("/", File.separator)
+        File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), relative).absolutePath
+    } else {
+        lastOutputPath
+    }
+}
+
+private class PlaybackController {
+    private var mediaPlayer: MediaPlayer? = null
+    private var equalizer: Equalizer? = null
+    private var bassBoost: BassBoost? = null
+    private var loudness: LoudnessEnhancer? = null
+
+    fun isPlaying(): Boolean = mediaPlayer?.isPlaying == true
+
+    fun togglePlay(path: String, cfg: PlayerFxConfig, onError: (String) -> Unit): Boolean {
+        if (mediaPlayer?.isPlaying == true) {
+            release()
+            return false
+        }
+        return runCatching {
+            release()
+            val player = MediaPlayer()
+            player.setDataSource(path)
+            player.prepare()
+            player.start()
+            player.setOnCompletionListener { release() }
+            mediaPlayer = player
+            attachFx(cfg)
+            true
+        }.getOrElse {
+            release()
+            onError("Lecture impossible: ${it.message ?: "erreur inconnue"}")
+            false
+        }
+    }
+
+    fun refreshFx(cfg: PlayerFxConfig) {
+        if (mediaPlayer == null) return
+        attachFx(cfg)
+    }
+
+    fun release() {
+        runCatching { equalizer?.release() }
+        runCatching { bassBoost?.release() }
+        runCatching { loudness?.release() }
+        equalizer = null
+        bassBoost = null
+        loudness = null
+
+        runCatching { mediaPlayer?.stop() }
+        runCatching { mediaPlayer?.release() }
+        mediaPlayer = null
+    }
+
+    private fun attachFx(cfg: PlayerFxConfig) {
+        val player = mediaPlayer ?: return
+        val session = player.audioSessionId
+        runCatching { equalizer?.release() }
+        runCatching { bassBoost?.release() }
+        runCatching { loudness?.release() }
+
+        equalizer = Equalizer(0, session).apply {
+            enabled = cfg.eqEnabled || cfg.deEsserEnabled
+            applyPreset(cfg)
+        }
+        bassBoost = BassBoost(0, session).apply {
+            enabled = cfg.eqEnabled
+            setStrength((cfg.eqIntensity * 1000f).toInt().coerceIn(0, 1000).toShort())
+        }
+        loudness = LoudnessEnhancer(session).apply {
+            enabled = cfg.compressionEnabled
+            val gainMb = (cfg.compressionIntensity * 300f).toInt()
+            setTargetGain(gainMb)
+        }
+    }
+
+    private fun Equalizer.applyPreset(cfg: PlayerFxConfig) {
+        val bands = numberOfBands.toInt()
+        if (bands <= 0) return
+        for (band in 0 until bands) {
+            setBandLevel(band.toShort(), 0)
+        }
+        val intensity = cfg.eqIntensity
+        when (cfg.preset) {
+            PlayerFxPreset.FLAT -> Unit
+            PlayerFxPreset.ROCK -> {
+                adjustBand(0, +300, intensity)
+                adjustBand(1, +180, intensity)
+                adjustBand(2, +80, intensity)
+                adjustBand(bands - 1, -120, intensity)
+            }
+            PlayerFxPreset.POP -> {
+                adjustBand(0, +220, intensity)
+                adjustBand(1, +120, intensity)
+                adjustBand(2, +180, intensity)
+                adjustBand(bands - 1, -80, intensity)
+            }
+        }
+        if (cfg.deEsserEnabled) {
+            adjustBand(bands - 1, -320, cfg.deEsserIntensity)
+            adjustBand((bands - 2).coerceAtLeast(0), -180, cfg.deEsserIntensity)
+        }
+    }
+
+    private fun Equalizer.adjustBand(index: Int, levelMb: Int, intensity: Float) {
+        val idx = index.coerceAtLeast(0).coerceAtMost(numberOfBands.toInt() - 1)
+        val scaled = (levelMb * intensity).toInt().toShort()
+        runCatching { setBandLevel(idx.toShort(), scaled) }
     }
 }
 
