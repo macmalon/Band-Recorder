@@ -18,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -86,8 +87,10 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -98,6 +101,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.compose.ui.res.painterResource
 import com.bandrecorder.app.ui.vintage.VintageDimensions
 import com.bandrecorder.app.ui.vintage.VintageColors
 import java.io.File
@@ -481,7 +485,10 @@ private fun TolexBackgroundV2() {
         VintageDimensions.tolexMinScale,
         VintageDimensions.tolexMaxScale
     )
-    Box(
+    Image(
+        painter = painterResource(id = R.drawable.tolex_bg),
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
         modifier = Modifier
             .fillMaxSize()
             .graphicsLayer {
@@ -490,45 +497,7 @@ private fun TolexBackgroundV2() {
                 translationX = VintageDimensions.tolexTranslationXPx
                 translationY = VintageDimensions.tolexTranslationYPx
             }
-            .background(Brush.verticalGradient(listOf(AmpBgDark, AmpBgMid, AmpBgDark)))
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val step = 22f
-            var y = 0f
-            while (y < size.height + step) {
-                var x = 0f
-                while (x < size.width + step) {
-                    drawCircle(
-                        color = Color(0x22000000),
-                        radius = 3.4f,
-                        center = Offset(x + (if (((x / step).toInt() + (y / step).toInt()) % 2 == 0) 5f else 0f), y + 4f)
-                    )
-                    x += step
-                }
-                y += step
-            }
-
-            val noiseStep = 16f
-            var ny = 0f
-            while (ny < size.height + noiseStep) {
-                var nx = 0f
-                while (nx < size.width + noiseStep) {
-                    val alpha = if (((nx / noiseStep).toInt() + (ny / noiseStep).toInt()) % 2 == 0) {
-                        VintageDimensions.tolexNoiseAlpha
-                    } else {
-                        VintageDimensions.tolexNoiseAlpha * 0.55f
-                    }
-                    drawRect(
-                        color = Color.White.copy(alpha = alpha),
-                        topLeft = Offset(nx, ny),
-                        size = Size(1.2f, 1.2f)
-                    )
-                    nx += noiseStep
-                }
-                ny += noiseStep
-            }
-        }
-    }
+    )
 }
 
 @Composable
@@ -538,32 +507,34 @@ private fun TopMetalPanelV2(
     isPausedVisual: Boolean,
     timerText: String
 ) {
-    Row(
+    Box(
         modifier = modifier
             .height(VintageDimensions.topPanelHeight)
-            .shadow(2.dp, RoundedCornerShape(12.dp))
-            .clip(RoundedCornerShape(12.dp))
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        VintageColors.panelTopHighlight,
-                        VintageColors.panelTop,
-                        VintageColors.panelTopShadow
-                    )
-                )
-            )
-            .border(BorderStroke(1.dp, AmpPanelBorder), RoundedCornerShape(12.dp))
-            .padding(horizontal = 14.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+            .shadow(3.dp, RoundedCornerShape(10.dp))
     ) {
-        RecIndicatorV2(isRecording = isRecording, isPausedVisual = isPausedVisual)
-        Text(
-            text = timerText,
-            color = AmpMetalLight,
-            fontWeight = FontWeight.ExtraBold,
-            fontSize = 30.sp
+        Image(
+            painter = painterResource(id = R.drawable.hardware_panel),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .matchParentSize()
+                .clip(RoundedCornerShape(10.dp))
         )
+        Row(
+            modifier = Modifier
+                .matchParentSize()
+                .padding(horizontal = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            RecIndicatorV2(isRecording = isRecording, isPausedVisual = isPausedVisual)
+            Text(
+                text = timerText,
+                color = AmpMetalLight,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 30.sp
+            )
+        }
     }
 }
 
@@ -668,84 +639,27 @@ private fun VUMeterV2(label: String, value: Float, modifier: Modifier = Modifier
             modifier = modifier
                 .requiredWidth(VintageDimensions.vuWidth)
                 .requiredHeight(VintageDimensions.vuHeight)
-                .shadow(6.dp, RoundedCornerShape(VintageDimensions.vuCornerRadius))
-                .clip(RoundedCornerShape(VintageDimensions.vuCornerRadius))
-                .background(
-                    Brush.verticalGradient(
-                        listOf(Color(0xFF5B5A58), Color(0xFF2A2824), Color(0xFF151414))
-                    )
-                )
-                .border(BorderStroke(1.dp, AmpMetalDark), RoundedCornerShape(VintageDimensions.vuCornerRadius))
-                .padding(7.dp)
         ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                // Bevel frame
-                drawRoundRect(
-                    brush = Brush.verticalGradient(
-                        listOf(Color(0x88FFFFFF), Color.Transparent, Color(0x88000000))
-                    ),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(12f, 12f),
-                    style = Stroke(width = 3f)
-                )
-
-                val panelInset = 8f
-                val panelSize = Size(size.width - panelInset * 2f, size.height - panelInset * 2f)
-                drawRoundRect(
-                    brush = Brush.verticalGradient(
-                        listOf(Color(0xFFF5D99A), Color(0xFFF0C873), Color(0xFFB57A35))
-                    ),
-                    topLeft = Offset(panelInset, panelInset),
-                    size = panelSize,
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(8f, 8f)
-                )
-                drawRoundRect(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(Color.White.copy(alpha = 0.20f), Color.Transparent, Color.Black.copy(alpha = 0.18f))
-                    ),
-                    topLeft = Offset(panelInset, panelInset),
-                    size = panelSize,
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(8f, 8f)
-                )
-
-                // Scale marks
-                val center = Offset(size.width * 0.5f, size.height * 0.90f)
-                val radius = size.width * 0.42f
-                for (i in 0..10) {
-                    val tickAngle = -45f + (i * 9f)
-                    val rad = Math.toRadians(tickAngle.toDouble())
-                    val p1 = Offset(
-                        x = center.x + (cos(rad).toFloat() * (radius - 18f)),
-                        y = center.y + (sin(rad).toFloat() * (radius - 18f))
-                    )
-                    val p2 = Offset(
-                        x = center.x + (cos(rad).toFloat() * (radius - 3f)),
-                        y = center.y + (sin(rad).toFloat() * (radius - 3f))
-                    )
-                    drawLine(
-                        color = if (i >= 8) Color(0xFF8B1E18) else Color(0xFF1B1A18),
-                        start = p1,
-                        end = p2,
-                        strokeWidth = if (i % 2 == 0) 2f else 1.2f
-                    )
-                }
-
-                val needlePivot = Offset(
-                    size.width * VintageDimensions.vuNeedlePivotX,
-                    size.height * VintageDimensions.vuNeedlePivotY
-                )
-                val needleLength = size.width * 0.33f
-                rotate(degrees = angle, pivot = needlePivot) {
-                    drawLine(
-                        color = Color(0xFF241512),
-                        start = needlePivot,
-                        end = Offset(needlePivot.x + needleLength, needlePivot.y - needleLength * 0.78f),
-                        strokeWidth = 3.2f,
-                        cap = StrokeCap.Round
-                    )
-                }
-                drawCircle(color = Color(0xFF261F1B), center = needlePivot, radius = 8f)
-                drawCircle(color = Color(0xFFB69A70), center = needlePivot, radius = 4.2f)
-            }
+            Image(
+                painter = painterResource(id = R.drawable.vu_meter_frame),
+                contentDescription = null,
+                contentScale = ContentScale.FillBounds,
+                modifier = Modifier.matchParentSize()
+            )
+            Image(
+                painter = painterResource(id = R.drawable.vu_needle),
+                contentDescription = null,
+                contentScale = ContentScale.FillBounds,
+                modifier = Modifier
+                    .matchParentSize()
+                    .graphicsLayer {
+                        rotationZ = angle
+                        transformOrigin = TransformOrigin(
+                            pivotFractionX = VintageDimensions.vuNeedlePivotX,
+                            pivotFractionY = VintageDimensions.vuNeedlePivotY
+                        )
+                    }
+            )
         }
         Text(label, color = AmpMetalLight, fontWeight = FontWeight.Bold)
     }
@@ -761,36 +675,22 @@ private fun RecordButtonV2(
     val enabled = !isBusy || isRecording
     Box(
         modifier = modifier
-            .shadow(6.dp, RoundedCornerShape(percent = 50))
-            .shadow(2.dp, RoundedCornerShape(percent = 50))
             .size(VintageDimensions.recordButtonSize)
-            .clip(RoundedCornerShape(percent = 50))
-            .background(
-                Brush.radialGradient(
-                    colors = listOf(Color(0xFFE6E8EB), Color(0xFF848B94), Color(0xFF2A2D31))
-                )
-            )
-            .border(BorderStroke(2.dp, Color(0x66FFFFFF)), RoundedCornerShape(percent = 50))
-            .padding(14.dp)
-            .clip(RoundedCornerShape(percent = 50))
-            .background(
-                Brush.radialGradient(
-                    colors = if (isRecording) {
-                        listOf(Color(0xFFFF6F63), Color(0xFFD92E24), Color(0xFF6F120E))
-                    } else {
-                        listOf(Color(0xFF5D3F3E), Color(0xFF3D2A2A), Color(0xFF211818))
-                    }
-                )
-            )
-            .border(BorderStroke(1.dp, Color(0x99FFFFFF)), RoundedCornerShape(percent = 50))
             .clickable(enabled = enabled, onClick = onRecordToggle),
         contentAlignment = Alignment.Center
     ) {
+        Image(
+            painter = painterResource(id = R.drawable.record_button),
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.matchParentSize()
+        )
         Text(
             text = if (isRecording) "STOP" else "REC",
             fontWeight = FontWeight.ExtraBold,
             fontSize = 26.sp,
-            color = Color(0xFFF5F0E8)
+            color = Color(0xFFF5F0E8),
+            modifier = Modifier.shadow(1.dp)
         )
     }
 }
@@ -816,28 +716,13 @@ private fun KnobControlV2(label: String, onClick: () -> Unit) {
             modifier = Modifier.size(VintageDimensions.knobSize),
             contentAlignment = Alignment.Center
         ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val c = Offset(size.width / 2f, size.height / 2f)
-                val r = size.minDimension / 2f - 4f
-                for (i in 0..20) {
-                    val a = Math.toRadians((-140 + i * 14).toDouble())
-                    val p1 = Offset(c.x + cos(a).toFloat() * (r - 12f), c.y + sin(a).toFloat() * (r - 12f))
-                    val p2 = Offset(c.x + cos(a).toFloat() * r, c.y + sin(a).toFloat() * r)
-                    drawLine(
-                        color = if (i % 2 == 0) Color(0xFFE6DCC8) else Color(0xFF8A8377),
-                        start = p1,
-                        end = p2,
-                        strokeWidth = if (i % 2 == 0) 2.2f else 1.2f
-                    )
-                }
-            }
-            Box(
+            Image(
+                painter = painterResource(id = R.drawable.knob),
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
                 modifier = Modifier
-                    .size(VintageDimensions.knobSize * 0.78f)
-                    .shadow(6.dp, RoundedCornerShape(percent = 50))
-                    .shadow(2.dp, RoundedCornerShape(percent = 50))
-                    .clip(RoundedCornerShape(percent = 50))
-                    .background(Brush.radialGradient(listOf(Color(0xFFD7D9DD), Color(0xFF646A73), Color(0xFF2E3238))))
+                    .matchParentSize()
+                    .graphicsLayer { rotationZ = rotation }
                     .clickable {
                         onClick()
                         val direction = if (Random.nextBoolean()) 1f else -1f
@@ -847,29 +732,7 @@ private fun KnobControlV2(label: String, onClick: () -> Unit) {
                             kickTarget = 0f
                         }
                     }
-            ) {
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val cx = size.width / 2f
-                    val cy = size.height / 2f
-                    val len = size.minDimension * 0.35f
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            listOf(Color(0x55FFFFFF), Color.Transparent)
-                        ),
-                        radius = size.minDimension * 0.46f,
-                        center = Offset(cx, cy)
-                    )
-                    rotate(degrees = rotation, pivot = Offset(cx, cy)) {
-                        drawLine(
-                            color = Color(0xFF1D2024),
-                            start = Offset(cx, cy - size.minDimension * 0.05f),
-                            end = Offset(cx, cy - len),
-                            strokeWidth = 6f,
-                            cap = StrokeCap.Round
-                        )
-                    }
-                }
-            }
+            )
         }
         Text(label, fontWeight = FontWeight.Bold, color = AmpMetalLight)
     }
@@ -881,18 +744,23 @@ private fun LinkSwitchV2(onClick: () -> Unit) {
         modifier = Modifier
             .width(VintageDimensions.switchWidth)
             .height(VintageDimensions.switchHeight)
-            .clip(RoundedCornerShape(10.dp))
-            .background(Brush.verticalGradient(listOf(Color(0xFF41454B), Color(0xFF24272C))))
-            .border(BorderStroke(1.dp, Color(0xFF111316)), RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
     ) {
+        Image(
+            painter = painterResource(id = R.drawable.hardware_panel),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .matchParentSize()
+                .clip(RoundedCornerShape(10.dp))
+        )
         Box(
             modifier = Modifier
                 .align(Alignment.CenterStart)
                 .padding(start = 8.dp)
                 .size(width = 24.dp, height = 28.dp)
                 .clip(RoundedCornerShape(6.dp))
-                .background(Brush.verticalGradient(listOf(Color(0xFFE2E4E8), Color(0xFF646C77))))
+                .background(Color(0xFFADB3BA))
         )
         Text("LINK", color = AmpAccentAmber, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.CenterEnd).padding(end = 10.dp))
     }
@@ -901,19 +769,20 @@ private fun LinkSwitchV2(onClick: () -> Unit) {
 @Composable
 private fun HardwareButtonV2(label: String, onClick: () -> Unit) {
     Box(
-        modifier = Modifier.height(VintageDimensions.navButtonHeight),
+        modifier = Modifier
+            .height(VintageDimensions.navButtonHeight)
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Box(
+        Image(
+            painter = painterResource(id = R.drawable.hardware_panel),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
             modifier = Modifier
+                .matchParentSize()
                 .clip(RoundedCornerShape(VintageDimensions.hardwareButtonCorner))
-                .background(Brush.verticalGradient(listOf(Color(0xFF616875), Color(0xFF2A2F37))))
-                .border(BorderStroke(1.dp, Color(0x9912151A)), RoundedCornerShape(VintageDimensions.hardwareButtonCorner))
-                .clickable(onClick = onClick)
-                .padding(horizontal = 14.dp, vertical = 9.dp)
-        ) {
-            Text(label, fontWeight = FontWeight.Bold, color = AmpAccentAmber)
-        }
+        )
+        Text(label, fontWeight = FontWeight.Bold, color = AmpAccentAmber, modifier = Modifier.padding(horizontal = 14.dp))
     }
 }
 
@@ -943,17 +812,19 @@ private fun HardwareBarV2(
         modifier = modifier
             .height(74.dp)
             .shadow(2.dp, RoundedCornerShape(12.dp))
-            .clip(RoundedCornerShape(12.dp))
-            .background(
-                Brush.verticalGradient(
-                    listOf(VintageColors.hardwareBarHighlight, VintageColors.hardwareBar, VintageColors.hardwareBarShadow)
-                )
-            )
-            .border(BorderStroke(1.dp, AmpPanelBorder), RoundedCornerShape(12.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp)
     ) {
+        Image(
+            painter = painterResource(id = R.drawable.hardware_panel),
+            contentDescription = null,
+            contentScale = ContentScale.FillBounds,
+            modifier = Modifier
+                .matchParentSize()
+                .clip(RoundedCornerShape(12.dp))
+        )
         Row(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
