@@ -430,7 +430,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             val items = mutableListOf<RecordingListItem>()
             items += queryDownloadsRecordings(favorites)
             items += queryAppPrivateRecordings(favorites)
-            val sorted = items.sortedByDescending { parseDateForSort(it.dateLabel) }
+            val sorted = sortRecordings(items)
             _uiState.update { it.copy(playerRecordings = sorted) }
         }
     }
@@ -1267,7 +1267,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     val key = "ms:$id"
                     out += RecordingListItem(
                         key = key,
-                        title = name,
+                        title = RecordingFileNaming.userVisibleTitle(name),
                         dateLabel = formatDateFromEpochSec(dateSec),
                         durationMs = duration,
                         sourceUri = uri,
@@ -1293,7 +1293,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 val key = "fp:${f.absolutePath}"
                 RecordingListItem(
                     key = key,
-                    title = f.name,
+                    title = RecordingFileNaming.userVisibleTitle(f.name),
                     dateLabel = formatDateFromEpochMs(f.lastModified()),
                     durationMs = readDurationMs(uri = null, path = f.absolutePath),
                     sourceUri = null,
@@ -1327,6 +1327,14 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private fun parseDateForSort(label: String): Long {
         val f = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
         return runCatching { f.parse(label)?.time ?: 0L }.getOrDefault(0L)
+    }
+
+    private fun sortRecordings(items: List<RecordingListItem>): List<RecordingListItem> {
+        return items.sortedWith(
+            compareByDescending<RecordingListItem> { parseDateForSort(it.dateLabel) }
+                .thenBy { RecordingFileNaming.segmentSortKey(it.title) }
+                .thenBy { it.title.lowercase(Locale.ROOT) }
+        )
     }
 
     private fun decisionFromPeak(peakDb: Float): Pair<String, String> = when {
@@ -1480,8 +1488,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private fun buildTempOutputFile(): Pair<String, File> {
         val root = File(getApplication<Application>().cacheDir, "band_recordings_tmp")
         root.mkdirs()
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val displayName = "session_$timestamp.wav"
+        val baseName = RecordingFileNaming.sessionBaseName()
+        val displayName = RecordingFileNaming.rawFileName(baseName)
         return displayName to File(root, displayName)
     }
 
@@ -1491,8 +1499,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             ?: getApplication<Application>().filesDir
         val folder = File(root, "band_recordings")
         folder.mkdirs()
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        return File(folder, "session_$timestamp.wav")
+        val baseName = RecordingFileNaming.sessionBaseName()
+        return File(folder, RecordingFileNaming.rawFileName(baseName))
     }
 
     private fun exportPendingRecordingToDownloads() {

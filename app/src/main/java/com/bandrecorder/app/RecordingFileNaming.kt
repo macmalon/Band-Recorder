@@ -1,0 +1,44 @@
+package com.bandrecorder.app
+
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+object RecordingFileNaming {
+    private val sessionDateFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+    private val morceauRegex = Regex("""^(session_\d{8}_\d{6})_morceau_(\d{2})\.wav$""")
+
+    fun sessionBaseName(now: Date = Date()): String = "session_${sessionDateFormat.format(now)}"
+
+    fun rawFileName(sessionBaseName: String): String = "${sessionBaseName}_raw.wav"
+
+    fun cleanFileName(sessionBaseName: String): String = "${sessionBaseName}_clean.wav"
+
+    fun morceauFileName(sessionBaseName: String, morceauIndex: Int): String {
+        val safe = morceauIndex.coerceAtLeast(1)
+        return "${sessionBaseName}_morceau_${"%02d".format(Locale.US, safe)}.wav"
+    }
+
+    fun cleanMetadataFileName(sessionBaseName: String): String = "${sessionBaseName}_clean.meta.json"
+
+    fun userVisibleTitle(fileName: String): String {
+        val parsed = parseMorceau(fileName) ?: return fileName
+        return "Morceau ${parsed.morceauIndex}"
+    }
+
+    fun segmentSortKey(fileName: String): Int {
+        val parsed = parseMorceau(fileName) ?: return Int.MAX_VALUE
+        return parsed.morceauIndex
+    }
+
+    private fun parseMorceau(fileName: String): ParsedMorceau? {
+        val match = morceauRegex.matchEntire(fileName) ?: return null
+        val index = match.groupValues[2].toIntOrNull() ?: return null
+        return ParsedMorceau(sessionBase = match.groupValues[1], morceauIndex = index)
+    }
+
+    private data class ParsedMorceau(
+        val sessionBase: String,
+        val morceauIndex: Int
+    )
+}
