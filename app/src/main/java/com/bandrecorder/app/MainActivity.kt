@@ -1698,7 +1698,6 @@ private fun PlayerScreen(
     val playback = remember { PlaybackController(context) }
     var selected by remember { mutableStateOf<RecordingListItem?>(null) }
     var toolsOpen by remember { mutableStateOf(false) }
-    var tool by remember { mutableStateOf("Preset") }
     var positionMs by remember { mutableStateOf(0L) }
     var durationMs by remember { mutableStateOf(1L) }
 
@@ -1879,64 +1878,27 @@ private fun PlayerScreen(
         }
 
         if (toolsOpen) {
+            HorizontalWhiteRule()
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CompactToolButton(
-                    label = "Preset",
-                    selected = tool == "Preset",
-                    modifier = Modifier.weight(1f),
-                    onClick = { tool = "Preset" }
-                )
-                CompactToolButton(
-                    label = "EQ tonal",
-                    selected = tool == "EQ tonal",
-                    modifier = Modifier.weight(1f),
-                    onClick = { tool = "EQ tonal" }
-                )
-                CompactToolButton(
-                    label = "Compression",
-                    selected = tool == "Compression",
-                    modifier = Modifier.weight(1f),
-                    onClick = { tool = "Compression" }
-                )
+                presetButton("Flat", cfg.preset == PlayerFxPreset.FLAT, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.FLAT); playback.refreshFx(cfg.copy(preset = PlayerFxPreset.FLAT)) }
+                presetButton("Rock", cfg.preset == PlayerFxPreset.ROCK, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.ROCK); playback.refreshFx(cfg.copy(preset = PlayerFxPreset.ROCK)) }
+                presetButton("Pop", cfg.preset == PlayerFxPreset.POP, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.POP); playback.refreshFx(cfg.copy(preset = PlayerFxPreset.POP)) }
             }
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CompactToolButton(
-                    label = "De-esser",
-                    selected = tool == "De-esser",
-                    modifier = Modifier.weight(1f),
-                    onClick = { tool = "De-esser" }
-                )
-                CompactToolButton(
-                    label = "Boost",
-                    selected = tool == "Boost",
-                    modifier = Modifier.weight(1f),
-                    onClick = { tool = "Boost" }
-                )
-                Spacer(modifier = Modifier.weight(1f))
-            }
-            Text(tool, fontWeight = FontWeight.Bold)
-            when (tool) {
-                "Preset" -> Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    presetButton("Flat", cfg.preset == PlayerFxPreset.FLAT, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.FLAT); playback.refreshFx(cfg.copy(preset = PlayerFxPreset.FLAT)) }
-                    presetButton("Rock", cfg.preset == PlayerFxPreset.ROCK, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.ROCK); playback.refreshFx(cfg.copy(preset = PlayerFxPreset.ROCK)) }
-                    presetButton("Pop", cfg.preset == PlayerFxPreset.POP, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.POP); playback.refreshFx(cfg.copy(preset = PlayerFxPreset.POP)) }
-                }
-                "EQ tonal" -> {
-                    ToggleRow("EQ tonal", cfg.eqEnabled, onSetEqEnabled)
-                    AdvancedConfigSlider("EQ intensité", cfg.eqIntensity, 0f..1f) { onSetEqIntensity(it); playback.refreshFx(cfg.copy(eqIntensity = it)) }
-                }
-                "Compression" -> {
-                    ToggleRow("Compression", cfg.compressionEnabled, onSetCompressionEnabled)
-                    AdvancedConfigSlider("Compression", cfg.compressionIntensity, 0f..1f) { onSetCompressionIntensity(it); playback.refreshFx(cfg.copy(compressionIntensity = it)) }
-                }
-                "De-esser" -> {
-                    ToggleRow("De-esser", cfg.deEsserEnabled, onSetDeEsserEnabled)
-                    AdvancedConfigSlider("De-esser", cfg.deEsserIntensity, 0f..1f) { onSetDeEsserIntensity(it); playback.refreshFx(cfg.copy(deEsserIntensity = it)) }
-                }
-                "Boost" -> {
-                    AdvancedConfigSlider("Boost", cfg.boostIntensity, 0f..1f) { onSetBoostIntensity(it); playback.refreshFx(cfg.copy(boostIntensity = it)) }
-                }
-            }
+
+            HorizontalWhiteRule()
+            ToggleRow("", cfg.eqEnabled, onSetEqEnabled)
+            AdvancedConfigSlider("", cfg.eqIntensity, 0f..1f) { onSetEqIntensity(it); playback.refreshFx(cfg.copy(eqIntensity = it)) }
+
+            HorizontalWhiteRule()
+            ToggleRow("", cfg.compressionEnabled, onSetCompressionEnabled)
+            AdvancedConfigSlider("", cfg.compressionIntensity, 0f..1f) { onSetCompressionIntensity(it); playback.refreshFx(cfg.copy(compressionIntensity = it)) }
+
+            HorizontalWhiteRule()
+            ToggleRow("", cfg.deEsserEnabled, onSetDeEsserEnabled)
+            AdvancedConfigSlider("", cfg.deEsserIntensity, 0f..1f) { onSetDeEsserIntensity(it); playback.refreshFx(cfg.copy(deEsserIntensity = it)) }
+
+            HorizontalWhiteRule()
+            AdvancedConfigSlider("", cfg.boostIntensity, 0f..1f) { onSetBoostIntensity(it); playback.refreshFx(cfg.copy(boostIntensity = it)) }
         }
 
         Text("Statut lecteur: ${ui.playerStatusMessage}", style = MaterialTheme.typography.bodySmall)
@@ -1987,6 +1949,16 @@ private fun CompactToolButton(
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
         ) { content() }
     }
+}
+
+@Composable
+private fun HorizontalWhiteRule() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(Color.White.copy(alpha = 0.9f))
+    )
 }
 
 private class PlaybackController(private val context: android.content.Context) {
@@ -2129,7 +2101,9 @@ private fun ToggleRow(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Text(label)
+        if (label.isNotBlank()) {
+            Text(label)
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -2173,7 +2147,8 @@ private fun AdvancedConfigSlider(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        Text("$label: $display", style = MaterialTheme.typography.bodySmall)
+        val text = if (label.isBlank()) display else "$label: $display"
+        Text(text, style = MaterialTheme.typography.bodySmall)
         Slider(
             value = value.coerceIn(range.start, range.endInclusive),
             onValueChange = onValueChange,
@@ -2201,7 +2176,7 @@ private fun SettingsScreen(
         ) {
             Text("Paramètres d'enregistrement", fontWeight = FontWeight.Bold, fontSize = 13.sp)
             SettingToggleRow(
-                label = "Ignorer les blancs",
+                label = "Supprimer les blancs",
                 checked = ui.ignoreSilenceEnabled,
                 onCheckedChange = onToggleIgnoreSilence
             )
@@ -2213,7 +2188,7 @@ private fun SettingsScreen(
             )
             if (!ui.ignoreSilenceEnabled) {
                 Text(
-                    "Active d'abord « Ignorer les blancs » pour autoriser « Découper ».",
+                    "Active d'abord « Supprimer les blancs » pour autoriser « Découper ».",
                     style = MaterialTheme.typography.bodySmall
                 )
             } else {
