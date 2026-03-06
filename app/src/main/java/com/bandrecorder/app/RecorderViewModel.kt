@@ -387,6 +387,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
             val peak = result.peakDb
             val decision = decisionFromPeak(peak)
+            val autoAppliedGainDb = result.recommendedGainDb.coerceIn(-24f, 0f)
+            settingsStore.setRecordingInputGainDb(autoAppliedGainDb)
             _uiState.update {
                 it.copy(
                     isRunningLevelBalance = false,
@@ -395,7 +397,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     balanceDecisionLabel = decision.first,
                     balanceRecommendationText = decision.second,
                     recommendedGainDb = result.recommendedGainDb,
-                    status = "Balance niveau terminée"
+                    recordingInputGainDb = autoAppliedGainDb,
+                    status = "Balance terminée • gain auto ${if (autoAppliedGainDb >= 0f) "+" else ""}${"%.1f".format(autoAppliedGainDb)} dB"
                 )
             }
 

@@ -1230,6 +1230,11 @@ private fun BalanceScreen(
             color = AmpMetalLight,
             style = MaterialTheme.typography.bodySmall
         )
+        Text(
+            "Après chaque balance, le gain recommandé est appliqué automatiquement (borné entre -24 et 0 dB), puis reste fixe jusqu'à modification manuelle.",
+            color = AmpMetalLight,
+            style = MaterialTheme.typography.bodySmall
+        )
 
         ui.lastOutputPath?.let {
             Text("Dernier fichier: $it", style = MaterialTheme.typography.bodySmall, color = AmpMetalDark)
