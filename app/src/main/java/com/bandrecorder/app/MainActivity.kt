@@ -449,7 +449,7 @@ private fun RecorderScreenV2(
                     .padding(bottom = 8.dp)
             )
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(22.dp))
 
             RecordButtonV2(
                 isRecording = ui.isRecording,
@@ -463,7 +463,9 @@ private fun RecorderScreenV2(
                         recPressedFeedback = false
                     }
                 },
-                modifier = Modifier.align(Alignment.CenterHorizontally)
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .offset(y = 12.dp)
             )
 
             Spacer(modifier = Modifier.height(VintageDimensions.recordToKnobSpacing))
@@ -979,7 +981,7 @@ private fun HomeScreen(
             enabled = !isBusy || ui.isRecording,
             modifier = Modifier
                 .align(Alignment.Center)
-                .offset(y = 24.dp)
+                .offset(y = 42.dp)
                 .width(170.dp)
                 .height(118.dp),
             shape = RoundedCornerShape(26.dp),
