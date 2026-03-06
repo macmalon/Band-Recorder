@@ -104,6 +104,9 @@ data class RecorderUiState(
     val rightVu: Float = 0f,
     val headroomDb: Float = 90f,
     val elapsedMs: Long = 0L,
+    val isSilenceDetected: Boolean = false,
+    val currentSessionName: String? = null,
+    val currentSessionSegments: List<String> = emptyList(),
     val status: String = "Ready",
     val calibrationRmsDb: Float? = null,
     val calibrationPeakDb: Float? = null,
@@ -166,8 +169,13 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
     private var pendingTempFile: File? = null
     private var pendingDisplayName: String? = null
+    private var activeSessionBaseName: String? = null
+    private var silenceStartElapsedMs: Long? = null
     private var lastCpuGuardState: Boolean = false
     private var recordingWakeLock: PowerManager.WakeLock? = null
+
+    private val silenceThresholdDb = -45f
+    private val silenceHoldMs = 700L
 
     private val _uiState = MutableStateFlow(RecorderUiState())
     val uiState: StateFlow<RecorderUiState> = _uiState.asStateFlow()
@@ -199,6 +207,14 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
         viewModelScope.launch {
             engine.statusFlow().collect { status ->
+                val thresholdCrossed = status.isRecording && status.rmsDb <= silenceThresholdDb
+                if (!thresholdCrossed) {
+                    silenceStartElapsedMs = null
+                } else if (silenceStartElapsedMs == null) {
+                    silenceStartElapsedMs = status.elapsedMs
+                }
+                val silenceDetected = thresholdCrossed &&
+                    (status.elapsedMs - (silenceStartElapsedMs ?: status.elapsedMs) >= silenceHoldMs)
                 _uiState.update {
                     val newLeftVu = normalizeVu(status.leftPeakDb)
                     val newRightVu = normalizeVu(status.rightPeakDb)
@@ -212,6 +228,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         rightVu = smoothedRightVu,
                         headroomDb = status.headroomDb,
                         elapsedMs = status.elapsedMs,
+                        isSilenceDetected = silenceDetected,
                         status = if (status.isRecording) "Recording" else it.status,
                         inputSourceLabel = status.inputDiagnostics?.sourceLabel ?: it.inputSourceLabel,
                         inputPreferredDeviceSet = status.inputDiagnostics?.preferredDeviceSet ?: it.inputPreferredDeviceSet,
@@ -459,6 +476,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             items += queryAppPrivateRecordings(favorites)
             val sorted = sortRecordings(items)
             _uiState.update { it.copy(playerRecordings = sorted) }
+            refreshCurrentSessionSegments()
         }
     }
 
@@ -472,6 +490,39 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 favoriteRecordingKeys = newSet,
                 playerRecordings = it.playerRecordings.map { rec -> if (rec.key == key) rec.copy(isFavorite = key in newSet) else rec }
             )
+        }
+    }
+
+    fun deleteRecording(key: String) {
+        val item = _uiState.value.playerRecordings.firstOrNull { it.key == key } ?: return
+        viewModelScope.launch {
+            val deleted = runCatching {
+                when {
+                    item.sourceUri != null -> {
+                        val resolver = getApplication<Application>().contentResolver
+                        resolver.delete(item.sourceUri, null, null) > 0
+                    }
+                    !item.filePath.isNullOrBlank() -> File(item.filePath).delete()
+                    else -> false
+                }
+            }.getOrDefault(false)
+
+            val newFavorites = _uiState.value.favoriteRecordingKeys - key
+            settingsStore.setFavoriteRecordingKeys(newFavorites)
+            _uiState.update {
+                it.copy(
+                    favoriteRecordingKeys = newFavorites,
+                    playerStatusMessage = if (deleted) {
+                        "Supprimé: ${item.title}"
+                    } else {
+                        "Suppression impossible: ${item.title}"
+                    }
+                )
+            }
+
+            if (deleted) {
+                refreshPlayerRecordings()
+            }
         }
     }
 
@@ -1140,11 +1191,13 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
         when (_uiState.value.storageLocation) {
             StorageLocation.DOWNLOADS -> {
-                val (displayName, output) = buildTempOutputFile()
-                pendingTempFile = output
-                pendingDisplayName = displayName
+                val target = buildTempOutputFile()
+                pendingTempFile = target.file
+                pendingDisplayName = target.displayName
+                activeSessionBaseName = target.sessionBaseName
+                silenceStartElapsedMs = null
                 engine.startRecording(
-                    output,
+                    target.file,
                     preferredDevice = selectedMic,
                     requestedChannelCount = channels,
                     swapStereoChannels = _uiState.value.stereoChannelsSwapped
@@ -1153,15 +1206,20 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(
                         status = if (channels == 2) "Recording (stereo)" else "Recording (mono)",
                         elapsedMs = 0L,
-                        lastOutputPath = "Downloads/Band Recorder/$displayName"
+                        isSilenceDetected = false,
+                        currentSessionName = target.sessionBaseName,
+                        currentSessionSegments = emptyList(),
+                        lastOutputPath = "Downloads/Band Recorder/${target.displayName}"
                     )
                 }
             }
 
             StorageLocation.APP_PRIVATE -> {
-                val output = buildAppPrivateOutputFile()
+                val target = buildAppPrivateOutputFile()
+                activeSessionBaseName = target.sessionBaseName
+                silenceStartElapsedMs = null
                 engine.startRecording(
-                    output,
+                    target.file,
                     preferredDevice = selectedMic,
                     requestedChannelCount = channels,
                     swapStereoChannels = _uiState.value.stereoChannelsSwapped
@@ -1170,7 +1228,10 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(
                         status = if (channels == 2) "Recording (stereo)" else "Recording (mono)",
                         elapsedMs = 0L,
-                        lastOutputPath = output.absolutePath
+                        isSilenceDetected = false,
+                        currentSessionName = target.sessionBaseName,
+                        currentSessionSegments = emptyList(),
+                        lastOutputPath = target.file.absolutePath
                     )
                 }
             }
@@ -1184,7 +1245,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
     fun stopRecording() {
         engine.stopRecording()
-        _uiState.update { it.copy(status = "Stopping...") }
+        silenceStartElapsedMs = null
+        _uiState.update { it.copy(status = "Stopping...", isSilenceDetected = false) }
 
         viewModelScope.launch {
             while (engine.statusFlow().value.isRecording) {
@@ -1198,6 +1260,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             }
             releaseRecordingWakeLock()
             refreshPlayerRecordings()
+            refreshCurrentSessionSegments()
             if (_uiState.value.diagnosticModeEnabled) {
                 exportDiagnosticReport(event = "recording_stop", entry = null, recordingPath = _uiState.value.lastOutputPath)
             }
@@ -1527,22 +1590,31 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun isoNow(): String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(Date())
 
-    private fun buildTempOutputFile(): Pair<String, File> {
+    private fun buildTempOutputFile(): RecordingOutputTarget {
         val root = File(getApplication<Application>().cacheDir, "band_recordings_tmp")
         root.mkdirs()
         val baseName = RecordingFileNaming.sessionBaseName()
         val displayName = RecordingFileNaming.rawFileName(baseName)
-        return displayName to File(root, displayName)
+        return RecordingOutputTarget(
+            displayName = displayName,
+            sessionBaseName = baseName,
+            file = File(root, displayName)
+        )
     }
 
-    private fun buildAppPrivateOutputFile(): File {
+    private fun buildAppPrivateOutputFile(): RecordingOutputTarget {
         val root = getApplication<Application>()
             .getExternalFilesDir(Environment.DIRECTORY_MUSIC)
             ?: getApplication<Application>().filesDir
         val folder = File(root, "band_recordings")
         folder.mkdirs()
         val baseName = RecordingFileNaming.sessionBaseName()
-        return File(folder, RecordingFileNaming.rawFileName(baseName))
+        val displayName = RecordingFileNaming.rawFileName(baseName)
+        return RecordingOutputTarget(
+            displayName = displayName,
+            sessionBaseName = baseName,
+            file = File(folder, displayName)
+        )
     }
 
     private fun exportPendingRecordingToDownloads() {
@@ -1595,6 +1667,64 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         pendingTempFile = null
         pendingDisplayName = null
     }
+
+    private fun refreshCurrentSessionSegments() {
+        val sessionBase = activeSessionBaseName ?: _uiState.value.currentSessionName
+        if (sessionBase.isNullOrBlank()) {
+            _uiState.update { it.copy(currentSessionSegments = emptyList()) }
+            return
+        }
+        val merged = (queryDownloadsSessionSegments(sessionBase) + queryAppPrivateSessionSegments(sessionBase))
+            .distinct()
+            .sortedBy { RecordingFileNaming.segmentSortKey(it) }
+            .map { RecordingFileNaming.userVisibleTitle(it) }
+        _uiState.update {
+            it.copy(
+                currentSessionName = sessionBase,
+                currentSessionSegments = merged
+            )
+        }
+    }
+
+    private fun queryDownloadsSessionSegments(sessionBase: String): List<String> {
+        val resolver = getApplication<Application>().contentResolver
+        val filesUri = MediaStore.Files.getContentUri("external")
+        val projection = arrayOf(MediaStore.Files.FileColumns.DISPLAY_NAME)
+        val selection = "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ? AND ${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE ?"
+        val args = arrayOf("${sessionBase}_morceau_%.wav", "%Band Recorder%")
+        val out = mutableListOf<String>()
+        runCatching {
+            resolver.query(filesUri, projection, selection, args, null)?.use { c ->
+                val nameCol = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
+                while (c.moveToNext()) {
+                    val fileName = c.getString(nameCol) ?: continue
+                    out += fileName
+                }
+            }
+        }
+        return out
+    }
+
+    private fun queryAppPrivateSessionSegments(sessionBase: String): List<String> {
+        val root = getApplication<Application>()
+            .getExternalFilesDir(Environment.DIRECTORY_MUSIC)
+            ?: getApplication<Application>().filesDir
+        val folder = File(root, "band_recordings")
+        if (!folder.exists()) return emptyList()
+        return folder.listFiles()
+            ?.asSequence()
+            ?.filter { it.isFile && it.extension.lowercase(Locale.ROOT) == "wav" }
+            ?.map { it.name }
+            ?.filter { it.startsWith("${sessionBase}_morceau_") }
+            ?.toList()
+            ?: emptyList()
+    }
+
+    private data class RecordingOutputTarget(
+        val displayName: String,
+        val sessionBaseName: String,
+        val file: File
+    )
 
     override fun onCleared() {
         engine.stopRecording()

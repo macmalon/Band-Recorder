@@ -58,6 +58,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -275,6 +277,7 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onBack = { navController.popBackStack() },
                 onRefreshRecordings = vm::refreshPlayerRecordings,
                 onToggleFavorite = vm::toggleRecordingFavorite,
+                onDeleteRecording = vm::deleteRecording,
                 onSetPreset = vm::setPlayerPreset,
                 onSetEqEnabled = vm::setPlayerEqEnabled,
                 onSetCompressionEnabled = vm::setPlayerCompressionEnabled,
@@ -335,6 +338,7 @@ private fun PlayerRoute(
     onBack: () -> Unit,
     onRefreshRecordings: () -> Unit,
     onToggleFavorite: (String) -> Unit,
+    onDeleteRecording: (String) -> Unit,
     onSetPreset: (PlayerFxPreset) -> Unit,
     onSetEqEnabled: (Boolean) -> Unit,
     onSetCompressionEnabled: (Boolean) -> Unit,
@@ -351,6 +355,7 @@ private fun PlayerRoute(
             onBack = onBack,
             onRefreshRecordings = onRefreshRecordings,
             onToggleFavorite = onToggleFavorite,
+            onDeleteRecording = onDeleteRecording,
             onSetPreset = onSetPreset,
             onSetEqEnabled = onSetEqEnabled,
             onSetCompressionEnabled = onSetCompressionEnabled,
@@ -367,6 +372,7 @@ private fun PlayerRoute(
             onBack = onBack,
             onRefreshRecordings = onRefreshRecordings,
             onToggleFavorite = onToggleFavorite,
+            onDeleteRecording = onDeleteRecording,
             onSetPreset = onSetPreset,
             onSetEqEnabled = onSetEqEnabled,
             onSetCompressionEnabled = onSetCompressionEnabled,
@@ -411,6 +417,14 @@ private fun RecorderScreenV2(
                 .widthIn(max = VintageDimensions.facadeMaxWidth),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            SessionInfoPanel(
+                sessionName = ui.currentSessionName,
+                sessionSegments = ui.currentSessionSegments,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
             TopMetalPanelV2(
                 modifier = Modifier.fillMaxWidth(),
                 isRecording = ui.isRecording,
@@ -428,8 +442,16 @@ private fun RecorderScreenV2(
 
             Spacer(modifier = Modifier.height(VintageDimensions.vuToRecordSpacing))
 
+            RecordingStateLabel(
+                ui = ui,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
+            )
+
             RecordButtonV2(
                 isRecording = ui.isRecording,
+                isSilenceDetected = ui.isSilenceDetected,
                 isBusy = isBusy,
                 onRecordToggle = {
                     recPressedFeedback = true
@@ -468,6 +490,7 @@ private fun PlayerScreenV2(
     onBack: () -> Unit,
     onRefreshRecordings: () -> Unit,
     onToggleFavorite: (String) -> Unit,
+    onDeleteRecording: (String) -> Unit,
     onSetPreset: (PlayerFxPreset) -> Unit,
     onSetEqEnabled: (Boolean) -> Unit,
     onSetCompressionEnabled: (Boolean) -> Unit,
@@ -483,6 +506,7 @@ private fun PlayerScreenV2(
         onBack = onBack,
         onRefreshRecordings = onRefreshRecordings,
         onToggleFavorite = onToggleFavorite,
+        onDeleteRecording = onDeleteRecording,
         onSetPreset = onSetPreset,
         onSetEqEnabled = onSetEqEnabled,
         onSetCompressionEnabled = onSetCompressionEnabled,
@@ -685,6 +709,7 @@ private fun VUMeterV2(label: String, value: Float, modifier: Modifier = Modifier
 @Composable
 private fun RecordButtonV2(
     isRecording: Boolean,
+    isSilenceDetected: Boolean,
     isBusy: Boolean,
     onRecordToggle: () -> Unit,
     modifier: Modifier = Modifier
@@ -693,6 +718,17 @@ private fun RecordButtonV2(
     var isPressed by remember { mutableStateOf(false) }
     val haptics = LocalHapticFeedback.current
     val imageRes = if (isPressed) R.drawable.record_button_pressed else R.drawable.record_button
+    val blink = rememberInfiniteTransition(label = "rec_blink")
+    val blinkAlpha by blink.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.2f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 420, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "rec_blink_alpha"
+    )
+    val isSilenceVisual = isRecording && isSilenceDetected
     Box(
         modifier = modifier
             .size(VintageDimensions.recordButtonSize)
@@ -714,17 +750,34 @@ private fun RecordButtonV2(
             },
         contentAlignment = Alignment.Center
     ) {
-        Image(
-            painter = painterResource(id = imageRes),
-            contentDescription = null,
-            contentScale = ContentScale.Fit,
-            modifier = Modifier.matchParentSize()
-        )
+        if (!isRecording) {
+            Image(
+                painter = painterResource(id = imageRes),
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.matchParentSize()
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(RoundedCornerShape(percent = 50))
+                    .background(if (isSilenceVisual) Color.White else Color(0xFFC21D1D))
+                    .border(
+                        border = BorderStroke(2.dp, if (isSilenceVisual) Color(0xFFDCDCDC) else Color(0xFF6A0909)),
+                        shape = RoundedCornerShape(percent = 50)
+                    )
+            )
+        }
         Text(
-            text = if (isRecording) "STOP" else "REC",
+            text = "REC",
             fontWeight = FontWeight.ExtraBold,
             fontSize = 26.sp,
-            color = Color(0xFFF5F0E8),
+            color = when {
+                isSilenceVisual -> Color(0xFFC21D1D).copy(alpha = blinkAlpha)
+                isRecording -> Color.Black
+                else -> Color(0xFFF5F0E8)
+            },
             modifier = Modifier.shadow(1.dp)
         )
     }
@@ -903,6 +956,11 @@ private fun HomeScreen(
                 .fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            SessionInfoPanel(
+                sessionName = ui.currentSessionName,
+                sessionSegments = ui.currentSessionSegments
+            )
+            Spacer(modifier = Modifier.height(10.dp))
             Text(
                 text = formatTimer(ui.elapsedMs),
                 fontSize = 72.sp,
@@ -911,11 +969,7 @@ private fun HomeScreen(
                 textAlign = TextAlign.Center
             )
             Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = ui.status,
-                color = AmpAccentAmber,
-                style = MaterialTheme.typography.bodyLarge
-            )
+            RecordingStateLabel(ui = ui)
         }
 
         Button(
@@ -926,13 +980,33 @@ private fun HomeScreen(
                 .width(170.dp)
                 .height(118.dp),
             shape = RoundedCornerShape(26.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4A4E55))
+            colors = ButtonDefaults.buttonColors(
+                containerColor = when {
+                    ui.isRecording && ui.isSilenceDetected -> Color.White
+                    ui.isRecording -> Color(0xFFC21D1D)
+                    else -> Color(0xFF4A4E55)
+                }
+            )
         ) {
+            val blink = rememberInfiniteTransition(label = "home_rec_blink")
+            val blinkAlpha by blink.animateFloat(
+                initialValue = 1f,
+                targetValue = 0.2f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 420, easing = LinearEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "home_rec_blink_alpha"
+            )
             Text(
-                text = if (ui.isRecording) "STOP" else "REC",
+                text = "REC",
                 fontSize = 36.sp,
                 fontWeight = FontWeight.ExtraBold,
-                color = AmpAccentAmber
+                color = when {
+                    ui.isRecording && ui.isSilenceDetected -> Color(0xFFC21D1D).copy(alpha = blinkAlpha)
+                    ui.isRecording -> Color.Black
+                    else -> AmpAccentAmber
+                }
             )
         }
 
@@ -964,6 +1038,73 @@ private fun HomeScreen(
             SmallActionButton(text = "Paramètres", onClick = onOpenSettings)
         }
     }
+}
+
+@Composable
+private fun SessionInfoPanel(
+    sessionName: String?,
+    sessionSegments: List<String>,
+    modifier: Modifier = Modifier
+) {
+    if (sessionName.isNullOrBlank()) return
+    var expanded by remember(sessionName, sessionSegments) { mutableStateOf(false) }
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            text = sessionName,
+            color = AmpMetalLight,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 12.sp,
+            textAlign = TextAlign.Center
+        )
+        if (sessionSegments.isNotEmpty()) {
+            Box {
+                OutlinedButton(onClick = { expanded = !expanded }) {
+                    Text("Morceaux (${sessionSegments.size})", fontSize = 11.sp)
+                }
+                DropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { expanded = false }
+                ) {
+                    sessionSegments.forEach { segment ->
+                        DropdownMenuItem(
+                            text = { Text(segment) },
+                            onClick = { expanded = false }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecordingStateLabel(
+    ui: RecorderUiState,
+    modifier: Modifier = Modifier
+) {
+    val stateText = when {
+        !ui.isRecording -> "Arrêté"
+        ui.isSilenceDetected && ui.splitOnSilenceEnabled -> "Découpe"
+        ui.isSilenceDetected -> "Blanc"
+        else -> "Enregistrement..."
+    }
+    val stateColor = when (stateText) {
+        "Arrêté" -> AmpMetalLight
+        "Découpe" -> Color(0xFFE6E6E6)
+        "Blanc" -> Color(0xFFF3DCDC)
+        else -> AmpAccentAmber
+    }
+    Text(
+        text = stateText,
+        color = stateColor,
+        style = MaterialTheme.typography.bodyLarge,
+        textAlign = TextAlign.Center,
+        modifier = modifier
+    )
 }
 
 @Composable
@@ -1500,6 +1641,7 @@ private fun PlayerScreen(
     onBack: () -> Unit,
     onRefreshRecordings: () -> Unit,
     onToggleFavorite: (String) -> Unit,
+    onDeleteRecording: (String) -> Unit,
     onSetPreset: (PlayerFxPreset) -> Unit,
     onSetEqEnabled: (Boolean) -> Unit,
     onSetCompressionEnabled: (Boolean) -> Unit,
@@ -1547,20 +1689,39 @@ private fun PlayerScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(item.title, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    text = item.title,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.clickable {
+                                        selected = item
+                                        positionMs = 0L
+                                        durationMs = maxOf(1L, item.durationMs)
+                                        val ok = playback.togglePlay(item, ui.playerFxConfig, onError = onSetStatus)
+                                        onSetStatus(if (ok) "Lecture active: ${item.title}" else "Lecture arrêtée")
+                                        durationMs = maxOf(1L, playback.durationMs().coerceAtLeast(item.durationMs))
+                                        positionMs = playback.currentPositionMs()
+                                    }
+                                )
                                 Text("${item.dateLabel}  •  ${formatDuration(item.durationMs)}", style = MaterialTheme.typography.bodySmall)
                             }
-                            OutlinedButton(onClick = { onToggleFavorite(item.key) }) {
-                                Text(if (item.isFavorite) "★" else "☆")
-                            }
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Button(onClick = {
-                                selected = item
-                                positionMs = 0L
-                                durationMs = maxOf(1L, item.durationMs)
-                                onSetStatus("Fichier sélectionné: ${item.title}")
-                            }) {
-                                Text("Ouvrir")
+                            Column(
+                                horizontalAlignment = Alignment.End,
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = { onToggleFavorite(item.key) },
+                                    modifier = Modifier.width(52.dp),
+                                    contentPadding = PaddingValues(0.dp)
+                                ) {
+                                    Text(if (item.isFavorite) "★" else "☆")
+                                }
+                                OutlinedButton(
+                                    onClick = { onDeleteRecording(item.key) },
+                                    modifier = Modifier.width(52.dp),
+                                    contentPadding = PaddingValues(0.dp)
+                                ) {
+                                    Text("🗑")
+                                }
                             }
                         }
                     }

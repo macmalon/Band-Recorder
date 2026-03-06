@@ -5,8 +5,8 @@ import java.util.Date
 import java.util.Locale
 
 object RecordingFileNaming {
-    private val sessionDateFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
-    private val morceauRegex = Regex("""^(session_\d{8}_\d{6})_morceau_(\d{2})\.wav$""")
+    private val sessionDateFormat = SimpleDateFormat("ddMMyy_HHmmss", Locale.US)
+    private val morceauRegex = Regex("""^(session_(?:\d{6}|\d{8})_\d{6})_morceau_(\d{2})\.wav$""")
 
     fun sessionBaseName(now: Date = Date()): String = "session_${sessionDateFormat.format(now)}"
 
