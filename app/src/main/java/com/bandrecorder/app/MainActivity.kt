@@ -1049,21 +1049,22 @@ private fun SessionInfoPanel(
     sessionSegments: List<String>,
     modifier: Modifier = Modifier
 ) {
-    if (sessionName.isNullOrBlank()) return
     var expanded by remember(sessionName, sessionSegments) { mutableStateOf(false) }
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
+        val hasSessionName = !sessionName.isNullOrBlank()
         Text(
-            text = sessionName,
+            text = sessionName ?: "session_placeholder",
             color = AmpMetalLight,
             fontWeight = FontWeight.SemiBold,
             fontSize = 12.sp,
-            textAlign = TextAlign.Center
+            textAlign = TextAlign.Center,
+            modifier = Modifier.graphicsLayer { alpha = if (hasSessionName) 1f else 0f }
         )
-        if (sessionSegments.isNotEmpty()) {
+        if (hasSessionName && sessionSegments.isNotEmpty()) {
             Box {
                 OutlinedButton(onClick = { expanded = !expanded }) {
                     Text("Morceaux (${sessionSegments.size})", fontSize = 11.sp)
@@ -1080,6 +1081,8 @@ private fun SessionInfoPanel(
                     }
                 }
             }
+        } else {
+            Spacer(modifier = Modifier.height(40.dp))
         }
     }
 }
