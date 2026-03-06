@@ -121,6 +121,7 @@ data class RecorderUiState(
     val splitOnSilenceEnabled: Boolean = false,
     val silenceThresholdDb: Float = -45f,
     val silenceDurationSec: Int = 8,
+    val recordingInputGainDb: Float = 0f,
     val microphones: List<MicrophoneOption> = emptyList(),
     val selectedMicId: Int? = null,
     val effectiveMicLabel: String? = null,
@@ -194,6 +195,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 splitOnSilenceEnabled = settings.splitOnSilenceEnabled,
                 silenceThresholdDb = settings.silenceThresholdDb,
                 silenceDurationSec = settings.silenceDurationSec,
+                recordingInputGainDb = settings.recordingInputGainDb,
                 selectedMicId = settings.selectedMicId,
                 diagnosticModeEnabled = settings.diagnosticMode,
                 showAdvancedInternals = settings.showAdvancedInternals,
@@ -311,6 +313,12 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         val bounded = value.coerceIn(2, 20)
         settingsStore.setSilenceDurationSec(bounded)
         _uiState.update { it.copy(silenceDurationSec = bounded) }
+    }
+
+    fun setRecordingInputGainDb(value: Float) {
+        val bounded = value.coerceIn(-24f, 0f)
+        settingsStore.setRecordingInputGainDb(bounded)
+        _uiState.update { it.copy(recordingInputGainDb = bounded) }
     }
 
     fun setDiagnosticMode(enabled: Boolean) {
@@ -1219,7 +1227,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     target.file,
                     preferredDevice = selectedMic,
                     requestedChannelCount = channels,
-                    swapStereoChannels = _uiState.value.stereoChannelsSwapped
+                    swapStereoChannels = _uiState.value.stereoChannelsSwapped,
+                    inputGainDb = _uiState.value.recordingInputGainDb
                 )
                 _uiState.update {
                     it.copy(
@@ -1241,7 +1250,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     target.file,
                     preferredDevice = selectedMic,
                     requestedChannelCount = channels,
-                    swapStereoChannels = _uiState.value.stereoChannelsSwapped
+                    swapStereoChannels = _uiState.value.stereoChannelsSwapped,
+                    inputGainDb = _uiState.value.recordingInputGainDb
                 )
                 _uiState.update {
                     it.copy(

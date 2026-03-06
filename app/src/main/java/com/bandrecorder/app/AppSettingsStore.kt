@@ -17,6 +17,7 @@ data class AppSettings(
     val splitOnSilenceEnabled: Boolean = false,
     val silenceThresholdDb: Float = -45f,
     val silenceDurationSec: Int = 8,
+    val recordingInputGainDb: Float = 0f,
     val selectedMicId: Int? = null,
     val diagnosticMode: Boolean = true,
     val showAdvancedInternals: Boolean = false,
@@ -41,6 +42,7 @@ class AppSettingsStore(app: Application) {
         val splitOnSilenceEnabled = prefs.getBoolean(KEY_SPLIT_ON_SILENCE_ENABLED, false) && ignoreSilenceEnabled
         val silenceThresholdDb = prefs.getFloat(KEY_SILENCE_THRESHOLD_DB, -45f).coerceIn(-80f, -20f)
         val silenceDurationSec = prefs.getInt(KEY_SILENCE_DURATION_SEC, 8).coerceIn(2, 20)
+        val recordingInputGainDb = prefs.getFloat(KEY_RECORDING_INPUT_GAIN_DB, 0f).coerceIn(-24f, 0f)
         val micId = if (prefs.contains(KEY_MIC_ID)) prefs.getInt(KEY_MIC_ID, -1).takeIf { it >= 0 } else null
         val diagnosticMode = prefs.getBoolean(KEY_DIAGNOSTIC_MODE, true)
         val showAdvanced = prefs.getBoolean(KEY_SHOW_ADVANCED_INTERNALS, false)
@@ -99,6 +101,7 @@ class AppSettingsStore(app: Application) {
             splitOnSilenceEnabled = splitOnSilenceEnabled,
             silenceThresholdDb = silenceThresholdDb,
             silenceDurationSec = silenceDurationSec,
+            recordingInputGainDb = recordingInputGainDb,
             selectedMicId = micId,
             diagnosticMode = diagnosticMode,
             showAdvancedInternals = showAdvanced,
@@ -131,6 +134,10 @@ class AppSettingsStore(app: Application) {
 
     fun setSilenceDurationSec(value: Int) {
         prefs.edit().putInt(KEY_SILENCE_DURATION_SEC, value.coerceIn(2, 20)).apply()
+    }
+
+    fun setRecordingInputGainDb(value: Float) {
+        prefs.edit().putFloat(KEY_RECORDING_INPUT_GAIN_DB, value.coerceIn(-24f, 0f)).apply()
     }
 
     fun setSelectedMicId(micId: Int?) {
@@ -216,6 +223,7 @@ class AppSettingsStore(app: Application) {
         const val KEY_SPLIT_ON_SILENCE_ENABLED = "split_on_silence_enabled"
         const val KEY_SILENCE_THRESHOLD_DB = "silence_threshold_db"
         const val KEY_SILENCE_DURATION_SEC = "silence_duration_sec"
+        const val KEY_RECORDING_INPUT_GAIN_DB = "recording_input_gain_db"
         const val KEY_MIC_ID = "selected_mic_id"
         const val KEY_DIAGNOSTIC_MODE = "diagnostic_mode"
         const val KEY_SHOW_ADVANCED_INTERNALS = "show_advanced_internals"

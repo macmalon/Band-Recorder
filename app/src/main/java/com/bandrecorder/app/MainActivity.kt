@@ -233,6 +233,7 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 ui = ui,
                 onBack = { navController.popBackStack() },
                 onSetBalanceDuration = vm::setBalanceDuration,
+                onSetRecordingInputGainDb = vm::setRecordingInputGainDb,
                 onRunLevelBalance = { requestAudioPermission(PendingAction.RUN_LEVEL_BALANCE) }
             )
         }
@@ -1140,6 +1141,7 @@ private fun BalanceScreen(
     ui: RecorderUiState,
     onBack: () -> Unit,
     onSetBalanceDuration: (Int) -> Unit,
+    onSetRecordingInputGainDb: (Float) -> Unit,
     onRunLevelBalance: () -> Unit
 ) {
     ScreenScaffold(title = "Balance", onBack = onBack) {
@@ -1176,6 +1178,17 @@ private fun BalanceScreen(
             "RMS ${"%.1f".format(ui.rmsDb)} dBFS   |   Peak ${"%.1f".format(ui.peakDb)} dBFS   |   Headroom ${"%.1f".format(ui.headroomDb)} dB",
             style = MaterialTheme.typography.bodySmall,
             color = AmpText
+        )
+        AdvancedConfigSlider(
+            label = "Atténuation d'entrée (dB)",
+            value = ui.recordingInputGainDb,
+            range = -24f..0f,
+            onValueChange = onSetRecordingInputGainDb
+        )
+        Text(
+            "Valeur appliquée pendant REC: ${"%.1f".format(ui.recordingInputGainDb)} dB (négatif = moins fort).",
+            style = MaterialTheme.typography.bodySmall,
+            color = AmpMetalLight
         )
 
         if (ui.isRunningLevelBalance) {

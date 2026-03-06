@@ -24,6 +24,7 @@ import java.io.RandomAccessFile
 import kotlin.math.abs
 import kotlin.math.log10
 import kotlin.math.max
+import kotlin.math.pow
 import kotlin.math.sqrt
 
 data class CalibrationResult(
@@ -100,6 +101,7 @@ class WavRecorderEngine {
     private var sampleRateHz: Int = 48_000
     private var channelCount: Int = 1
     private var swapStereoChannels: Boolean = false
+    private var inputGainLinear: Double = 1.0
     private var inputDiagnostics: InputDiagnostics? = null
 
     private data class AudioRecordInit(
@@ -361,7 +363,8 @@ class WavRecorderEngine {
         sampleRate: Int = 48_000,
         preferredDevice: AudioDeviceInfo? = null,
         requestedChannelCount: Int = 1,
-        swapStereoChannels: Boolean = false
+        swapStereoChannels: Boolean = false,
+        inputGainDb: Float = 0f
     ) {
         if (recordJob != null) return
 
@@ -383,6 +386,7 @@ class WavRecorderEngine {
         sampleRateHz = sampleRate
         channelCount = channels
         this.swapStereoChannels = swapStereoChannels
+        inputGainLinear = 10.0.pow(inputGainDb.coerceIn(-24f, 0f) / 20.0)
         dataBytesWritten = 0
         inputDiagnostics = buildInputDiagnostics(
             record = record,
@@ -415,6 +419,13 @@ class WavRecorderEngine {
                 while (isActive) {
                     val read = record.read(rawShorts, 0, rawShorts.size)
                     if (read <= 0) continue
+
+                    if (inputGainLinear != 1.0) {
+                        for (i in 0 until read) {
+                            val scaled = (rawShorts[i].toInt() * inputGainLinear).toInt()
+                            rawShorts[i] = scaled.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+                        }
+                    }
 
                     val level = analyze(rawShorts, read)
                     val channelPeaks = analyzeChannelPeaks(rawShorts, read, channelCount)
