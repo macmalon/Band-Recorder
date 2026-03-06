@@ -1922,19 +1922,19 @@ private fun PlayerScreen(
                     presetButton("Pop", cfg.preset == PlayerFxPreset.POP, Modifier.weight(1f)) { onSetPreset(PlayerFxPreset.POP); playback.refreshFx(cfg.copy(preset = PlayerFxPreset.POP)) }
                 }
                 "EQ tonal" -> {
-                    ToggleRow("EQ tonal", cfg.eqEnabled, onSetEqEnabled)
-                    AdvancedConfigSlider("EQ intensité", cfg.eqIntensity, 0f..1f) { onSetEqIntensity(it); playback.refreshFx(cfg.copy(eqIntensity = it)) }
+                    ToggleRow("", cfg.eqEnabled, onSetEqEnabled)
+                    AdvancedConfigSlider("", cfg.eqIntensity, 0f..1f) { onSetEqIntensity(it); playback.refreshFx(cfg.copy(eqIntensity = it)) }
                 }
                 "Compression" -> {
-                    ToggleRow("Compression", cfg.compressionEnabled, onSetCompressionEnabled)
-                    AdvancedConfigSlider("Compression", cfg.compressionIntensity, 0f..1f) { onSetCompressionIntensity(it); playback.refreshFx(cfg.copy(compressionIntensity = it)) }
+                    ToggleRow("", cfg.compressionEnabled, onSetCompressionEnabled)
+                    AdvancedConfigSlider("", cfg.compressionIntensity, 0f..1f) { onSetCompressionIntensity(it); playback.refreshFx(cfg.copy(compressionIntensity = it)) }
                 }
                 "De-esser" -> {
-                    ToggleRow("De-esser", cfg.deEsserEnabled, onSetDeEsserEnabled)
-                    AdvancedConfigSlider("De-esser", cfg.deEsserIntensity, 0f..1f) { onSetDeEsserIntensity(it); playback.refreshFx(cfg.copy(deEsserIntensity = it)) }
+                    ToggleRow("", cfg.deEsserEnabled, onSetDeEsserEnabled)
+                    AdvancedConfigSlider("", cfg.deEsserIntensity, 0f..1f) { onSetDeEsserIntensity(it); playback.refreshFx(cfg.copy(deEsserIntensity = it)) }
                 }
                 "Boost" -> {
-                    AdvancedConfigSlider("Boost", cfg.boostIntensity, 0f..1f) { onSetBoostIntensity(it); playback.refreshFx(cfg.copy(boostIntensity = it)) }
+                    AdvancedConfigSlider("", cfg.boostIntensity, 0f..1f) { onSetBoostIntensity(it); playback.refreshFx(cfg.copy(boostIntensity = it)) }
                 }
             }
         }
