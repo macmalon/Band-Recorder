@@ -449,6 +449,8 @@ private fun RecorderScreenV2(
                     .padding(bottom = 8.dp)
             )
 
+            Spacer(modifier = Modifier.height(12.dp))
+
             RecordButtonV2(
                 isRecording = ui.isRecording,
                 isSilenceDetected = ui.isSilenceDetected,
@@ -977,6 +979,7 @@ private fun HomeScreen(
             enabled = !isBusy || ui.isRecording,
             modifier = Modifier
                 .align(Alignment.Center)
+                .offset(y = 24.dp)
                 .width(170.dp)
                 .height(118.dp),
             shape = RoundedCornerShape(26.dp),
