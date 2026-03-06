@@ -266,6 +266,8 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onStorageChange = vm::setStorageLocation,
                 onToggleIgnoreSilence = vm::setIgnoreSilenceEnabled,
                 onToggleSplitOnSilence = vm::setSplitOnSilenceEnabled,
+                onSetSilenceDurationSec = vm::setSilenceDurationSec,
+                onSetSilenceThresholdDb = vm::setSilenceThresholdDb,
                 onToggleDiagnostic = vm::setDiagnosticMode,
                 onToggleAdvanced = vm::setShowAdvancedInternals,
                 onToggleVintageV2 = vm::setUiVintageV2Enabled
@@ -2155,6 +2157,8 @@ private fun SettingsScreen(
     onStorageChange: (StorageLocation) -> Unit,
     onToggleIgnoreSilence: (Boolean) -> Unit,
     onToggleSplitOnSilence: (Boolean) -> Unit,
+    onSetSilenceDurationSec: (Int) -> Unit,
+    onSetSilenceThresholdDb: (Float) -> Unit,
     onToggleDiagnostic: (Boolean) -> Unit,
     onToggleAdvanced: (Boolean) -> Unit,
     onToggleVintageV2: (Boolean) -> Unit
@@ -2179,6 +2183,19 @@ private fun SettingsScreen(
                 Text(
                     "Active d'abord « Ignorer les blancs » pour autoriser « Découper ».",
                     style = MaterialTheme.typography.bodySmall
+                )
+            } else {
+                AdvancedConfigSlider(
+                    label = "Durée du blanc (s)",
+                    value = ui.silenceDurationSec.toFloat(),
+                    range = 2f..20f,
+                    onValueChange = { onSetSilenceDurationSec(it.roundToInt()) }
+                )
+                AdvancedConfigSlider(
+                    label = "Seuil RMS (dBFS)",
+                    value = ui.silenceThresholdDb,
+                    range = -80f..-20f,
+                    onValueChange = onSetSilenceThresholdDb
                 )
             }
 

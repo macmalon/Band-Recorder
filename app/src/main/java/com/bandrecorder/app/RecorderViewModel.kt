@@ -23,13 +23,17 @@ import com.bandrecorder.core.audio.StereoProbeResult
 import com.bandrecorder.core.audio.StereoWindowMeasurement
 import com.bandrecorder.core.audio.WavRecorderEngine
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
+import java.io.RandomAccessFile
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -115,6 +119,8 @@ data class RecorderUiState(
     val storageLocation: StorageLocation = StorageLocation.DOWNLOADS,
     val ignoreSilenceEnabled: Boolean = false,
     val splitOnSilenceEnabled: Boolean = false,
+    val silenceThresholdDb: Float = -45f,
+    val silenceDurationSec: Int = 8,
     val microphones: List<MicrophoneOption> = emptyList(),
     val selectedMicId: Int? = null,
     val effectiveMicLabel: String? = null,
@@ -174,8 +180,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private var lastCpuGuardState: Boolean = false
     private var recordingWakeLock: PowerManager.WakeLock? = null
 
-    private val silenceThresholdDb = -45f
-    private val silenceHoldMs = 700L
+    private val silenceVisualHoldMs = 700L
 
     private val _uiState = MutableStateFlow(RecorderUiState())
     val uiState: StateFlow<RecorderUiState> = _uiState.asStateFlow()
@@ -187,6 +192,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 storageLocation = settings.storageLocation,
                 ignoreSilenceEnabled = settings.ignoreSilenceEnabled,
                 splitOnSilenceEnabled = settings.splitOnSilenceEnabled,
+                silenceThresholdDb = settings.silenceThresholdDb,
+                silenceDurationSec = settings.silenceDurationSec,
                 selectedMicId = settings.selectedMicId,
                 diagnosticModeEnabled = settings.diagnosticMode,
                 showAdvancedInternals = settings.showAdvancedInternals,
@@ -207,14 +214,14 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
         viewModelScope.launch {
             engine.statusFlow().collect { status ->
-                val thresholdCrossed = status.isRecording && status.rmsDb <= silenceThresholdDb
+                val thresholdCrossed = status.isRecording && status.rmsDb <= _uiState.value.silenceThresholdDb
                 if (!thresholdCrossed) {
                     silenceStartElapsedMs = null
                 } else if (silenceStartElapsedMs == null) {
                     silenceStartElapsedMs = status.elapsedMs
                 }
                 val silenceDetected = thresholdCrossed &&
-                    (status.elapsedMs - (silenceStartElapsedMs ?: status.elapsedMs) >= silenceHoldMs)
+                    (status.elapsedMs - (silenceStartElapsedMs ?: status.elapsedMs) >= silenceVisualHoldMs)
                 _uiState.update {
                     val newLeftVu = normalizeVu(status.leftPeakDb)
                     val newRightVu = normalizeVu(status.rightPeakDb)
@@ -292,6 +299,18 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         val finalValue = enabled && canEnable
         settingsStore.setSplitOnSilenceEnabled(finalValue)
         _uiState.update { it.copy(splitOnSilenceEnabled = finalValue) }
+    }
+
+    fun setSilenceThresholdDb(value: Float) {
+        val bounded = value.coerceIn(-80f, -20f)
+        settingsStore.setSilenceThresholdDb(bounded)
+        _uiState.update { it.copy(silenceThresholdDb = bounded) }
+    }
+
+    fun setSilenceDurationSec(value: Int) {
+        val bounded = value.coerceIn(2, 20)
+        settingsStore.setSilenceDurationSec(bounded)
+        _uiState.update { it.copy(silenceDurationSec = bounded) }
     }
 
     fun setDiagnosticMode(enabled: Boolean) {
@@ -1253,10 +1272,21 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 delay(50)
             }
             delay(150)
-            if (pendingTempFile != null) {
-                exportPendingRecordingToDownloads()
+            val splitEnabled = _uiState.value.ignoreSilenceEnabled && _uiState.value.splitOnSilenceEnabled
+            val segmentFilesForDownloads = if (splitEnabled) {
+                withContext(Dispatchers.Default) { createSegmentsIfNeededForLastRecording() }
             } else {
-                _uiState.update { it.copy(status = "Stopped") }
+                emptyList()
+            }
+            if (pendingTempFile != null) {
+                exportPendingRecordingToDownloads(segmentFilesForDownloads)
+            } else {
+                val label = if (segmentFilesForDownloads.isNotEmpty()) {
+                    "Stopped • ${segmentFilesForDownloads.size} morceaux"
+                } else {
+                    "Stopped"
+                }
+                _uiState.update { it.copy(status = label) }
             }
             releaseRecordingWakeLock()
             refreshPlayerRecordings()
@@ -1617,13 +1647,39 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    private fun exportPendingRecordingToDownloads() {
+    private fun exportPendingRecordingToDownloads(segmentFiles: List<File> = emptyList()) {
         val source = pendingTempFile ?: run {
             _uiState.update { it.copy(status = "Stopped") }
             return
         }
         val displayName = pendingDisplayName ?: source.name
 
+        val exportedRaw = exportSingleWavToDownloads(source, displayName)
+        val exportedSegments = segmentFiles.count { exportSingleWavToDownloads(it, it.name) }
+
+        if (exportedRaw) {
+            val statusLabel = if (segmentFiles.isNotEmpty()) {
+                "Stopped • $exportedSegments morceaux"
+            } else {
+                "Stopped"
+            }
+            _uiState.update {
+                it.copy(
+                    status = statusLabel,
+                    lastOutputPath = "Downloads/Band Recorder/$displayName"
+                )
+            }
+            runCatching { source.delete() }
+            segmentFiles.forEach { runCatching { it.delete() } }
+        } else {
+            _uiState.update { it.copy(status = "Export failed") }
+        }
+
+        pendingTempFile = null
+        pendingDisplayName = null
+    }
+
+    private fun exportSingleWavToDownloads(source: File, displayName: String): Boolean {
         val resolver = getApplication<Application>().contentResolver
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
@@ -1631,15 +1687,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Band Recorder")
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
-
-        val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
-        val uri = resolver.insert(collection, values)
-        if (uri == null) {
-            _uiState.update { it.copy(status = "Export failed") }
-            return
-        }
-
-        val exported = runCatching {
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
+        return runCatching {
             resolver.openOutputStream(uri)?.use { out ->
                 source.inputStream().use { input -> input.copyTo(out) }
             } ?: error("Cannot open output stream")
@@ -1651,22 +1700,252 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             resolver.delete(uri, null, null)
             false
         }
+    }
 
-        if (exported) {
-            _uiState.update {
-                it.copy(
-                    status = "Stopped",
-                    lastOutputPath = "Downloads/Band Recorder/$displayName"
-                )
+    private fun createSegmentsIfNeededForLastRecording(): List<File> {
+        val sourceFile = pendingTempFile
+            ?: _uiState.value.lastOutputPath
+                ?.takeIf { !it.startsWith("Downloads/") }
+                ?.let(::File)
+                ?.takeIf { it.exists() }
+            ?: return emptyList()
+        val sessionBase = activeSessionBaseName ?: _uiState.value.currentSessionName ?: return emptyList()
+        val outDir = sourceFile.parentFile ?: return emptyList()
+        return splitWavOnSilence(
+            sourceFile = sourceFile,
+            sessionBase = sessionBase,
+            outputDir = outDir,
+            silenceThresholdDb = _uiState.value.silenceThresholdDb,
+            silenceDurationSec = _uiState.value.silenceDurationSec
+        )
+    }
+
+    private fun splitWavOnSilence(
+        sourceFile: File,
+        sessionBase: String,
+        outputDir: File,
+        silenceThresholdDb: Float,
+        silenceDurationSec: Int
+    ): List<File> {
+        val info = readWavInfo(sourceFile) ?: return emptyList()
+        if (info.bitsPerSample != 16) return emptyList()
+        val frameBytes = info.channels * 2
+        val totalFrames = (info.dataSize / frameBytes).coerceAtLeast(0)
+        if (totalFrames <= 0) return emptyList()
+
+        val windowFrames = (info.sampleRate / 20).coerceAtLeast(1) // 50 ms
+        val cutFrames = (info.sampleRate * silenceDurationSec).coerceAtLeast(windowFrames)
+        val minSegmentFrames = (info.sampleRate / 2).coerceAtLeast(1) // Ignore tiny slices.
+
+        val segments = mutableListOf<Pair<Int, Int>>()
+        RandomAccessFile(sourceFile, "r").use { raf ->
+            var inSignal = false
+            var segmentStart = 0
+            var silenceRunStart: Int? = null
+
+            var windowStart = 0
+            while (windowStart < totalFrames) {
+                val windowEnd = (windowStart + windowFrames).coerceAtMost(totalFrames)
+                val rmsDb = readWindowRmsDb(raf, info, frameBytes, windowStart, windowEnd)
+                val isSilent = rmsDb <= silenceThresholdDb
+
+                if (isSilent) {
+                    if (inSignal && silenceRunStart == null) {
+                        silenceRunStart = windowStart
+                    }
+                    if (inSignal && silenceRunStart != null && (windowEnd - silenceRunStart) >= cutFrames) {
+                        val end = silenceRunStart
+                        if (end - segmentStart >= minSegmentFrames) {
+                            segments += segmentStart to end
+                        }
+                        inSignal = false
+                        silenceRunStart = null
+                    }
+                } else {
+                    if (!inSignal) {
+                        segmentStart = windowStart
+                        inSignal = true
+                    }
+                    silenceRunStart = null
+                }
+
+                windowStart = windowEnd
             }
-            runCatching { source.delete() }
-        } else {
-            _uiState.update { it.copy(status = "Export failed") }
+
+            if (inSignal) {
+                val end = totalFrames
+                if (end - segmentStart >= minSegmentFrames) {
+                    segments += segmentStart to end
+                }
+            }
         }
 
-        pendingTempFile = null
-        pendingDisplayName = null
+        if (segments.isEmpty()) return emptyList()
+        outputDir.mkdirs()
+        val created = mutableListOf<File>()
+        segments.forEachIndexed { idx, bounds ->
+            val out = File(outputDir, RecordingFileNaming.morceauFileName(sessionBase, idx + 1))
+            runCatching {
+                writeSegmentWav(
+                    sourceFile = sourceFile,
+                    info = info,
+                    startFrame = bounds.first,
+                    endFrame = bounds.second,
+                    outFile = out
+                )
+                created += out
+            }
+        }
+        return created
     }
+
+    private fun readWindowRmsDb(
+        raf: RandomAccessFile,
+        info: WavInfo,
+        frameBytes: Int,
+        startFrame: Int,
+        endFrame: Int
+    ): Float {
+        val frameCount = (endFrame - startFrame).coerceAtLeast(0)
+        if (frameCount <= 0) return -90f
+        val bytesToRead = frameCount * frameBytes
+        val buffer = ByteArray(bytesToRead)
+        raf.seek(info.dataOffset + (startFrame.toLong() * frameBytes.toLong()))
+        val read = raf.read(buffer, 0, buffer.size).coerceAtLeast(0)
+        if (read <= 1) return -90f
+
+        var sumSquares = 0.0
+        var samples = 0
+        var i = 0
+        while (i + 1 < read) {
+            val lo = buffer[i].toInt() and 0xFF
+            val hi = buffer[i + 1].toInt()
+            val sample = ((hi shl 8) or lo).toShort().toInt()
+            val norm = sample / 32768.0
+            sumSquares += norm * norm
+            samples++
+            i += 2
+        }
+        if (samples <= 0) return -90f
+        val rms = kotlin.math.sqrt((sumSquares / samples).coerceAtLeast(1e-12))
+        return (20.0 * kotlin.math.log10(rms.coerceAtLeast(1e-6))).toFloat()
+    }
+
+    private fun writeSegmentWav(
+        sourceFile: File,
+        info: WavInfo,
+        startFrame: Int,
+        endFrame: Int,
+        outFile: File
+    ) {
+        val frameBytes = info.channels * 2
+        val dataSize = ((endFrame - startFrame).coerceAtLeast(0) * frameBytes).coerceAtLeast(0)
+        if (dataSize <= 0) return
+        outFile.parentFile?.mkdirs()
+
+        RandomAccessFile(sourceFile, "r").use { src ->
+            FileOutputStream(outFile).use { out ->
+                out.write(buildWavHeader(dataSize, info.sampleRate, info.channels))
+                val start = info.dataOffset + (startFrame.toLong() * frameBytes.toLong())
+                src.seek(start)
+                val buffer = ByteArray(8192)
+                var remaining = dataSize
+                while (remaining > 0) {
+                    val toRead = minOf(buffer.size, remaining)
+                    val read = src.read(buffer, 0, toRead)
+                    if (read <= 0) break
+                    out.write(buffer, 0, read)
+                    remaining -= read
+                }
+            }
+        }
+    }
+
+    private fun readWavInfo(file: File): WavInfo? {
+        if (!file.exists() || file.length() < 44L) return null
+        RandomAccessFile(file, "r").use { raf ->
+            val header = ByteArray(44)
+            val read = raf.read(header)
+            if (read < 44) return null
+            val sampleRate = readIntLE(header, 24)
+            val channels = readShortLE(header, 22)
+            val bitsPerSample = readShortLE(header, 34)
+            val headerDataSize = readIntLE(header, 40)
+            if (sampleRate <= 0 || channels <= 0 || bitsPerSample <= 0) return null
+            val fileDataSize = (file.length() - 44L).coerceAtLeast(0L).toInt()
+            val dataSize = headerDataSize.coerceAtMost(fileDataSize).coerceAtLeast(0)
+            return WavInfo(
+                sampleRate = sampleRate,
+                channels = channels,
+                bitsPerSample = bitsPerSample,
+                dataOffset = 44L,
+                dataSize = dataSize
+            )
+        }
+    }
+
+    private fun buildWavHeader(dataSize: Int, sampleRate: Int, channels: Int): ByteArray {
+        val byteRate = sampleRate * channels * 16 / 8
+        val totalDataLen = 36 + dataSize
+        val header = ByteArray(44)
+        header[0] = 'R'.code.toByte()
+        header[1] = 'I'.code.toByte()
+        header[2] = 'F'.code.toByte()
+        header[3] = 'F'.code.toByte()
+        writeIntLE(header, 4, totalDataLen)
+        header[8] = 'W'.code.toByte()
+        header[9] = 'A'.code.toByte()
+        header[10] = 'V'.code.toByte()
+        header[11] = 'E'.code.toByte()
+        header[12] = 'f'.code.toByte()
+        header[13] = 'm'.code.toByte()
+        header[14] = 't'.code.toByte()
+        header[15] = ' '.code.toByte()
+        writeIntLE(header, 16, 16)
+        writeShortLE(header, 20, 1)
+        writeShortLE(header, 22, channels)
+        writeIntLE(header, 24, sampleRate)
+        writeIntLE(header, 28, byteRate)
+        writeShortLE(header, 32, channels * 2)
+        writeShortLE(header, 34, 16)
+        header[36] = 'd'.code.toByte()
+        header[37] = 'a'.code.toByte()
+        header[38] = 't'.code.toByte()
+        header[39] = 'a'.code.toByte()
+        writeIntLE(header, 40, dataSize)
+        return header
+    }
+
+    private fun readIntLE(buffer: ByteArray, offset: Int): Int {
+        return (buffer[offset].toInt() and 0xFF) or
+            ((buffer[offset + 1].toInt() and 0xFF) shl 8) or
+            ((buffer[offset + 2].toInt() and 0xFF) shl 16) or
+            ((buffer[offset + 3].toInt() and 0xFF) shl 24)
+    }
+
+    private fun readShortLE(buffer: ByteArray, offset: Int): Int {
+        return (buffer[offset].toInt() and 0xFF) or ((buffer[offset + 1].toInt() and 0xFF) shl 8)
+    }
+
+    private fun writeIntLE(buffer: ByteArray, offset: Int, value: Int) {
+        buffer[offset] = (value and 0xFF).toByte()
+        buffer[offset + 1] = ((value shr 8) and 0xFF).toByte()
+        buffer[offset + 2] = ((value shr 16) and 0xFF).toByte()
+        buffer[offset + 3] = ((value shr 24) and 0xFF).toByte()
+    }
+
+    private fun writeShortLE(buffer: ByteArray, offset: Int, value: Int) {
+        buffer[offset] = (value and 0xFF).toByte()
+        buffer[offset + 1] = ((value shr 8) and 0xFF).toByte()
+    }
+
+    private data class WavInfo(
+        val sampleRate: Int,
+        val channels: Int,
+        val bitsPerSample: Int,
+        val dataOffset: Long,
+        val dataSize: Int
+    )
 
     private fun refreshCurrentSessionSegments() {
         val sessionBase = activeSessionBaseName ?: _uiState.value.currentSessionName
