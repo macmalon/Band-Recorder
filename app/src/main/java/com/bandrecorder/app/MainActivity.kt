@@ -1809,7 +1809,7 @@ private fun PlayerScreen(
                     )
                     .border(BorderStroke(2.dp, AmpPanelBorder), RoundedCornerShape(percent = 50))
                     .pointerInput(Unit) {
-                        detectDragGestures { change: PointerInputChange, dragAmount: Offset ->
+                        detectDragGestures { _: PointerInputChange, dragAmount: Offset ->
                             val delta = dragAmount.x - dragAmount.y
                             val speedFactor = 1f + (delta.absoluteValue / 26f)
                             val deltaMs = (delta * 18f * speedFactor).toLong()
