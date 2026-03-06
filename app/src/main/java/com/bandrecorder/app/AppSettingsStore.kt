@@ -42,7 +42,7 @@ class AppSettingsStore(app: Application) {
         val splitOnSilenceEnabled = prefs.getBoolean(KEY_SPLIT_ON_SILENCE_ENABLED, false) && ignoreSilenceEnabled
         val silenceThresholdDb = prefs.getFloat(KEY_SILENCE_THRESHOLD_DB, -45f).coerceIn(-80f, -20f)
         val silenceDurationSec = prefs.getInt(KEY_SILENCE_DURATION_SEC, 8).coerceIn(2, 20)
-        val recordingInputGainDb = prefs.getFloat(KEY_RECORDING_INPUT_GAIN_DB, 0f).coerceIn(-24f, 0f)
+        val recordingInputGainDb = prefs.getFloat(KEY_RECORDING_INPUT_GAIN_DB, 0f).coerceIn(-24f, 24f)
         val micId = if (prefs.contains(KEY_MIC_ID)) prefs.getInt(KEY_MIC_ID, -1).takeIf { it >= 0 } else null
         val diagnosticMode = prefs.getBoolean(KEY_DIAGNOSTIC_MODE, true)
         val showAdvanced = prefs.getBoolean(KEY_SHOW_ADVANCED_INTERNALS, false)
@@ -137,7 +137,7 @@ class AppSettingsStore(app: Application) {
     }
 
     fun setRecordingInputGainDb(value: Float) {
-        prefs.edit().putFloat(KEY_RECORDING_INPUT_GAIN_DB, value.coerceIn(-24f, 0f)).apply()
+        prefs.edit().putFloat(KEY_RECORDING_INPUT_GAIN_DB, value.coerceIn(-24f, 24f)).apply()
     }
 
     fun setSelectedMicId(micId: Int?) {

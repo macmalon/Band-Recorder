@@ -1180,13 +1180,13 @@ private fun BalanceScreen(
             color = AmpText
         )
         AdvancedConfigSlider(
-            label = "Atténuation d'entrée (dB)",
+            label = "Gain d'entrée (dB)",
             value = ui.recordingInputGainDb,
-            range = -24f..0f,
+            range = -24f..24f,
             onValueChange = onSetRecordingInputGainDb
         )
         Text(
-            "Valeur appliquée pendant REC: ${"%.1f".format(ui.recordingInputGainDb)} dB (négatif = moins fort).",
+            "Valeur appliquée pendant REC: ${"%.1f".format(ui.recordingInputGainDb)} dB (négatif = moins fort, positif = plus fort).",
             style = MaterialTheme.typography.bodySmall,
             color = AmpMetalLight
         )
@@ -1231,7 +1231,7 @@ private fun BalanceScreen(
             style = MaterialTheme.typography.bodySmall
         )
         Text(
-            "Après chaque balance, le gain recommandé est appliqué automatiquement (borné entre -24 et 0 dB), puis reste fixe jusqu'à modification manuelle.",
+            "Après chaque balance, le gain recommandé est appliqué automatiquement (borné entre -24 et +24 dB), puis reste fixe jusqu'à modification manuelle.",
             color = AmpMetalLight,
             style = MaterialTheme.typography.bodySmall
         )

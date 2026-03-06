@@ -386,7 +386,7 @@ class WavRecorderEngine {
         sampleRateHz = sampleRate
         channelCount = channels
         this.swapStereoChannels = swapStereoChannels
-        inputGainLinear = 10.0.pow(inputGainDb.coerceIn(-24f, 0f) / 20.0)
+        inputGainLinear = 10.0.pow(inputGainDb.coerceIn(-24f, 24f) / 20.0)
         dataBytesWritten = 0
         inputDiagnostics = buildInputDiagnostics(
             record = record,

@@ -316,7 +316,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setRecordingInputGainDb(value: Float) {
-        val bounded = value.coerceIn(-24f, 0f)
+        val bounded = value.coerceIn(-24f, 24f)
         settingsStore.setRecordingInputGainDb(bounded)
         _uiState.update { it.copy(recordingInputGainDb = bounded) }
     }
@@ -387,7 +387,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
             val peak = result.peakDb
             val decision = decisionFromPeak(peak)
-            val autoAppliedGainDb = result.recommendedGainDb.coerceIn(-24f, 0f)
+            val autoAppliedGainDb = result.recommendedGainDb.coerceIn(-24f, 24f)
             settingsStore.setRecordingInputGainDb(autoAppliedGainDb)
             _uiState.update {
                 it.copy(
