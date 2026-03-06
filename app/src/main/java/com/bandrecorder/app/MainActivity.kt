@@ -1194,6 +1194,20 @@ private fun BalanceScreen(
                 } else {
                     Text(ui.balanceDecisionLabel, color = AmpAccentAmber, fontWeight = FontWeight.Bold)
                     Text(ui.balanceRecommendationText ?: "", color = AmpText, style = MaterialTheme.typography.bodySmall)
+                    val gainRec = ui.recommendedGainDb
+                    if (gainRec != null) {
+                        val sign = if (gainRec >= 0f) "+" else ""
+                        Text(
+                            "Gain recommandé: $sign${"%.1f".format(gainRec)} dB",
+                            color = AmpMetalLight,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Text(
+                        "Gain appliqué automatiquement: aucun (mesure + recommandation seulement).",
+                        color = AmpMetalLight,
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             }
         }
@@ -2196,6 +2210,12 @@ private fun SettingsScreen(
                     value = ui.silenceThresholdDb,
                     range = -80f..-20f,
                     onValueChange = onSetSilenceThresholdDb
+                )
+                Text(
+                    "Repère pratique: 0 dBFS = max. Plus c'est négatif, plus c'est faible. " +
+                        "Note le RMS quand personne ne joue, puis règle le seuil 5 à 10 dB au-dessus de ce bruit.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AmpMetalLight
                 )
             }
 
