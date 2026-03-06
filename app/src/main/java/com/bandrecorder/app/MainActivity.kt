@@ -467,7 +467,7 @@ private fun RecorderScreenV2(
                 },
                 modifier = Modifier
                     .align(Alignment.CenterHorizontally)
-                    .offset(y = 12.dp)
+                    .offset(y = 17.dp)
             )
 
             Spacer(modifier = Modifier.height(VintageDimensions.recordToKnobSpacing))
@@ -983,7 +983,7 @@ private fun HomeScreen(
             enabled = !isBusy || ui.isRecording,
             modifier = Modifier
                 .align(Alignment.Center)
-                .offset(y = 42.dp)
+                .offset(y = 47.dp)
                 .width(170.dp)
                 .height(118.dp),
             shape = RoundedCornerShape(26.dp),
