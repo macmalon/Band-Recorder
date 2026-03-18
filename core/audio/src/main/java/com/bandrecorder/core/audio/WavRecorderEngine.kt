@@ -54,6 +54,7 @@ data class RecordingStatus(
     val dspCpuGuardActive: Boolean = false,
     val dspOutputMode: DspOutputMode = DspOutputMode.MONITORING_ONLY,
     val dspCompGainReductionDb: Float = 0f,
+    @get:Suppress("SpellCheckingInspection")
     val dspDeEsserGainReductionDb: Float = 0f,
     val dspLimiterHits: Int = 0,
     val dspStatusMessage: String = "Bypass"
@@ -124,7 +125,7 @@ class WavRecorderEngine {
         if (minBuffer <= 0) return@withContext null
 
         val bufferSize = (minBuffer * 2).coerceAtLeast(4096)
-        val init = createAudioRecord(sampleRate, channelMask, encoding, bufferSize) ?: return@withContext null
+        val init = createAudioRecord(sampleRate, channelMask, bufferSize) ?: return@withContext null
         val record = init.record
         if (preferredDevice != null) {
             runCatching { record.setPreferredDevice(preferredDevice) }
@@ -217,7 +218,7 @@ class WavRecorderEngine {
             return@withContext StereoProbeResult(false, 1, "Stereo min buffer unsupported")
         }
         val bufferSize = (minBuffer * 2).coerceAtLeast(4096)
-        val init = createAudioRecord(sampleRate, channelMask, encoding, bufferSize)
+        val init = createAudioRecord(sampleRate, channelMask, bufferSize)
             ?: return@withContext StereoProbeResult(false, 1, "Stereo AudioRecord init failed")
         val record = init.record
 
@@ -330,7 +331,7 @@ class WavRecorderEngine {
         if (minBuffer <= 0) return@withContext null
 
         val bufferSize = (minBuffer * 2).coerceAtLeast(4096)
-        val init = createAudioRecord(sampleRate, channelMask, encoding, bufferSize) ?: return@withContext null
+        val init = createAudioRecord(sampleRate, channelMask, bufferSize) ?: return@withContext null
         val record = init.record
         if (preferredDevice != null) {
             runCatching { record.setPreferredDevice(preferredDevice) }
@@ -404,7 +405,7 @@ class WavRecorderEngine {
         if (minBuffer <= 0) return
 
         val bufferSize = (minBuffer * 2).coerceAtLeast(4096)
-        val init = createAudioRecord(sampleRate, channelMask, encoding, bufferSize) ?: return
+        val init = createAudioRecord(sampleRate, channelMask, bufferSize) ?: return
         val record = init.record
         if (preferredDevice != null) {
             runCatching { record.setPreferredDevice(preferredDevice) }
@@ -545,9 +546,9 @@ class WavRecorderEngine {
     private fun createAudioRecord(
         sampleRate: Int,
         channelMask: Int,
-        encoding: Int,
         bufferSize: Int
     ): AudioRecordInit? {
+        val encoding = AudioFormat.ENCODING_PCM_16BIT
         val sources = listOf(MediaRecorder.AudioSource.UNPROCESSED, MediaRecorder.AudioSource.MIC)
         for (source in sources) {
             val record = AudioRecord(source, sampleRate, channelMask, encoding, bufferSize)
