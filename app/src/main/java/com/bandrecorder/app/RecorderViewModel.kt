@@ -1467,13 +1467,13 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun formatDateFromEpochSec(epochSec: Long): String =
-        SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(epochSec * 1000L))
+        SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date(epochSec * 1000L))
 
     private fun formatDateFromEpochMs(epochMs: Long): String =
-        SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(epochMs))
+        SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date(epochMs))
 
     private fun parseDateForSort(label: String): Long {
-        val f = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+        val f = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
         return runCatching { f.parse(label)?.time ?: 0L }.getOrDefault(0L)
     }
 

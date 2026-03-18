@@ -6,7 +6,9 @@ import java.util.Locale
 
 object RecordingFileNaming {
     private val sessionDateFormat = SimpleDateFormat("ddMMyy_HHmmss", Locale.US)
-    private val morceauRegex = Regex("""^(session_(?:\d{6}|\d{8})_\d{6})_morceau_(\d{2})\.wav$""")
+    private val morceauRegex = Regex("""^(session_(?:\d{6}|\d{8})_\d{6})_.*_morceau_(\d{2})\.wav$""")
+    // Pattern to catch the date part: session_ddMMyy_HHmmss... or session_ddMMyyyy_HHmmss...
+    private val sessionDateRegex = Regex("""^session_(\d{6,8})_(\d{6}).*$""")
 
     fun sessionBaseName(now: Date = Date()): String = "session_${sessionDateFormat.format(now)}"
 
@@ -22,8 +24,30 @@ object RecordingFileNaming {
     fun cleanMetadataFileName(sessionBaseName: String): String = "${sessionBaseName}_clean.meta.json"
 
     fun userVisibleTitle(fileName: String): String {
-        val parsed = parseMorceau(fileName) ?: return fileName
-        return "Morceau ${parsed.morceauIndex}"
+        val parsedMorceau = parseMorceau(fileName)
+        if (parsedMorceau != null) {
+            return "Morceau ${parsedMorceau.morceauIndex}"
+        }
+
+        val match = sessionDateRegex.matchEntire(fileName) ?: return fileName
+        val datePart = match.groupValues[1]
+        val timePart = match.groupValues[2]
+
+        return try {
+            val date = if (datePart.length == 6) {
+                SimpleDateFormat("ddMMyy", Locale.US).parse(datePart)
+            } else {
+                SimpleDateFormat("ddMMyyyy", Locale.US).parse(datePart)
+            }
+            val time = SimpleDateFormat("HHmmss", Locale.US).parse(timePart)
+            
+            val outDate = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(date!!)
+            val outTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(time!!)
+            
+            "$outDate $outTime"
+        } catch (e: Exception) {
+            fileName
+        }
     }
 
     fun segmentSortKey(fileName: String): Int {

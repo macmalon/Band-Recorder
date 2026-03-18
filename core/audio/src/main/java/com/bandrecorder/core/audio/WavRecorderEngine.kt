@@ -130,10 +130,13 @@ class WavRecorderEngine {
             runCatching { record.setPreferredDevice(preferredDevice) }
         }
 
-        var peak = 0.0
-        var sumSquares = 0.0
+        var absolutePeak = 0.0
+        var globalSumSquares = 0.0
         var totalSamples = 0
         val targetSamples = sampleRate * durationSeconds
+
+        // To calculate a weighted/stable peak, we store peaks of each buffer
+        val bufferPeaks = mutableListOf<Double>()
 
         val buffer = ShortArray(bufferSize / 2)
         record.startRecording()
@@ -141,22 +144,36 @@ class WavRecorderEngine {
             while (totalSamples < targetSamples) {
                 val read = record.read(buffer, 0, buffer.size)
                 if (read <= 0) continue
+                
+                var bufferSumSquares = 0.0
+                var bufferPeak = 0.0
+                
                 for (i in 0 until read) {
                     val norm = buffer[i] / Short.MAX_VALUE.toDouble()
-                    sumSquares += norm * norm
-                    val a = abs(norm)
-                    if (a > peak) peak = a
+                    val absNorm = abs(norm)
+                    
+                    bufferSumSquares += norm * norm
+                    if (absNorm > bufferPeak) bufferPeak = absNorm
                 }
+                
+                // Update global metrics
+                globalSumSquares += bufferSumSquares
+                if (bufferPeak > absolutePeak) absolutePeak = bufferPeak
                 totalSamples += read
+                bufferPeaks.add(bufferPeak)
+
                 val progress = ((totalSamples.toFloat() / targetSamples.toFloat()) * 100f).toInt().coerceIn(0, 100)
-                val currentRms = sqrt((sumSquares / totalSamples.coerceAtLeast(1)).coerceAtLeast(1e-12))
-                val currentRmsDb = (20.0 * log10(currentRms.coerceAtLeast(1e-6))).toFloat()
-                val currentPeakDb = (20.0 * log10(peak.coerceAtLeast(1e-6))).toFloat()
+                
+                // Instantaneous metrics for UI (so it follows ambient noise)
+                val instRms = sqrt((bufferSumSquares / read).coerceAtLeast(1e-12))
+                val instRmsDb = (20.0 * log10(instRms.coerceAtLeast(1e-6))).toFloat()
+                val instPeakDb = (20.0 * log10(bufferPeak.coerceAtLeast(1e-6))).toFloat()
+                
                 onProgress(
                     CalibrationProgress(
                         progressPercent = progress,
-                        rmsDb = currentRmsDb,
-                        peakDb = currentPeakDb
+                        rmsDb = instRmsDb,
+                        peakDb = instPeakDb
                     )
                 )
             }
@@ -165,14 +182,27 @@ class WavRecorderEngine {
             record.release()
         }
 
-        val rms = sqrt((sumSquares / totalSamples.coerceAtLeast(1)).coerceAtLeast(1e-12))
-        val rmsDb = (20.0 * log10(rms.coerceAtLeast(1e-6))).toFloat()
-        val peakDb = (20.0 * log10(peak.coerceAtLeast(1e-6))).toFloat()
+        val globalRms = sqrt((globalSumSquares / totalSamples.coerceAtLeast(1)).coerceAtLeast(1e-12))
+        val globalRmsDb = (20.0 * log10(globalRms.coerceAtLeast(1e-6))).toFloat()
+        val globalPeakDb = (20.0 * log10(absolutePeak.coerceAtLeast(1e-6))).toFloat()
+
+        // Pondered peak calculation: 95th percentile to ignore accidental spikes (door slam, etc.)
+        val weightedPeak = if (bufferPeaks.isNotEmpty()) {
+            bufferPeaks.sorted()[(bufferPeaks.size * 0.95).toInt().coerceAtMost(bufferPeaks.size - 1)]
+        } else {
+            absolutePeak
+        }
+        val weightedPeakDb = (20.0 * log10(weightedPeak.coerceAtLeast(1e-6))).toFloat()
 
         val targetPeakDb = -12f
-        val recommended = (targetPeakDb - peakDb).coerceIn(-18f, 18f)
+        // Base gain on weighted peak to be more robust, but keep safety margin
+        val recommended = (targetPeakDb - weightedPeakDb).coerceIn(-18f, 18f)
 
-        CalibrationResult(rmsDb = rmsDb, peakDb = peakDb, recommendedGainDb = recommended)
+        CalibrationResult(
+            rmsDb = globalRmsDb, 
+            peakDb = globalPeakDb, // We still report the absolute peak for info
+            recommendedGainDb = recommended
+        )
     }
 
     @SuppressLint("MissingPermission")
@@ -316,10 +346,9 @@ class WavRecorderEngine {
         var framesRead = 0
         var leftSumSquares = 0.0
         var rightSumSquares = 0.0
-        var diagnostics: InputDiagnostics? = null
 
         record.startRecording()
-        try {
+        val finalDiagnostics = try {
             while (framesRead < targetFrames) {
                 val read = record.read(readBuffer, 0, readBuffer.size)
                 if (read <= 0) continue
@@ -335,12 +364,12 @@ class WavRecorderEngine {
                     if (framesRead >= targetFrames) break
                 }
             }
-        } finally {
-            diagnostics = buildInputDiagnostics(
+            buildInputDiagnostics(
                 record = record,
                 source = init.source,
                 preferredSet = preferredDevice != null
             )
+        } finally {
             runCatching { record.stop() }
             record.release()
         }
@@ -353,7 +382,7 @@ class WavRecorderEngine {
             rightRmsDb = rightRmsDb,
             actualChannelCount = actual,
             framesRead = framesRead,
-            diagnostics = diagnostics
+            diagnostics = finalDiagnostics
         )
     }
 
@@ -512,6 +541,7 @@ class WavRecorderEngine {
 
     private fun levelOrDefault(v: Float): Float = if (v.isFinite()) v else -90f
 
+    @SuppressLint("MissingPermission")
     private fun createAudioRecord(
         sampleRate: Int,
         channelMask: Int,
