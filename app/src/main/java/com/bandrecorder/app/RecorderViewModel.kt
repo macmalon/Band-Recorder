@@ -3,9 +3,9 @@ package com.bandrecorder.app
 import android.app.Application
 import android.content.ContentUris
 import android.content.ContentValues
-import android.media.MediaMetadataRetriever
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.media.MediaMetadataRetriever
 import android.media.MicrophoneInfo
 import android.os.Environment
 import android.os.PowerManager
@@ -1217,6 +1217,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             _uiState.update { it.copy(status = "Stereo requested but not confirmed. Falling back to mono.") }
         }
 
+        RecordingForegroundService.start(getApplication())
         acquireRecordingWakeLock()
 
         when (_uiState.value.storageLocation) {
@@ -1271,6 +1272,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
         if (!engine.statusFlow().value.isRecording) {
             releaseRecordingWakeLock()
+            RecordingForegroundService.stop(getApplication())
             _uiState.update { it.copy(status = "Impossible de démarrer l'enregistrement") }
         }
     }
@@ -1307,6 +1309,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             if (_uiState.value.diagnosticModeEnabled) {
                 exportDiagnosticReport(event = "recording_stop", entry = null, recordingPath = _uiState.value.lastOutputPath)
             }
+            RecordingForegroundService.stop(getApplication())
         }
     }
 
@@ -2021,6 +2024,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         engine.stopRecording()
         releaseRecordingWakeLock()
+        RecordingForegroundService.stop(getApplication())
         super.onCleared()
     }
 
