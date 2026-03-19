@@ -21,9 +21,12 @@ import com.bandrecorder.core.audio.DspOutputMode
 import com.bandrecorder.core.audio.GlobalBalanceConfig
 import com.bandrecorder.core.audio.InputDiagnostics
 import com.bandrecorder.core.audio.MixProfile
+import com.bandrecorder.core.audio.SignalFeatures
 import com.bandrecorder.core.audio.StereoProbeResult
 import com.bandrecorder.core.audio.StereoWindowMeasurement
 import com.bandrecorder.core.audio.WavRecorderEngine
+import com.bandrecorder.core.audio.computeAdaptiveThresholds
+import com.bandrecorder.core.audio.evaluateSilence
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -110,7 +113,8 @@ data class PostProcessEnvelopePoint(
     val startMs: Long,
     val endMs: Long,
     val rmsDb: Float,
-    val peakNorm: Float
+    val peakNorm: Float,
+    val speechLikelihood: Float
 )
 
 enum class GuidedStereoStep {
@@ -155,8 +159,11 @@ data class RecorderUiState(
     val storageLocation: StorageLocation = StorageLocation.DOWNLOADS,
     val ignoreSilenceEnabled: Boolean = false,
     val splitOnSilenceEnabled: Boolean = false,
-    val silenceThresholdDb: Float = -45f,
+    val silenceThresholdDb: Float = 0f,
     val silenceDurationSec: Int = 8,
+    val silenceAutoThresholdDb: Float? = null,
+    val silenceEffectiveThresholdDb: Float? = null,
+    val silenceDetectionSummary: String? = null,
     val recordingInputGainDb: Float = 0f,
     val microphones: List<MicrophoneOption> = emptyList(),
     val selectedMicId: Int? = null,
@@ -233,6 +240,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private var postProcessSourceFile: File? = null
     private var postProcessAnalysis: WavAnalysisResult? = null
     private var postProcessReanalyzeJob: Job? = null
+    private val liveDetectionHistory = ArrayDeque<SignalFeatures>()
+    private var liveDetectorInSilence = false
 
     private val silenceVisualHoldMs = 700L
 
@@ -269,7 +278,29 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
         viewModelScope.launch {
             engine.statusFlow().collect { status ->
-                val thresholdCrossed = status.isRecording && status.rmsDb <= _uiState.value.silenceThresholdDb
+                val liveFeatures = SignalFeatures(
+                    rmsDb = status.rmsDb,
+                    peakNorm = dbToNorm(status.peakDb),
+                    lowBandRatio = status.lowBandRatio,
+                    midBandRatio = status.midBandRatio,
+                    highBandRatio = status.highBandRatio,
+                    zeroCrossingRate = status.zeroCrossingRate,
+                    transientDensity = status.transientDensity,
+                    crestDb = status.crestDb
+                )
+                val liveThresholds = if (status.isRecording) {
+                    pushLiveFeatures(liveFeatures)
+                    computeAdaptiveThresholds(liveDetectionHistory.toList(), _uiState.value.silenceThresholdDb)
+                } else {
+                    resetLiveSilenceState()
+                    null
+                }
+                val silenceDecision = if (status.isRecording && liveThresholds != null) {
+                    evaluateSilence(liveFeatures, liveThresholds, currentlyInSilence = liveDetectorInSilence)
+                } else {
+                    null
+                }
+                val thresholdCrossed = status.isRecording && (silenceDecision?.isSilence == true)
                 if (!thresholdCrossed) {
                     silenceStartElapsedMs = null
                 } else if (silenceStartElapsedMs == null) {
@@ -297,6 +328,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         elapsedMs = status.elapsedMs,
                         isSilenceDetected = silenceDetected,
                         status = if (status.isRecording) "Recording" else it.status,
+                        silenceAutoThresholdDb = liveThresholds?.autoThresholdDb ?: it.silenceAutoThresholdDb,
+                        silenceEffectiveThresholdDb = liveThresholds?.enterThresholdDb ?: it.silenceEffectiveThresholdDb,
+                        silenceDetectionSummary = liveThresholds?.let { thresholds ->
+                            "Auto ${"%.1f".format(thresholds.autoThresholdDb)} dBFS, réglé ${"%.1f".format(thresholds.enterThresholdDb)} dBFS"
+                        } ?: it.silenceDetectionSummary,
                         inputSourceLabel = status.inputDiagnostics?.sourceLabel ?: it.inputSourceLabel,
                         inputPreferredDeviceSet = status.inputDiagnostics?.preferredDeviceSet ?: it.inputPreferredDeviceSet,
                         inputRoutedDevice = status.inputDiagnostics?.let { diag ->
@@ -325,6 +361,9 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 if (!status.isRecording) {
                     autoStopOnSilenceRequested = false
+                    liveDetectorInSilence = false
+                } else if (silenceDecision != null) {
+                    liveDetectorInSilence = silenceDecision.isSilence
                 }
                 val shouldAutoStopOnSilence = status.isRecording &&
                     _uiState.value.ignoreSilenceEnabled &&
@@ -375,7 +414,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setSilenceThresholdDb(value: Float) {
-        val bounded = value.coerceIn(-80f, -20f)
+        val bounded = value.coerceIn(-18f, 18f)
         settingsStore.setSilenceThresholdDb(bounded)
         _uiState.update { it.copy(silenceThresholdDb = bounded) }
     }
@@ -690,6 +729,9 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     postProcessSegments = segments,
                     postProcessCuts = cuts,
                     postProcessEnvelope = envelope,
+                    silenceAutoThresholdDb = analysis.thresholds.autoThresholdDb,
+                    silenceEffectiveThresholdDb = analysis.thresholds.enterThresholdDb,
+                    silenceDetectionSummary = "Auto ${"%.1f".format(analysis.thresholds.autoThresholdDb)} dBFS, réglé ${"%.1f".format(analysis.thresholds.enterThresholdDb)} dBFS",
                     postProcessStatusMessage = if (segments.isEmpty()) {
                         "Aucun segment utile trouvé avec ces réglages."
                     } else {
@@ -2080,8 +2122,9 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 PostProcessEnvelopePoint(
                     startMs = startMs,
                     endMs = (startMs + windowMs).coerceAtMost(durationMs),
-                    rmsDb = window.rmsDb,
-                    peakNorm = window.peakNorm
+                    rmsDb = window.features.rmsDb,
+                    peakNorm = window.features.peakNorm,
+                    speechLikelihood = window.speechLikelihood
                 )
             }
         }
@@ -2090,12 +2133,13 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         return windows.chunked(chunkSize).mapIndexed { chunkIndex, chunk ->
             val startMs = chunkIndex * chunkSize.toLong() * windowMs
             val endMs = (startMs + (chunk.size.toLong() * windowMs)).coerceAtMost(durationMs)
-            val avgRmsNorm = (chunk.sumOf { dbToNorm(it.rmsDb).toDouble() } / chunk.size.toDouble()).toFloat()
+            val avgRmsNorm = (chunk.sumOf { dbToNorm(it.features.rmsDb).toDouble() } / chunk.size.toDouble()).toFloat()
             PostProcessEnvelopePoint(
                 startMs = startMs,
                 endMs = endMs,
                 rmsDb = normToDb(avgRmsNorm),
-                peakNorm = chunk.maxOf { it.peakNorm }
+                peakNorm = chunk.maxOf { it.features.peakNorm },
+                speechLikelihood = chunk.maxOf { it.speechLikelihood }
             )
         }
     }
@@ -2124,6 +2168,18 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 postProcessStatusMessage = "Recalcul de l'aperçu..."
             )
         }
+    }
+
+    private fun pushLiveFeatures(features: SignalFeatures) {
+        liveDetectionHistory.addLast(features)
+        while (liveDetectionHistory.size > 320) {
+            liveDetectionHistory.removeFirst()
+        }
+    }
+
+    private fun resetLiveSilenceState() {
+        liveDetectionHistory.clear()
+        liveDetectorInSilence = false
     }
 
     private fun createSegmentsIfNeededForLastRecording(): List<File> {

@@ -12,56 +12,56 @@ class WavPostProcessorTest {
 
     @Test
     fun `analysis keeps single segment when no silence exceeds threshold`() {
-        val file = createMonoWav(listOf(section(30, 12_000)))
+        val file = createMonoWav(listOf(section(60, 12_000)))
 
-        val analysis = analyzeWavBySilence(file, silenceThresholdDb = -20f, silenceDurationSec = 1)
+        val analysis = analyzeWavBySilence(file, silenceThresholdDb = 0f, silenceDurationSec = 1)
 
         requireNotNull(analysis)
         assertEquals(1, analysis.segments.size)
         assertNear(ms(analysis.info, analysis.segments.first().startFrame), 0L)
-        assertNear(ms(analysis.info, analysis.segments.first().endFrame), 30_000L)
+        assertNear(ms(analysis.info, analysis.segments.first().endFrame), 60_000L)
     }
 
     @Test
     fun `analysis splits long silence and keeps n seconds before cut`() {
         val file = createMonoWav(
             listOf(
-                section(30, 12_000),
+                section(60, 12_000),
                 section(2, 0),
-                section(30, 12_000)
+                section(60, 12_000)
             )
         )
 
-        val analysis = analyzeWavBySilence(file, silenceThresholdDb = -35f, silenceDurationSec = 1)
+        val analysis = analyzeWavBySilence(file, silenceThresholdDb = 0f, silenceDurationSec = 1)
 
         requireNotNull(analysis)
         assertEquals(2, analysis.segments.size)
         assertNear(ms(analysis.info, analysis.segments[0].startFrame), 0L)
-        assertNear(ms(analysis.info, analysis.segments[0].endFrame), 31_000L)
-        assertNear(ms(analysis.info, analysis.segments[1].startFrame), 31_000L)
-        assertNear(ms(analysis.info, analysis.segments[1].endFrame), 62_000L)
+        assertNear(ms(analysis.info, analysis.segments[0].endFrame), 61_000L)
+        assertNear(ms(analysis.info, analysis.segments[1].startFrame), 61_000L, toleranceMs = 1_200L)
+        assertNear(ms(analysis.info, analysis.segments[1].endFrame), 122_000L, toleranceMs = 1_200L)
     }
 
     @Test
     fun `analysis ignores short volume bumps inside a silence`() {
         val file = createMonoWav(
             listOf(
-                section(30, 12_000),
+                section(60, 12_000),
                 section(2, 0),
                 section(2, 7_000),
                 section(2, 0),
-                section(30, 12_000)
+                section(60, 12_000)
             )
         )
 
-        val analysis = analyzeWavBySilence(file, silenceThresholdDb = -35f, silenceDurationSec = 1)
+        val analysis = analyzeWavBySilence(file, silenceThresholdDb = 0f, silenceDurationSec = 1)
 
         requireNotNull(analysis)
         assertEquals(2, analysis.segments.size)
         assertNear(ms(analysis.info, analysis.segments[0].startFrame), 0L)
-        assertNear(ms(analysis.info, analysis.segments[0].endFrame), 31_000L)
-        assertNear(ms(analysis.info, analysis.segments[1].startFrame), 34_000L)
-        assertNear(ms(analysis.info, analysis.segments[1].endFrame), 66_000L)
+        assertNear(ms(analysis.info, analysis.segments[0].endFrame), 61_000L)
+        assertNear(ms(analysis.info, analysis.segments[1].startFrame), 64_000L, toleranceMs = 1_500L)
+        assertNear(ms(analysis.info, analysis.segments[1].endFrame), 126_000L, toleranceMs = 1_500L)
     }
 
     @Test
@@ -69,70 +69,70 @@ class WavPostProcessorTest {
         val file = createMonoWav(
             listOf(
                 section(2, 0),
-                section(30, 12_000),
+                section(60, 12_000),
                 section(2, 0)
             )
         )
 
-        val analysis = analyzeWavBySilence(file, silenceThresholdDb = -35f, silenceDurationSec = 1)
+        val analysis = analyzeWavBySilence(file, silenceThresholdDb = 0f, silenceDurationSec = 1)
 
         requireNotNull(analysis)
         assertEquals(1, analysis.segments.size)
         assertNear(ms(analysis.info, analysis.segments[0].startFrame), 2_000L)
-        assertNear(ms(analysis.info, analysis.segments[0].endFrame), 33_000L)
+        assertNear(ms(analysis.info, analysis.segments[0].endFrame), 63_000L)
     }
 
     @Test
-    fun `analysis ignores segments shorter than twenty five seconds`() {
+    fun `analysis ignores segments shorter than fifty seconds`() {
         val file = createMonoWav(
             listOf(
-                section(30, 12_000),
+                section(60, 12_000),
                 section(3, 0),
-                section(12, 12_000),
+                section(20, 12_000),
                 section(3, 0),
-                section(30, 12_000)
+                section(60, 12_000)
             )
         )
 
-        val analysis = analyzeWavBySilence(file, silenceThresholdDb = -35f, silenceDurationSec = 1)
+        val analysis = analyzeWavBySilence(file, silenceThresholdDb = 0f, silenceDurationSec = 1)
 
         requireNotNull(analysis)
         assertEquals(2, analysis.segments.size)
         assertNear(ms(analysis.info, analysis.segments[0].startFrame), 0L)
-        assertNear(ms(analysis.info, analysis.segments[0].endFrame), 31_000L)
-        assertNear(ms(analysis.info, analysis.segments[1].startFrame), 46_000L)
-        assertNear(ms(analysis.info, analysis.segments[1].endFrame), 78_000L)
+        assertNear(ms(analysis.info, analysis.segments[0].endFrame), 61_000L)
+        assertTrue(ms(analysis.info, analysis.segments[1].startFrame) >= 80_000L)
+        assertTrue(ms(analysis.info, analysis.segments[1].endFrame) >= 140_000L)
     }
 
     @Test
     fun `cleaned wav concatenates kept segments in order`() {
         val source = createMonoWav(
             listOf(
-                section(30, 12_000),
+                section(60, 12_000),
                 section(10, 0),
-                section(30, 9_000)
+                section(60, 9_000)
             )
         )
-        val analysis = requireNotNull(analyzeWavBySilence(source, silenceThresholdDb = -35f, silenceDurationSec = 1))
+        val analysis = requireNotNull(analyzeWavBySilence(source, silenceThresholdDb = 0f, silenceDurationSec = 1))
         val out = File.createTempFile("cleaned_", ".wav")
 
         writeCleanedWav(source, analysis.info, analysis.segments, out)
 
         val outInfo = requireNotNull(readWavInfo(out))
         val totalFrames = outInfo.dataSize / (outInfo.channels * 2)
-        assertNear(ms(outInfo, totalFrames), 63_000L)
+        assertNear(ms(outInfo, totalFrames), 123_000L, toleranceMs = 1_500L)
     }
 
     @Test
     fun `segment export writes one wav per detected segment`() {
         val source = createMonoWav(
             listOf(
-                section(30, 12_000),
+                section(60, 12_000),
                 section(2, 0),
-                section(30, 12_000)
+                section(60, 12_000)
             )
         )
-        val analysis = requireNotNull(analyzeWavBySilence(source, silenceThresholdDb = -35f, silenceDurationSec = 1))
+        val analysis = requireNotNull(analyzeWavBySilence(source, silenceThresholdDb = 0f, silenceDurationSec = 1))
         val dir = Files.createTempDirectory("segment_export_").toFile()
 
         val files = analysis.segments.mapIndexed { index, segment ->

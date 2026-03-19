@@ -57,7 +57,13 @@ data class RecordingStatus(
     @get:Suppress("SpellCheckingInspection")
     val dspDeEsserGainReductionDb: Float = 0f,
     val dspLimiterHits: Int = 0,
-    val dspStatusMessage: String = "Bypass"
+    val dspStatusMessage: String = "Bypass",
+    val lowBandRatio: Float = 0f,
+    val midBandRatio: Float = 0f,
+    val highBandRatio: Float = 0f,
+    val zeroCrossingRate: Float = 0f,
+    val transientDensity: Float = 0f,
+    val crestDb: Float = 0f
 )
 
 data class InputDiagnostics(
@@ -457,16 +463,16 @@ class WavRecorderEngine {
                         }
                     }
 
-                    val level = analyze(rawShorts, read)
+                    val features = extractSignalFeatures(rawShorts, read, channelCount, sampleRateHz)
                     val channelPeaks = analyzeChannelPeaks(rawShorts, read, channelCount)
                     val elapsed = System.currentTimeMillis() - startMs
                     status.value = RecordingStatus(
                         isRecording = true,
-                        rmsDb = level.rmsDb,
-                        peakDb = level.peakDb,
+                        rmsDb = features.rmsDb,
+                        peakDb = (20.0 * log10(features.peakNorm.coerceAtLeast(1e-6f).toDouble())).toFloat(),
                         leftPeakDb = channelPeaks.first,
                         rightPeakDb = channelPeaks.second,
-                        headroomDb = level.headroomDb,
+                        headroomDb = -(20.0 * log10(features.peakNorm.coerceAtLeast(1e-6f).toDouble())).toFloat(),
                         elapsedMs = elapsed,
                         outputPath = output.absolutePath,
                         inputDiagnostics = inputDiagnostics,
@@ -477,7 +483,13 @@ class WavRecorderEngine {
                         dspCompGainReductionDb = 0f,
                         dspDeEsserGainReductionDb = 0f,
                         dspLimiterHits = 0,
-                        dspStatusMessage = "Bypass"
+                        dspStatusMessage = "Bypass",
+                        lowBandRatio = features.lowBandRatio,
+                        midBandRatio = features.midBandRatio,
+                        highBandRatio = features.highBandRatio,
+                        zeroCrossingRate = features.zeroCrossingRate,
+                        transientDensity = features.transientDensity,
+                        crestDb = features.crestDb
                     )
 
                     var bi = 0
@@ -556,24 +568,6 @@ class WavRecorderEngine {
             record.release()
         }
         return null
-    }
-
-    private fun analyze(samples: ShortArray, size: Int): AudioLevel {
-        var sum = 0.0
-        var peak = 0.0
-
-        for (i in 0 until size) {
-            val norm = samples[i] / Short.MAX_VALUE.toDouble()
-            sum += norm * norm
-            val a = abs(norm)
-            if (a > peak) peak = a
-        }
-
-        val rms = sqrt((sum / size.coerceAtLeast(1)).coerceAtLeast(1e-12))
-        val rmsDb = (20.0 * log10(rms.coerceAtLeast(1e-6))).toFloat()
-        val peakDb = (20.0 * log10(peak.coerceAtLeast(1e-6))).toFloat()
-
-        return AudioLevel(rmsDb = rmsDb, peakDb = peakDb, headroomDb = -peakDb)
     }
 
     private fun analyzeChannelPeaks(samples: ShortArray, size: Int, channels: Int): Pair<Float, Float> {

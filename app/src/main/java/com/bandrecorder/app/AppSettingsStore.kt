@@ -15,7 +15,7 @@ data class AppSettings(
     val storageLocation: StorageLocation = StorageLocation.DOWNLOADS,
     val ignoreSilenceEnabled: Boolean = false,
     val splitOnSilenceEnabled: Boolean = false,
-    val silenceThresholdDb: Float = -45f,
+    val silenceThresholdDb: Float = 0f,
     val silenceDurationSec: Int = 8,
     val recordingInputGainDb: Float = 0f,
     val selectedMicId: Int? = null,
@@ -40,7 +40,11 @@ class AppSettingsStore(app: Application) {
             .getOrDefault(StorageLocation.DOWNLOADS)
         val ignoreSilenceEnabled = prefs.getBoolean(KEY_IGNORE_SILENCE_ENABLED, false)
         val splitOnSilenceEnabled = prefs.getBoolean(KEY_SPLIT_ON_SILENCE_ENABLED, false) && ignoreSilenceEnabled
-        val silenceThresholdDb = prefs.getFloat(KEY_SILENCE_THRESHOLD_DB, -45f).coerceIn(-80f, -20f)
+        val silenceThresholdDb = if (prefs.contains(KEY_SILENCE_THRESHOLD_OFFSET_DB)) {
+            prefs.getFloat(KEY_SILENCE_THRESHOLD_OFFSET_DB, 0f).coerceIn(-18f, 18f)
+        } else {
+            0f
+        }
         val silenceDurationSec = prefs.getInt(KEY_SILENCE_DURATION_SEC, 8).coerceIn(2, 20)
         val recordingInputGainDb = prefs.getFloat(KEY_RECORDING_INPUT_GAIN_DB, 0f).coerceIn(-24f, 24f)
         val micId = if (prefs.contains(KEY_MIC_ID)) prefs.getInt(KEY_MIC_ID, -1).takeIf { it >= 0 } else null
@@ -129,7 +133,7 @@ class AppSettingsStore(app: Application) {
     }
 
     fun setSilenceThresholdDb(value: Float) {
-        prefs.edit().putFloat(KEY_SILENCE_THRESHOLD_DB, value.coerceIn(-80f, -20f)).apply()
+        prefs.edit().putFloat(KEY_SILENCE_THRESHOLD_OFFSET_DB, value.coerceIn(-18f, 18f)).apply()
     }
 
     fun setSilenceDurationSec(value: Int) {
@@ -221,7 +225,7 @@ class AppSettingsStore(app: Application) {
         const val KEY_STORAGE_LOCATION = "storage_location"
         const val KEY_IGNORE_SILENCE_ENABLED = "ignore_silence_enabled"
         const val KEY_SPLIT_ON_SILENCE_ENABLED = "split_on_silence_enabled"
-        const val KEY_SILENCE_THRESHOLD_DB = "silence_threshold_db"
+        const val KEY_SILENCE_THRESHOLD_OFFSET_DB = "silence_threshold_offset_db"
         const val KEY_SILENCE_DURATION_SEC = "silence_duration_sec"
         const val KEY_RECORDING_INPUT_GAIN_DB = "recording_input_gain_db"
         const val KEY_MIC_ID = "selected_mic_id"

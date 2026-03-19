@@ -2067,35 +2067,38 @@ private fun PostProcessScreen(
                 onValueChange = { onSetSilenceDurationSec(it.roundToInt()) }
             )
             AdvancedConfigSlider(
-                label = "Seuil RMS (dBFS)",
+                label = "Décalage seuil (dB)",
                 value = ui.silenceThresholdDb,
-                range = -80f..-20f,
+                range = -18f..18f,
                 onValueChange = onSetSilenceThresholdDb
             )
+            ui.silenceDetectionSummary?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = AmpMetalLight)
+            }
             if (ui.postProcessEnvelope.isNotEmpty()) {
                 Text("Aperçu visuel", fontWeight = FontWeight.SemiBold)
                 EnvelopePreviewCard(
                     envelope = ui.postProcessEnvelope,
                     segments = ui.postProcessSegments,
-                    thresholdDb = ui.silenceThresholdDb,
+                    thresholdDb = ui.silenceEffectiveThresholdDb ?: -42f,
                     isAnalyzing = ui.postProcessIsAnalyzing
                 )
                 Text(
-                    "Gris = supprimé, ambre = conservé. La ligne horizontale montre le seuil actuel.",
+                    "Gris = supprimé, ambre = conservé, rouge doux = parole probable. La ligne horizontale montre le seuil appliqué.",
                     style = MaterialTheme.typography.bodySmall,
                     color = AmpMetalLight
                 )
             }
             val rmsHint = when {
-                ui.silenceThresholdDb <= -50f -> "Très permissif: garde beaucoup de sons faibles, y compris du blabla."
-                ui.silenceThresholdDb <= -40f -> "Permissif: coupe les vrais blancs, mais garde encore pas mal de sons faibles."
-                ui.silenceThresholdDb <= -34f -> "Normal: bon point de départ pour une répétition."
-                ui.silenceThresholdDb <= -28f -> "Agressif: privilégie les passages forts, enlève plus de blabla."
-                else -> "Très agressif: garde surtout le son fort, risque de couper des passages musicaux calmes."
+                ui.silenceThresholdDb <= -9f -> "Très permissif: l'auto-threshold est abaissé, plus de sons faibles sont gardés."
+                ui.silenceThresholdDb <= -3f -> "Permissif: bon si tu veux garder plus de transitions calmes."
+                ui.silenceThresholdDb <= 3f -> "Normal: l'app suit sa détection auto avec un léger ajustement."
+                ui.silenceThresholdDb <= 9f -> "Agressif: coupe plus facilement le blabla faible."
+                else -> "Très agressif: privilégie le fort, risque de couper des reprises calmes."
             }
             Text(rmsHint, style = MaterialTheme.typography.bodySmall, color = AmpMetalLight)
             Text(
-                "Repère rapide: -55 très permissif • -40 permissif • -35 normal • -30 agressif • -25 très agressif",
+                "Repère rapide: -12 très permissif • -6 permissif • 0 neutre • +6 agressif • +12 très agressif",
                 style = MaterialTheme.typography.bodySmall,
                 color = AmpMetalLight
             )
@@ -2222,7 +2225,7 @@ private fun EnvelopePreviewCard(
                     color = AmpMetalLight
                 )
                 Text(
-                    "Seuil ${thresholdDb.toInt()} dBFS",
+                    "Seuil appliqué ${thresholdDb.toInt()} dBFS",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color(0xFFFF8A80),
                     fontWeight = FontWeight.SemiBold
@@ -2326,25 +2329,33 @@ private fun EnvelopePreviewCard(
                                 val overlapsSegment = segments.any { point.startMs < it.endMs && point.endMs > it.startMs }
                                 val peakTop = yForDb(normToDb(point.peakNorm))
                                 val rmsY = yForDb(point.rmsDb)
-                                val bodyColor = if (overlapsSegment) keptBody else removedBody
-                                val peakColor = if (overlapsSegment) keptPeak else removedPeak
-                                val bodyTop = rmsY.coerceAtMost(baseY - 1f)
+                            val bodyColor = if (overlapsSegment) keptBody else removedBody
+                            val peakColor = if (overlapsSegment) keptPeak else removedPeak
+                            val bodyTop = rmsY.coerceAtMost(baseY - 1f)
+                            val speechOverlayAlpha = (point.speechLikelihood * 0.28f).coerceIn(0f, 0.28f)
 
-                                if (!overlapsSegment) {
-                                    drawRect(
-                                        color = removedFill.copy(alpha = 0.28f),
-                                        topLeft = Offset(startX, bodyTop),
+                            if (!overlapsSegment) {
+                                drawRect(
+                                    color = removedFill.copy(alpha = 0.28f),
+                                    topLeft = Offset(startX, bodyTop),
                                         size = Size(barWidth, (baseY - bodyTop).coerceAtLeast(1f))
                                     )
                                 }
 
                                 drawRect(
-                                    color = bodyColor,
+                                color = bodyColor,
+                                topLeft = Offset(startX, bodyTop),
+                                size = Size(barWidth, (baseY - bodyTop).coerceAtLeast(1f))
+                            )
+                            if (speechOverlayAlpha > 0.02f) {
+                                drawRect(
+                                    color = Color(0xFFE57373).copy(alpha = speechOverlayAlpha),
                                     topLeft = Offset(startX, bodyTop),
                                     size = Size(barWidth, (baseY - bodyTop).coerceAtLeast(1f))
                                 )
+                            }
 
-                                val crestX = startX + (barWidth / 2f)
+                            val crestX = startX + (barWidth / 2f)
                                 drawLine(
                                     color = peakColor,
                                     start = Offset(crestX, peakTop),
@@ -2847,14 +2858,20 @@ private fun SettingsScreen(
                     onValueChange = { onSetSilenceDurationSec(it.roundToInt()) }
                 )
                 AdvancedConfigSlider(
-                    label = "Seuil RMS (dBFS)",
+                    label = "Décalage seuil (dB)",
                     value = ui.silenceThresholdDb,
-                    range = -80f..-20f,
+                    range = -18f..18f,
                     onValueChange = onSetSilenceThresholdDb
                 )
+                ui.silenceDetectionSummary?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AmpMetalLight
+                    )
+                }
                 Text(
-                    "Repère pratique: 0 dBFS = max. Plus c'est négatif, plus c'est faible. " +
-                        "Note le RMS quand personne ne joue, puis règle le seuil 5 à 10 dB au-dessus de ce bruit.",
+                    "Le moteur calcule un seuil auto puis applique ton décalage. Monte le décalage pour supprimer plus de blabla faible.",
                     style = MaterialTheme.typography.bodySmall,
                     color = AmpMetalLight
                 )

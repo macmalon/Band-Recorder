@@ -1,10 +1,13 @@
 package com.bandrecorder.app
 
+import com.bandrecorder.core.audio.AdaptiveSilenceThresholds
+import com.bandrecorder.core.audio.SignalFeatures
+import com.bandrecorder.core.audio.computeAdaptiveThresholds
+import com.bandrecorder.core.audio.evaluateSilence
+import com.bandrecorder.core.audio.extractSignalFeatures
 import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
-import kotlin.math.log10
-import kotlin.math.sqrt
 
 internal data class WavInfo(
     val sampleRate: Int,
@@ -22,12 +25,14 @@ internal data class WavFrameSegment(
 internal data class WavAnalysisResult(
     val info: WavInfo,
     val segments: List<WavFrameSegment>,
-    val envelope: List<WavEnvelopeWindow>
+    val envelope: List<WavEnvelopeWindow>,
+    val thresholds: AdaptiveSilenceThresholds
 )
 
 internal data class WavEnvelopeWindow(
-    val rmsDb: Float,
-    val peakNorm: Float
+    val features: SignalFeatures,
+    val speechLikelihood: Float,
+    val isSilenceCandidate: Boolean
 )
 
 private const val MIN_MUSICAL_SEGMENT_SEC = 50
@@ -48,75 +53,87 @@ internal fun analyzeWavBySilence(
     val minSegmentFrames = (info.sampleRate * MIN_MUSICAL_SEGMENT_SEC).coerceAtLeast(windowFrames)
     val resumeConfirmFrames = (info.sampleRate * 4).coerceAtLeast(windowFrames)
     val resumePrerollFrames = (info.sampleRate * 6).coerceAtLeast(resumeConfirmFrames)
-    val envelope = mutableListOf<WavEnvelopeWindow>()
+    val windows = mutableListOf<SignalFeatures>()
 
-    val segments = mutableListOf<WavFrameSegment>()
     RandomAccessFile(sourceFile, "r").use { raf ->
-        var inSignal = false
-        var segmentStart = 0
-        var silenceRunStart: Int? = null
-        var signalCandidateStart: Int? = null
-        var requireConfirmedResume = false
-        var resumeStartFloor = 0
         var windowStart = 0
-
         while (windowStart < totalFrames) {
             val windowEnd = (windowStart + windowFrames).coerceAtMost(totalFrames)
-            val stats = readWindowStats(raf, info, frameBytes, windowStart, windowEnd)
-            envelope += WavEnvelopeWindow(rmsDb = stats.rmsDb, peakNorm = stats.peakNorm)
-            val isSilent = stats.rmsDb <= silenceThresholdDb
-
-            if (isSilent) {
-                if (inSignal && silenceRunStart == null) {
-                    silenceRunStart = windowStart
-                }
-                if (inSignal && silenceRunStart != null && (windowEnd - silenceRunStart) >= cutFrames) {
-                    val end = (silenceRunStart + cutFrames).coerceAtMost(totalFrames)
-                    if (end - segmentStart >= minSegmentFrames) {
-                        segments += WavFrameSegment(startFrame = segmentStart, endFrame = end)
-                    }
-                    inSignal = false
-                    silenceRunStart = null
-                    signalCandidateStart = null
-                    requireConfirmedResume = true
-                    resumeStartFloor = end
-                }
-            } else {
-                if (!inSignal) {
-                    if (!requireConfirmedResume) {
-                        segmentStart = windowStart
-                        inSignal = true
-                    } else {
-                        val candidateStart = signalCandidateStart ?: windowStart.also {
-                            signalCandidateStart = it
-                        }
-                        if ((windowEnd - candidateStart) >= resumeConfirmFrames) {
-                            val confirmedPoint = candidateStart + resumeConfirmFrames
-                            segmentStart = (confirmedPoint - resumePrerollFrames).coerceAtLeast(resumeStartFloor)
-                            inSignal = true
-                            signalCandidateStart = null
-                        }
-                    }
-                }
-                silenceRunStart = null
-            }
-
-            if (isSilent && !inSignal) {
-                signalCandidateStart = null
-            }
-
+            windows += readWindowStats(raf, info, frameBytes, windowStart, windowEnd)
             windowStart = windowEnd
-        }
-
-        if (inSignal) {
-            val end = totalFrames
-            if (end - segmentStart >= minSegmentFrames) {
-                segments += WavFrameSegment(startFrame = segmentStart, endFrame = end)
-            }
         }
     }
 
-    return WavAnalysisResult(info = info, segments = segments, envelope = envelope)
+    val thresholds = computeAdaptiveThresholds(windows, silenceThresholdDb)
+    val envelope = mutableListOf<WavEnvelopeWindow>()
+
+    val segments = mutableListOf<WavFrameSegment>()
+    var inSignal = false
+    var segmentStart = 0
+    var silenceRunStart: Int? = null
+    var signalCandidateStart: Int? = null
+    var requireConfirmedResume = false
+    var resumeStartFloor = 0
+
+    windows.forEachIndexed { index, features ->
+        val windowStart = index * windowFrames
+        val windowEnd = (windowStart + windowFrames).coerceAtMost(totalFrames)
+        val decision = evaluateSilence(features, thresholds, currentlyInSilence = !inSignal)
+        envelope += WavEnvelopeWindow(
+            features = features,
+            speechLikelihood = decision.speechLikelihood,
+            isSilenceCandidate = decision.isSilence
+        )
+
+        if (decision.isSilence) {
+            if (inSignal && silenceRunStart == null) {
+                silenceRunStart = windowStart
+            }
+            val silenceStart = silenceRunStart
+            if (inSignal && silenceStart != null && (windowEnd - silenceStart) >= cutFrames) {
+                val end = (silenceStart + cutFrames).coerceAtMost(totalFrames)
+                if (end - segmentStart >= minSegmentFrames) {
+                    segments += WavFrameSegment(startFrame = segmentStart, endFrame = end)
+                }
+                inSignal = false
+                silenceRunStart = null
+                signalCandidateStart = null
+                requireConfirmedResume = true
+                resumeStartFloor = end
+            }
+        } else {
+            if (!inSignal) {
+                if (!requireConfirmedResume) {
+                    segmentStart = windowStart
+                    inSignal = true
+                } else {
+                    val candidateStart = signalCandidateStart ?: windowStart.also {
+                        signalCandidateStart = it
+                    }
+                    if ((windowEnd - candidateStart) >= resumeConfirmFrames) {
+                        val confirmedPoint = candidateStart + resumeConfirmFrames
+                        segmentStart = (confirmedPoint - resumePrerollFrames).coerceAtLeast(resumeStartFloor)
+                        inSignal = true
+                        signalCandidateStart = null
+                    }
+                }
+            }
+            silenceRunStart = null
+        }
+
+        if (decision.isSilence && !inSignal) {
+            signalCandidateStart = null
+        }
+    }
+
+    if (inSignal) {
+        val end = totalFrames
+        if (end - segmentStart >= minSegmentFrames) {
+            segments += WavFrameSegment(startFrame = segmentStart, endFrame = end)
+        }
+    }
+
+    return WavAnalysisResult(info = info, segments = segments, envelope = envelope, thresholds = thresholds)
 }
 
 internal fun writeWavSegment(
@@ -234,46 +251,32 @@ internal fun buildWavHeader(dataSize: Int, sampleRate: Int, channels: Int): Byte
     }
 }
 
-private data class WindowStats(
-    val rmsDb: Float,
-    val peakNorm: Float
-)
-
 private fun readWindowStats(
     raf: RandomAccessFile,
     info: WavInfo,
     frameBytes: Int,
     startFrame: Int,
     endFrame: Int
-): WindowStats {
+): SignalFeatures {
     val frameCount = (endFrame - startFrame).coerceAtLeast(0)
-    if (frameCount <= 0) return WindowStats(rmsDb = -90f, peakNorm = 0f)
+    if (frameCount <= 0) return SignalFeatures(-90f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
     val bytesToRead = frameCount * frameBytes
     val buffer = ByteArray(bytesToRead)
     raf.seek(info.dataOffset + (startFrame.toLong() * frameBytes.toLong()))
     val read = raf.read(buffer, 0, buffer.size).coerceAtLeast(0)
-    if (read <= 1) return WindowStats(rmsDb = -90f, peakNorm = 0f)
+    if (read <= 1) return SignalFeatures(-90f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
 
-    var sumSquares = 0.0
-    var peakAbs = 0.0
-    var samples = 0
+    val sampleCount = read / 2
+    val samples = ShortArray(sampleCount)
+    var si = 0
     var i = 0
     while (i + 1 < read) {
         val lo = buffer[i].toInt() and 0xFF
         val hi = buffer[i + 1].toInt()
-        val sample = ((hi shl 8) or lo).toShort().toInt()
-        val norm = sample / 32768.0
-        peakAbs = maxOf(peakAbs, kotlin.math.abs(norm))
-        sumSquares += norm * norm
-        samples++
+        samples[si++] = ((hi shl 8) or lo).toShort()
         i += 2
     }
-    if (samples <= 0) return WindowStats(rmsDb = -90f, peakNorm = 0f)
-    val rms = sqrt((sumSquares / samples).coerceAtLeast(1e-12))
-    return WindowStats(
-        rmsDb = (20.0 * log10(rms.coerceAtLeast(1e-6))).toFloat(),
-        peakNorm = peakAbs.coerceIn(0.0, 1.0).toFloat()
-    )
+    return extractSignalFeatures(samples, si, info.channels, info.sampleRate)
 }
 
 private fun readIntLE(buffer: ByteArray, offset: Int): Int {
