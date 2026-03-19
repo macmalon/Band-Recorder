@@ -1912,12 +1912,16 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         pendingDisplayName = null
     }
 
-    private fun exportSingleWavToDownloads(source: File, displayName: String): Boolean {
+    private fun exportSingleWavToDownloads(
+        source: File,
+        displayName: String,
+        relativePath: String = "${Environment.DIRECTORY_DOWNLOADS}/Band Recorder"
+    ): Boolean {
         val resolver = getApplication<Application>().contentResolver
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
             put(MediaStore.MediaColumns.MIME_TYPE, "audio/wav")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Band Recorder")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
@@ -1989,6 +1993,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         sourceDisplayName: String
     ): String? {
         val baseName = sourceDisplayName.substringBeforeLast('.').replace(Regex("[^A-Za-z0-9_-]"), "_").ifBlank { "processed" }
+        val editedRelativePath = "${Environment.DIRECTORY_DOWNLOADS}/Band Recorder/Fichiers édités/$baseName"
         val tempDir = File(getApplication<Application>().cacheDir, "post_process_exports").apply {
             mkdirs()
         }
@@ -1998,7 +2003,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 val outFile = File(tempDir, "${baseName}_cleaned.wav")
                 com.bandrecorder.app.writeCleanedWav(sourceFile, analysis.info, analysis.segments, outFile)
                 generated += outFile
-                if (exportSingleWavToDownloads(outFile, outFile.name)) {
+                if (exportSingleWavToDownloads(outFile, outFile.name, editedRelativePath)) {
                     "Export traité: ${outFile.name}"
                 } else {
                     null
@@ -2011,7 +2016,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     com.bandrecorder.app.writeWavSegment(sourceFile, analysis.info, segment, outFile)
                     generated += outFile
                 }
-                val exported = generated.count { exportSingleWavToDownloads(it, it.name) }
+                val exported = generated.count { exportSingleWavToDownloads(it, it.name, editedRelativePath) }
                 if (exported == generated.size && exported > 0) {
                     "Export traité: $exported piste(s)"
                 } else {

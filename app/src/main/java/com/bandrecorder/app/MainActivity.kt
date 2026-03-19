@@ -2069,6 +2069,19 @@ private fun PostProcessScreen(
                 range = -80f..-20f,
                 onValueChange = onSetSilenceThresholdDb
             )
+            val rmsHint = when {
+                ui.silenceThresholdDb <= -50f -> "Très permissif: garde beaucoup de sons faibles, y compris du blabla."
+                ui.silenceThresholdDb <= -40f -> "Permissif: coupe les vrais blancs, mais garde encore pas mal de sons faibles."
+                ui.silenceThresholdDb <= -34f -> "Normal: bon point de départ pour une répétition."
+                ui.silenceThresholdDb <= -28f -> "Agressif: privilégie les passages forts, enlève plus de blabla."
+                else -> "Très agressif: garde surtout le son fort, risque de couper des passages musicaux calmes."
+            }
+            Text(rmsHint, style = MaterialTheme.typography.bodySmall, color = AmpMetalLight)
+            Text(
+                "Repère rapide: -55 très permissif • -40 permissif • -35 normal • -30 agressif • -25 très agressif",
+                style = MaterialTheme.typography.bodySmall,
+                color = AmpMetalLight
+            )
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
