@@ -3,10 +3,12 @@ package com.bandrecorder.app
 import android.app.Application
 import android.content.ContentUris
 import android.content.ContentValues
+import android.database.Cursor
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.MediaMetadataRetriever
 import android.media.MicrophoneInfo
+import android.provider.OpenableColumns
 import android.os.Environment
 import android.os.PowerManager
 import android.provider.MediaStore
@@ -77,6 +79,27 @@ data class RecordingListItem(
     val isFavorite: Boolean,
     val sessionGroupKey: String? = null,
     val segmentIndex: Int? = null
+)
+
+enum class PostProcessMode {
+    CLEAN_SINGLE_FILE,
+    SPLIT_MULTIPLE_TRACKS
+}
+
+data class PostProcessSegmentPreview(
+    val index: Int,
+    val startMs: Long,
+    val endMs: Long,
+    val durationMs: Long
+)
+
+data class PostProcessCutPreview(
+    val index: Int,
+    val cutMs: Long,
+    val beforeStartMs: Long,
+    val beforeEndMs: Long,
+    val afterStartMs: Long,
+    val afterEndMs: Long
 )
 
 enum class GuidedStereoStep {
@@ -167,7 +190,19 @@ data class RecorderUiState(
     val playerRecordings: List<RecordingListItem> = emptyList(),
     val favoriteRecordingKeys: Set<String> = emptySet(),
     val playerStatusMessage: String = "Prêt",
-    val abTestResult: String? = null
+    val abTestResult: String? = null,
+    val postProcessSourceName: String? = null,
+    val postProcessSourcePath: String? = null,
+    val postProcessSourceDurationMs: Long? = null,
+    val postProcessSourceSampleRateHz: Int? = null,
+    val postProcessSourceChannels: Int? = null,
+    val postProcessMode: PostProcessMode = PostProcessMode.CLEAN_SINGLE_FILE,
+    val postProcessIsAnalyzing: Boolean = false,
+    val postProcessIsExporting: Boolean = false,
+    val postProcessSegments: List<PostProcessSegmentPreview> = emptyList(),
+    val postProcessCuts: List<PostProcessCutPreview> = emptyList(),
+    val postProcessStatusMessage: String = "Importe un WAV",
+    val postProcessLastExportLabel: String? = null
 )
 
 class RecorderViewModel(app: Application) : AndroidViewModel(app) {
@@ -183,6 +218,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private var autoStopOnSilenceRequested: Boolean = false
     private var lastCpuGuardState: Boolean = false
     private var recordingWakeLock: PowerManager.WakeLock? = null
+    private var postProcessSourceFile: File? = null
+    private var postProcessAnalysis: WavAnalysisResult? = null
 
     private val silenceVisualHoldMs = 700L
 
@@ -517,6 +554,156 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setPlayerStatusMessage(message: String) {
         _uiState.update { it.copy(playerStatusMessage = message) }
+    }
+
+    fun setPostProcessMode(mode: PostProcessMode) {
+        _uiState.update { it.copy(postProcessMode = mode) }
+    }
+
+    fun importPostProcessSource(uri: Uri) {
+        viewModelScope.launch {
+            val imported = withContext(Dispatchers.IO) { importPostProcessSourceInternal(uri) }
+            if (imported == null) {
+                _uiState.update {
+                    it.copy(
+                        postProcessStatusMessage = "Import impossible ou fichier WAV non supporté.",
+                        postProcessLastExportLabel = null
+                    )
+                }
+                return@launch
+            }
+
+            postProcessSourceFile?.takeIf { it != imported.file }?.let { old ->
+                runCatching { old.delete() }
+            }
+            postProcessSourceFile = imported.file
+            postProcessAnalysis = null
+            _uiState.update {
+                it.copy(
+                    postProcessSourceName = imported.displayName,
+                    postProcessSourcePath = imported.file.absolutePath,
+                    postProcessSourceDurationMs = imported.durationMs,
+                    postProcessSourceSampleRateHz = imported.info.sampleRate,
+                    postProcessSourceChannels = imported.info.channels,
+                    postProcessSegments = emptyList(),
+                    postProcessCuts = emptyList(),
+                    postProcessStatusMessage = "Fichier importé. Lance l'analyse.",
+                    postProcessLastExportLabel = null
+                )
+            }
+        }
+    }
+
+    fun analyzePostProcessSource() {
+        val sourceFile = postProcessSourceFile
+        if (sourceFile == null || !sourceFile.exists()) {
+            _uiState.update { it.copy(postProcessStatusMessage = "Importe un WAV avant l'analyse.") }
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    postProcessIsAnalyzing = true,
+                    postProcessStatusMessage = "Analyse en cours...",
+                    postProcessLastExportLabel = null
+                )
+            }
+            val analysis = withContext(Dispatchers.Default) {
+                analyzeWavBySilence(
+                    sourceFile = sourceFile,
+                    silenceThresholdDb = _uiState.value.silenceThresholdDb,
+                    silenceDurationSec = _uiState.value.silenceDurationSec
+                )
+            }
+            postProcessAnalysis = analysis
+            if (analysis == null) {
+                _uiState.update {
+                    it.copy(
+                        postProcessIsAnalyzing = false,
+                        postProcessSegments = emptyList(),
+                        postProcessCuts = emptyList(),
+                        postProcessStatusMessage = "Analyse impossible: seul le WAV PCM 16-bit est supporté."
+                    )
+                }
+                return@launch
+            }
+
+            val durationMs = framesToMs(analysis.info.sampleRate, analysis.info.dataSize / (analysis.info.channels * 2))
+            val segments = analysis.segments.mapIndexed { index, segment ->
+                val startMs = framesToMs(analysis.info.sampleRate, segment.startFrame)
+                val endMs = framesToMs(analysis.info.sampleRate, segment.endFrame)
+                PostProcessSegmentPreview(
+                    index = index + 1,
+                    startMs = startMs,
+                    endMs = endMs,
+                    durationMs = (endMs - startMs).coerceAtLeast(0L)
+                )
+            }
+            val cuts = analysis.segments.dropLast(1).mapIndexed { index, segment ->
+                val cutMs = framesToMs(analysis.info.sampleRate, segment.endFrame)
+                PostProcessCutPreview(
+                    index = index + 1,
+                    cutMs = cutMs,
+                    beforeStartMs = (cutMs - 3_000L).coerceAtLeast(0L),
+                    beforeEndMs = cutMs,
+                    afterStartMs = cutMs,
+                    afterEndMs = (cutMs + 3_000L).coerceAtMost(durationMs)
+                )
+            }
+            _uiState.update {
+                it.copy(
+                    postProcessIsAnalyzing = false,
+                    postProcessSegments = segments,
+                    postProcessCuts = cuts,
+                    postProcessStatusMessage = if (segments.isEmpty()) {
+                        "Aucun segment utile trouvé avec ces réglages."
+                    } else {
+                        "${segments.size} segment(s) trouvé(s)."
+                    }
+                )
+            }
+        }
+    }
+
+    fun runPostProcessExport() {
+        val sourceFile = postProcessSourceFile
+        val analysis = postProcessAnalysis
+        if (sourceFile == null || analysis == null || analysis.segments.isEmpty()) {
+            _uiState.update { it.copy(postProcessStatusMessage = "Analyse d'abord le fichier avant l'export.") }
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    postProcessIsExporting = true,
+                    postProcessStatusMessage = "Export en cours...",
+                    postProcessLastExportLabel = null
+                )
+            }
+
+            val exportResult = withContext(Dispatchers.IO) {
+                exportPostProcessedFiles(
+                    sourceFile = sourceFile,
+                    analysis = analysis,
+                    mode = _uiState.value.postProcessMode,
+                    sourceDisplayName = _uiState.value.postProcessSourceName ?: sourceFile.name
+                )
+            }
+
+            _uiState.update {
+                it.copy(
+                    postProcessIsExporting = false,
+                    postProcessStatusMessage = exportResult ?: "Export impossible.",
+                    postProcessLastExportLabel = exportResult
+                )
+            }
+            if (exportResult != null) {
+                setPlayerStatusMessage(exportResult)
+                refreshPlayerRecordings()
+            }
+        }
     }
 
     fun refreshPlayerRecordings() {
@@ -1748,6 +1935,99 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun importPostProcessSourceInternal(uri: Uri): ImportedPostProcessSource? {
+        val resolver = getApplication<Application>().contentResolver
+        val displayName = queryDisplayName(resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null))
+            ?: "imported.wav"
+        if (!displayName.lowercase(Locale.ROOT).endsWith(".wav")) return null
+
+        val tempDir = File(getApplication<Application>().cacheDir, "post_process_imports").apply { mkdirs() }
+        val target = File(tempDir, "${System.currentTimeMillis()}_${displayName.replace(Regex("[^A-Za-z0-9._-]"), "_")}")
+        runCatching {
+            resolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(target).use { output -> input.copyTo(output) }
+            } ?: error("Cannot open input stream")
+        }.getOrElse {
+            runCatching { target.delete() }
+            return null
+        }
+
+        val info = com.bandrecorder.app.readWavInfo(target) ?: run {
+            runCatching { target.delete() }
+            return null
+        }
+        if (info.bitsPerSample != 16) {
+            runCatching { target.delete() }
+            return null
+        }
+
+        val frameBytes = info.channels * 2
+        val totalFrames = (info.dataSize / frameBytes).coerceAtLeast(0)
+        val durationMs = framesToMs(info.sampleRate, totalFrames)
+        return ImportedPostProcessSource(
+            file = target,
+            displayName = displayName,
+            durationMs = durationMs,
+            info = info
+        )
+    }
+
+    private fun queryDisplayName(cursor: Cursor?): String? {
+        cursor ?: return null
+        cursor.use {
+            if (!it.moveToFirst()) return null
+            val index = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (index < 0) return null
+            return it.getString(index)
+        }
+    }
+
+    private fun exportPostProcessedFiles(
+        sourceFile: File,
+        analysis: WavAnalysisResult,
+        mode: PostProcessMode,
+        sourceDisplayName: String
+    ): String? {
+        val baseName = sourceDisplayName.substringBeforeLast('.').replace(Regex("[^A-Za-z0-9_-]"), "_").ifBlank { "processed" }
+        val tempDir = File(getApplication<Application>().cacheDir, "post_process_exports").apply {
+            mkdirs()
+        }
+        val generated = mutableListOf<File>()
+        val message = when (mode) {
+            PostProcessMode.CLEAN_SINGLE_FILE -> {
+                val outFile = File(tempDir, "${baseName}_cleaned.wav")
+                com.bandrecorder.app.writeCleanedWav(sourceFile, analysis.info, analysis.segments, outFile)
+                generated += outFile
+                if (exportSingleWavToDownloads(outFile, outFile.name)) {
+                    "Export traité: ${outFile.name}"
+                } else {
+                    null
+                }
+            }
+
+            PostProcessMode.SPLIT_MULTIPLE_TRACKS -> {
+                analysis.segments.forEachIndexed { index, segment ->
+                    val outFile = File(tempDir, "${baseName}_track_${"%02d".format(Locale.US, index + 1)}.wav")
+                    com.bandrecorder.app.writeWavSegment(sourceFile, analysis.info, segment, outFile)
+                    generated += outFile
+                }
+                val exported = generated.count { exportSingleWavToDownloads(it, it.name) }
+                if (exported == generated.size && exported > 0) {
+                    "Export traité: $exported piste(s)"
+                } else {
+                    null
+                }
+            }
+        }
+        generated.forEach { runCatching { it.delete() } }
+        return message
+    }
+
+    private fun framesToMs(sampleRate: Int, frame: Int): Long {
+        if (sampleRate <= 0) return 0L
+        return (frame.toLong() * 1000L) / sampleRate.toLong()
+    }
+
     private fun createSegmentsIfNeededForLastRecording(): List<File> {
         val sourceFile = pendingTempFile
             ?: _uiState.value.lastOutputPath
@@ -1757,13 +2037,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             ?: return emptyList()
         val sessionBase = activeSessionBaseName ?: _uiState.value.currentSessionName ?: return emptyList()
         val outDir = sourceFile.parentFile ?: return emptyList()
-        return splitWavOnSilence(
-            sourceFile = sourceFile,
-            sessionBase = sessionBase,
-            outputDir = outDir,
-            silenceThresholdDb = _uiState.value.silenceThresholdDb,
-            silenceDurationSec = _uiState.value.silenceDurationSec
-        )
+        return splitWavOnSilence(sourceFile, sessionBase, outDir, _uiState.value.silenceThresholdDb, _uiState.value.silenceDurationSec)
     }
 
     private fun splitWavOnSilence(
@@ -1773,72 +2047,14 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         silenceThresholdDb: Float,
         silenceDurationSec: Int
     ): List<File> {
-        val info = readWavInfo(sourceFile) ?: return emptyList()
-        if (info.bitsPerSample != 16) return emptyList()
-        val frameBytes = info.channels * 2
-        val totalFrames = (info.dataSize / frameBytes).coerceAtLeast(0)
-        if (totalFrames <= 0) return emptyList()
-
-        val windowFrames = (info.sampleRate / 20).coerceAtLeast(1) // 50 ms
-        val cutFrames = (info.sampleRate * silenceDurationSec).coerceAtLeast(windowFrames)
-        val minSegmentFrames = (info.sampleRate / 2).coerceAtLeast(1) // Ignore tiny slices.
-
-        val segments = mutableListOf<Pair<Int, Int>>()
-        RandomAccessFile(sourceFile, "r").use { raf ->
-            var inSignal = false
-            var segmentStart = 0
-            var silenceRunStart: Int? = null
-
-            var windowStart = 0
-            while (windowStart < totalFrames) {
-                val windowEnd = (windowStart + windowFrames).coerceAtMost(totalFrames)
-                val rmsDb = readWindowRmsDb(raf, info, frameBytes, windowStart, windowEnd)
-                val isSilent = rmsDb <= silenceThresholdDb
-
-                if (isSilent) {
-                    if (inSignal && silenceRunStart == null) {
-                        silenceRunStart = windowStart
-                    }
-                    if (inSignal && silenceRunStart != null && (windowEnd - silenceRunStart) >= cutFrames) {
-                        val end = (silenceRunStart + cutFrames).coerceAtMost(totalFrames)
-                        if (end - segmentStart >= minSegmentFrames) {
-                            segments += segmentStart to end
-                        }
-                        inSignal = false
-                        silenceRunStart = null
-                    }
-                } else {
-                    if (!inSignal) {
-                        segmentStart = windowStart
-                        inSignal = true
-                    }
-                    silenceRunStart = null
-                }
-
-                windowStart = windowEnd
-            }
-
-            if (inSignal) {
-                val end = totalFrames
-                if (end - segmentStart >= minSegmentFrames) {
-                    segments += segmentStart to end
-                }
-            }
-        }
-
-        if (segments.isEmpty()) return emptyList()
+        val analysis = analyzeWavBySilence(sourceFile, silenceThresholdDb, silenceDurationSec) ?: return emptyList()
+        if (analysis.segments.isEmpty()) return emptyList()
         outputDir.mkdirs()
         val created = mutableListOf<File>()
-        segments.forEachIndexed { idx, bounds ->
+        analysis.segments.forEachIndexed { idx, segment ->
             val out = File(outputDir, RecordingFileNaming.morceauFileName(sessionBase, idx + 1))
             runCatching {
-                writeSegmentWav(
-                    sourceFile = sourceFile,
-                    info = info,
-                    startFrame = bounds.first,
-                    endFrame = bounds.second,
-                    outFile = out
-                )
+                com.bandrecorder.app.writeWavSegment(sourceFile, analysis.info, segment, out)
                 created += out
             }
         }
@@ -2051,9 +2267,17 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         val file: File
     )
 
+    private data class ImportedPostProcessSource(
+        val file: File,
+        val displayName: String,
+        val durationMs: Long,
+        val info: com.bandrecorder.app.WavInfo
+    )
+
     override fun onCleared() {
         engine.stopRecording()
         releaseRecordingWakeLock()
+        postProcessSourceFile?.let { runCatching { it.delete() } }
         RecordingForegroundService.stop(getApplication())
         super.onCleared()
     }

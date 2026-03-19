@@ -138,6 +138,7 @@ private sealed class AppRoute(val route: String) {
     data object MicSettings : AppRoute("mic_settings")
     data object GuidedStereoTest : AppRoute("guided_stereo_test")
     data object Player : AppRoute("player")
+    data object PostProcess : AppRoute("post_process")
     data object Settings : AppRoute("settings")
     data object Link : AppRoute("link")
 }
@@ -278,6 +279,7 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
             PlayerRoute(
                 ui = ui,
                 onBack = { navController.popBackStack() },
+                onOpenPostProcess = { navController.navigate(AppRoute.PostProcess.route) },
                 onRefreshRecordings = vm::refreshPlayerRecordings,
                 onToggleFavorite = vm::toggleRecordingFavorite,
                 onDeleteRecording = vm::deleteRecording,
@@ -289,6 +291,20 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onSetCompressionIntensity = vm::setPlayerCompressionIntensity,
                 onSetDeEsserIntensity = vm::setPlayerDeEsserIntensity,
                 onSetBoostIntensity = vm::setPlayerBoostIntensity,
+                onSetStatus = vm::setPlayerStatusMessage
+            )
+        }
+        composable(AppRoute.PostProcess.route) {
+            PostProcessScreen(
+                ui = ui,
+                onBack = { navController.popBackStack() },
+                onImport = vm::importPostProcessSource,
+                onAnalyze = vm::analyzePostProcessSource,
+                onExport = vm::runPostProcessExport,
+                onSetMode = vm::setPostProcessMode,
+                onSetSilenceDurationSec = vm::setSilenceDurationSec,
+                onSetSilenceThresholdDb = vm::setSilenceThresholdDb,
+                onRefreshRecordings = vm::refreshPlayerRecordings,
                 onSetStatus = vm::setPlayerStatusMessage
             )
         }
@@ -339,6 +355,7 @@ private fun HomeRoute(
 private fun PlayerRoute(
     ui: RecorderUiState,
     onBack: () -> Unit,
+    onOpenPostProcess: () -> Unit,
     onRefreshRecordings: () -> Unit,
     onToggleFavorite: (String) -> Unit,
     onDeleteRecording: (String) -> Unit,
@@ -356,6 +373,7 @@ private fun PlayerRoute(
         PlayerScreenV2(
             ui = ui,
             onBack = onBack,
+            onOpenPostProcess = onOpenPostProcess,
             onRefreshRecordings = onRefreshRecordings,
             onToggleFavorite = onToggleFavorite,
             onDeleteRecording = onDeleteRecording,
@@ -373,6 +391,7 @@ private fun PlayerRoute(
         PlayerScreen(
             ui = ui,
             onBack = onBack,
+            onOpenPostProcess = onOpenPostProcess,
             onRefreshRecordings = onRefreshRecordings,
             onToggleFavorite = onToggleFavorite,
             onDeleteRecording = onDeleteRecording,
@@ -495,6 +514,7 @@ private fun RecorderScreenV2(
 private fun PlayerScreenV2(
     ui: RecorderUiState,
     onBack: () -> Unit,
+    onOpenPostProcess: () -> Unit,
     onRefreshRecordings: () -> Unit,
     onToggleFavorite: (String) -> Unit,
     onDeleteRecording: (String) -> Unit,
@@ -511,6 +531,7 @@ private fun PlayerScreenV2(
     PlayerScreen(
         ui = ui,
         onBack = onBack,
+        onOpenPostProcess = onOpenPostProcess,
         onRefreshRecordings = onRefreshRecordings,
         onToggleFavorite = onToggleFavorite,
         onDeleteRecording = onDeleteRecording,
@@ -1681,6 +1702,7 @@ private fun GuidedStepCard(
 private fun PlayerScreen(
     ui: RecorderUiState,
     onBack: () -> Unit,
+    onOpenPostProcess: () -> Unit,
     onRefreshRecordings: () -> Unit,
     onToggleFavorite: (String) -> Unit,
     onDeleteRecording: (String) -> Unit,
@@ -1844,7 +1866,7 @@ private fun PlayerScreen(
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { toolsOpen = !toolsOpen }, modifier = Modifier.weight(1f)) { Text("OUTILS") }
-            OutlinedButton(onClick = { onSetStatus("Découpe: placeholder") }, modifier = Modifier.weight(1f)) { Text("Découpe") }
+            OutlinedButton(onClick = onOpenPostProcess, modifier = Modifier.weight(1f)) { Text("Découpe") }
         }
 
         if (toolsOpen) {
@@ -1909,7 +1931,179 @@ private fun PlayerScreen(
         }
 
         Text("Statut lecteur: ${ui.playerStatusMessage}", style = MaterialTheme.typography.bodySmall)
-        Text("Export traité: placeholder roadmap", style = MaterialTheme.typography.bodySmall)
+        ui.postProcessLastExportLabel?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun PostProcessScreen(
+    ui: RecorderUiState,
+    onBack: () -> Unit,
+    onImport: (Uri) -> Unit,
+    onAnalyze: () -> Unit,
+    onExport: () -> Unit,
+    onSetMode: (PostProcessMode) -> Unit,
+    onSetSilenceDurationSec: (Int) -> Unit,
+    onSetSilenceThresholdDb: (Float) -> Unit,
+    onRefreshRecordings: () -> Unit,
+    onSetStatus: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val previewPlayback = remember { PlaybackController(context) }
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            onImport(uri)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { previewPlayback.release() }
+    }
+    LaunchedEffect(ui.postProcessLastExportLabel) {
+        if (!ui.postProcessLastExportLabel.isNullOrBlank()) {
+            onRefreshRecordings()
+        }
+    }
+
+    ScreenScaffold(title = "Post-traitement WAV", onBack = onBack) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text("Import et analyse", fontWeight = FontWeight.Bold)
+            Button(
+                onClick = { importLauncher.launch(arrayOf("audio/wav", "audio/x-wav")) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Importer un WAV")
+            }
+
+            if (ui.postProcessSourceName != null) {
+                Text("Fichier: ${ui.postProcessSourceName}")
+                val metadata = buildList {
+                    ui.postProcessSourceDurationMs?.let { add("Durée ${formatDuration(it)}") }
+                    ui.postProcessSourceSampleRateHz?.let { add("${it} Hz") }
+                    ui.postProcessSourceChannels?.let { add("${it} canal(aux)") }
+                }.joinToString("  •  ")
+                if (metadata.isNotBlank()) {
+                    Text(metadata, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            Text("Mode", fontWeight = FontWeight.SemiBold)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (ui.postProcessMode == PostProcessMode.CLEAN_SINGLE_FILE) {
+                    Button(onClick = { onSetMode(PostProcessMode.CLEAN_SINGLE_FILE) }, modifier = Modifier.weight(1f)) { Text("Nettoyer") }
+                } else {
+                    OutlinedButton(onClick = { onSetMode(PostProcessMode.CLEAN_SINGLE_FILE) }, modifier = Modifier.weight(1f)) { Text("Nettoyer") }
+                }
+                if (ui.postProcessMode == PostProcessMode.SPLIT_MULTIPLE_TRACKS) {
+                    Button(onClick = { onSetMode(PostProcessMode.SPLIT_MULTIPLE_TRACKS) }, modifier = Modifier.weight(1f)) { Text("Séparer") }
+                } else {
+                    OutlinedButton(onClick = { onSetMode(PostProcessMode.SPLIT_MULTIPLE_TRACKS) }, modifier = Modifier.weight(1f)) { Text("Séparer") }
+                }
+            }
+
+            AdvancedConfigSlider(
+                label = "Durée du blanc (s)",
+                value = ui.silenceDurationSec.toFloat(),
+                range = 2f..20f,
+                onValueChange = { onSetSilenceDurationSec(it.roundToInt()) }
+            )
+            AdvancedConfigSlider(
+                label = "Seuil RMS (dBFS)",
+                value = ui.silenceThresholdDb,
+                range = -80f..-20f,
+                onValueChange = onSetSilenceThresholdDb
+            )
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = onAnalyze,
+                    enabled = ui.postProcessSourcePath != null && !ui.postProcessIsAnalyzing && !ui.postProcessIsExporting,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(if (ui.postProcessIsAnalyzing) "Analyse..." else "Analyser")
+                }
+                OutlinedButton(
+                    onClick = onExport,
+                    enabled = ui.postProcessSegments.isNotEmpty() && !ui.postProcessIsAnalyzing && !ui.postProcessIsExporting,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(if (ui.postProcessIsExporting) "Export..." else "Exporter")
+                }
+            }
+
+            Text(ui.postProcessStatusMessage, style = MaterialTheme.typography.bodySmall, color = AmpMetalLight)
+            ui.postProcessLastExportLabel?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = AmpAccentAmber)
+            }
+
+            if (ui.postProcessSegments.isNotEmpty()) {
+                Text("${ui.postProcessSegments.size} segment(s) détecté(s)", fontWeight = FontWeight.Bold)
+                ui.postProcessSegments.forEach { segment ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF2E3238))
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text("Piste ${segment.index}", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "${formatDuration(segment.startMs)} -> ${formatDuration(segment.endMs)}  •  ${formatDuration(segment.durationMs)}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (ui.postProcessCuts.isNotEmpty()) {
+                Text("Préécoute des coupes", fontWeight = FontWeight.Bold)
+                val sourcePath = ui.postProcessSourcePath
+                ui.postProcessCuts.forEach { cut ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF272B31))
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("Coupe ${cut.index} à ${formatDuration(cut.cutMs)}", fontWeight = FontWeight.SemiBold)
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    onClick = {
+                                        if (!sourcePath.isNullOrBlank()) {
+                                            previewPlayback.playClip(sourcePath, cut.beforeStartMs, cut.beforeEndMs, onSetStatus)
+                                        }
+                                    },
+                                    enabled = !sourcePath.isNullOrBlank(),
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("Avant coupe") }
+                                OutlinedButton(
+                                    onClick = {
+                                        if (!sourcePath.isNullOrBlank()) {
+                                            previewPlayback.playClip(sourcePath, cut.afterStartMs, cut.afterEndMs, onSetStatus)
+                                        }
+                                    },
+                                    enabled = !sourcePath.isNullOrBlank(),
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("Après coupe") }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2095,6 +2289,8 @@ private class PlaybackController(private val context: android.content.Context) {
     private var equalizer: Equalizer? = null
     private var bassBoost: BassBoost? = null
     private var loudness: LoudnessEnhancer? = null
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var stopRunnable: Runnable? = null
 
     fun isPlaying(): Boolean = mediaPlayer?.isPlaying == true
 
@@ -2143,7 +2339,37 @@ private class PlaybackController(private val context: android.content.Context) {
         attachFx(cfg)
     }
 
+    fun playClip(
+        filePath: String,
+        startMs: Long,
+        endMs: Long,
+        onError: (String) -> Unit
+    ): Boolean {
+        return runCatching {
+            release()
+            val safeStart = startMs.coerceAtLeast(0L)
+            val safeEnd = endMs.coerceAtLeast(safeStart + 250L)
+            val player = MediaPlayer()
+            player.setDataSource(filePath)
+            player.prepare()
+            player.seekTo(safeStart.toInt())
+            player.start()
+            val stopAt = (safeEnd - safeStart).coerceAtLeast(250L)
+            val runnable = Runnable { release() }
+            stopRunnable = runnable
+            handler.postDelayed(runnable, stopAt)
+            mediaPlayer = player
+            true
+        }.getOrElse {
+            release()
+            onError("Préécoute impossible: ${it.message ?: "erreur inconnue"}")
+            false
+        }
+    }
+
     fun release() {
+        stopRunnable?.let(handler::removeCallbacks)
+        stopRunnable = null
         runCatching { equalizer?.release() }
         runCatching { bassBoost?.release() }
         runCatching { loudness?.release() }
