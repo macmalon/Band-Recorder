@@ -54,6 +54,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -118,6 +119,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.cos
 import kotlin.math.absoluteValue
+import kotlin.math.pow
 import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.roundToInt
@@ -2186,54 +2188,127 @@ private fun EnvelopePreviewCard(
     segments: List<PostProcessSegmentPreview>,
     thresholdDb: Float
 ) {
+    val horizontalScroll = rememberScrollState()
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .height(180.dp),
+            .height(220.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1F2328))
     ) {
-        Canvas(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(10.dp)
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            if (envelope.isEmpty()) return@Canvas
-            val totalDurationMs = envelope.last().endMs.coerceAtLeast(1L)
-            val minDb = -80f
-            val maxDb = -20f
-
-            fun xFor(ms: Long): Float = (ms.toFloat() / totalDurationMs.toFloat()) * size.width
-            fun yFor(db: Float): Float {
-                val normalized = ((db.coerceIn(minDb, maxDb) - minDb) / (maxDb - minDb)).coerceIn(0f, 1f)
-                return size.height - (normalized * size.height)
-            }
-
-            segments.forEach { segment ->
-                drawRect(
-                    color = AmpAccentAmber.copy(alpha = 0.12f),
-                    topLeft = Offset(xFor(segment.startMs), 0f),
-                    size = Size((xFor(segment.endMs) - xFor(segment.startMs)).coerceAtLeast(1f), size.height)
-                )
-            }
-
-            val thresholdY = yFor(thresholdDb)
-            drawLine(
-                color = Color(0xFFE57373),
-                start = Offset(0f, thresholdY),
-                end = Offset(size.width, thresholdY),
-                strokeWidth = 2f
+            Text(
+                "Aperçu dynamique scrollable",
+                style = MaterialTheme.typography.bodySmall,
+                color = AmpMetalLight
             )
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                val bucketWidth = 5.dp
+                val canvasWidth = maxOf(maxWidth, bucketWidth * envelope.size.coerceAtLeast(1))
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .horizontalScroll(horizontalScroll)
+                ) {
+                    Canvas(
+                        modifier = Modifier
+                            .requiredWidth(canvasWidth)
+                            .fillMaxHeight()
+                    ) {
+                        if (envelope.isEmpty()) return@Canvas
+                        val totalDurationMs = envelope.last().endMs.coerceAtLeast(1L)
+                        val maxPeak = envelope.maxOfOrNull { it.peakNorm.toDouble() }?.toFloat()?.coerceAtLeast(0.05f) ?: 1f
+                        val thresholdNorm = ((10.0.pow(thresholdDb / 20.0)).toFloat() / maxPeak).coerceIn(0f, 1f)
+                        val baseY = size.height
+                        val segmentFill = AmpAccentAmber.copy(alpha = 0.10f)
+                        val removedFill = Color(0xFF4C5560)
+                        val keptPeak = AmpAccentAmber.copy(alpha = 0.85f)
+                        val removedPeak = Color(0xFF6C7782)
+                        val rmsStroke = Color(0xFFF5E6B3)
+                        val gridColor = Color(0x22FFFFFF)
 
-            envelope.forEach { point ->
-                val startX = xFor(point.startMs)
-                val endX = xFor(point.endMs)
-                val inSegment = segments.any { point.startMs < it.endMs && point.endMs > it.startMs }
-                val color = if (inSegment) AmpAccentAmber else Color(0xFF66707A)
-                drawRect(
-                    color = color,
-                    topLeft = Offset(startX, yFor(point.rmsDb)),
-                    size = Size((endX - startX).coerceAtLeast(1f), (size.height - yFor(point.rmsDb)).coerceAtLeast(1f))
-                )
+                        fun xFor(ms: Long): Float = (ms.toFloat() / totalDurationMs.toFloat()) * size.width
+                        fun heightFor(norm: Float): Float = (norm / maxPeak).coerceIn(0f, 1f) * size.height
+                        fun rmsNorm(db: Float): Float = 10.0.pow(db / 20.0).toFloat().coerceIn(0f, 1f)
+
+                        val guideStepMs = when {
+                            totalDurationMs >= 10 * 60_000L -> 60_000L
+                            totalDurationMs >= 3 * 60_000L -> 30_000L
+                            totalDurationMs >= 60_000L -> 10_000L
+                            else -> 5_000L
+                        }
+                        var guideMs = 0L
+                        while (guideMs <= totalDurationMs) {
+                            val x = xFor(guideMs)
+                            drawLine(
+                                color = gridColor,
+                                start = Offset(x, 0f),
+                                end = Offset(x, size.height),
+                                strokeWidth = 1f
+                            )
+                            guideMs += guideStepMs
+                        }
+
+                        segments.forEach { segment ->
+                            val startX = xFor(segment.startMs)
+                            val endX = xFor(segment.endMs)
+                            drawRect(
+                                color = segmentFill,
+                                topLeft = Offset(startX, 0f),
+                                size = Size((endX - startX).coerceAtLeast(1f), size.height)
+                            )
+                        }
+
+                        val thresholdY = baseY - (thresholdNorm * size.height)
+                        drawLine(
+                            color = Color(0xFFE57373),
+                            start = Offset(0f, thresholdY),
+                            end = Offset(size.width, thresholdY),
+                            strokeWidth = 2f
+                        )
+
+                        var previousRmsPoint: Offset? = null
+                        envelope.forEach { point ->
+                            val startX = xFor(point.startMs)
+                            val endX = xFor(point.endMs)
+                            val barWidth = (endX - startX).coerceAtLeast(1f)
+                            val overlapsSegment = segments.any { point.startMs < it.endMs && point.endMs > it.startMs }
+                            val peakHeight = heightFor(point.peakNorm)
+                            val rmsHeight = heightFor(rmsNorm(point.rmsDb))
+                            val barColor = if (overlapsSegment) keptPeak else removedPeak
+
+                            if (!overlapsSegment) {
+                                drawRect(
+                                    color = removedFill.copy(alpha = 0.28f),
+                                    topLeft = Offset(startX, baseY - peakHeight),
+                                    size = Size(barWidth, peakHeight.coerceAtLeast(1f))
+                                )
+                            }
+
+                            drawRect(
+                                color = barColor,
+                                topLeft = Offset(startX, baseY - peakHeight),
+                                size = Size(barWidth, peakHeight.coerceAtLeast(1f))
+                            )
+
+                            val rmsPoint = Offset(startX + (barWidth / 2f), baseY - rmsHeight)
+                            previousRmsPoint?.let { previous ->
+                                drawLine(
+                                    color = rmsStroke,
+                                    start = previous,
+                                    end = rmsPoint,
+                                    strokeWidth = 2f,
+                                    cap = StrokeCap.Round
+                                )
+                            }
+                            previousRmsPoint = rmsPoint
+                        }
+                    }
+                }
             }
         }
     }

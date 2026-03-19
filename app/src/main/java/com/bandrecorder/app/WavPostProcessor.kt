@@ -22,7 +22,12 @@ internal data class WavFrameSegment(
 internal data class WavAnalysisResult(
     val info: WavInfo,
     val segments: List<WavFrameSegment>,
-    val envelopeDb: List<Float>
+    val envelope: List<WavEnvelopeWindow>
+)
+
+internal data class WavEnvelopeWindow(
+    val rmsDb: Float,
+    val peakNorm: Float
 )
 
 internal fun analyzeWavBySilence(
@@ -39,7 +44,7 @@ internal fun analyzeWavBySilence(
     val windowFrames = (info.sampleRate / 20).coerceAtLeast(1)
     val cutFrames = (info.sampleRate * silenceDurationSec).coerceAtLeast(windowFrames)
     val minSegmentFrames = (info.sampleRate / 2).coerceAtLeast(1)
-    val envelope = mutableListOf<Float>()
+    val envelope = mutableListOf<WavEnvelopeWindow>()
 
     val segments = mutableListOf<WavFrameSegment>()
     RandomAccessFile(sourceFile, "r").use { raf ->
@@ -50,9 +55,9 @@ internal fun analyzeWavBySilence(
 
         while (windowStart < totalFrames) {
             val windowEnd = (windowStart + windowFrames).coerceAtMost(totalFrames)
-            val rmsDb = readWindowRmsDb(raf, info, frameBytes, windowStart, windowEnd)
-            envelope += rmsDb
-            val isSilent = rmsDb <= silenceThresholdDb
+            val stats = readWindowStats(raf, info, frameBytes, windowStart, windowEnd)
+            envelope += WavEnvelopeWindow(rmsDb = stats.rmsDb, peakNorm = stats.peakNorm)
+            val isSilent = stats.rmsDb <= silenceThresholdDb
 
             if (isSilent) {
                 if (inSignal && silenceRunStart == null) {
@@ -85,7 +90,7 @@ internal fun analyzeWavBySilence(
         }
     }
 
-    return WavAnalysisResult(info = info, segments = segments, envelopeDb = envelope)
+    return WavAnalysisResult(info = info, segments = segments, envelope = envelope)
 }
 
 internal fun writeWavSegment(
@@ -203,22 +208,28 @@ internal fun buildWavHeader(dataSize: Int, sampleRate: Int, channels: Int): Byte
     }
 }
 
-private fun readWindowRmsDb(
+private data class WindowStats(
+    val rmsDb: Float,
+    val peakNorm: Float
+)
+
+private fun readWindowStats(
     raf: RandomAccessFile,
     info: WavInfo,
     frameBytes: Int,
     startFrame: Int,
     endFrame: Int
-): Float {
+): WindowStats {
     val frameCount = (endFrame - startFrame).coerceAtLeast(0)
-    if (frameCount <= 0) return -90f
+    if (frameCount <= 0) return WindowStats(rmsDb = -90f, peakNorm = 0f)
     val bytesToRead = frameCount * frameBytes
     val buffer = ByteArray(bytesToRead)
     raf.seek(info.dataOffset + (startFrame.toLong() * frameBytes.toLong()))
     val read = raf.read(buffer, 0, buffer.size).coerceAtLeast(0)
-    if (read <= 1) return -90f
+    if (read <= 1) return WindowStats(rmsDb = -90f, peakNorm = 0f)
 
     var sumSquares = 0.0
+    var peakAbs = 0.0
     var samples = 0
     var i = 0
     while (i + 1 < read) {
@@ -226,13 +237,17 @@ private fun readWindowRmsDb(
         val hi = buffer[i + 1].toInt()
         val sample = ((hi shl 8) or lo).toShort().toInt()
         val norm = sample / 32768.0
+        peakAbs = maxOf(peakAbs, kotlin.math.abs(norm))
         sumSquares += norm * norm
         samples++
         i += 2
     }
-    if (samples <= 0) return -90f
+    if (samples <= 0) return WindowStats(rmsDb = -90f, peakNorm = 0f)
     val rms = sqrt((sumSquares / samples).coerceAtLeast(1e-12))
-    return (20.0 * log10(rms.coerceAtLeast(1e-6))).toFloat()
+    return WindowStats(
+        rmsDb = (20.0 * log10(rms.coerceAtLeast(1e-6))).toFloat(),
+        peakNorm = peakAbs.coerceIn(0.0, 1.0).toFloat()
+    )
 }
 
 private fun readIntLE(buffer: ByteArray, offset: Int): Int {

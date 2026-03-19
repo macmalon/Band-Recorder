@@ -106,7 +106,8 @@ data class PostProcessCutPreview(
 data class PostProcessEnvelopePoint(
     val startMs: Long,
     val endMs: Long,
-    val rmsDb: Float
+    val rmsDb: Float,
+    val peakNorm: Float
 )
 
 enum class GuidedStereoStep {
@@ -673,12 +674,13 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
             val windowMs = ((1_000L * (analysis.info.sampleRate / 20).coerceAtLeast(1)) / analysis.info.sampleRate).coerceAtLeast(1L)
-            val envelope = analysis.envelopeDb.mapIndexed { index, rmsDb ->
+            val envelope = analysis.envelope.mapIndexed { index, window ->
                 val startMs = index * windowMs
                 PostProcessEnvelopePoint(
                     startMs = startMs,
                     endMs = (startMs + windowMs).coerceAtMost(durationMs),
-                    rmsDb = rmsDb
+                    rmsDb = window.rmsDb,
+                    peakNorm = window.peakNorm
                 )
             }
             _uiState.update {
