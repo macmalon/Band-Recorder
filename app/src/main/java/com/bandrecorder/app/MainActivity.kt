@@ -1716,57 +1716,26 @@ private fun PlayerScreen(
 
     ScreenScaffold(title = "Lecteur", onBack = onBack) {
         if (selected == null) {
+            val recordingGroups = remember(ui.playerRecordings) { buildRecordingGroups(ui.playerRecordings) }
             Text("Enregistrements", fontWeight = FontWeight.Bold)
             if (ui.playerRecordings.isEmpty()) {
                 Text("Aucun enregistrement trouvé.")
             } else {
-                ui.playerRecordings.forEach { item ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF2E3238))
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(10.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = item.title,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier.clickable {
-                                        selected = item
-                                        positionMs = 0L
-                                        durationMs = maxOf(1L, item.durationMs)
-                                        val ok = playback.togglePlay(item, ui.playerFxConfig, onError = onSetStatus)
-                                        onSetStatus(if (ok) "Lecture active: ${item.title}" else "Lecture arrêtée")
-                                        durationMs = maxOf(1L, playback.durationMs().coerceAtLeast(item.durationMs))
-                                        positionMs = playback.currentPositionMs()
-                                    }
-                                )
-                                Text("${item.dateLabel}  •  ${formatDuration(item.durationMs)}", style = MaterialTheme.typography.bodySmall)
-                            }
-                            Column(
-                                horizontalAlignment = Alignment.End,
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                OutlinedButton(
-                                    onClick = { onToggleFavorite(item.key) },
-                                    modifier = Modifier.width(52.dp),
-                                    contentPadding = PaddingValues(0.dp)
-                                ) {
-                                    Text(if (item.isFavorite) "★" else "☆")
-                                }
-                                OutlinedButton(
-                                    onClick = { onDeleteRecording(item.key) },
-                                    modifier = Modifier.width(52.dp),
-                                    contentPadding = PaddingValues(0.dp)
-                                ) {
-                                    Text("🗑")
-                                }
-                            }
-                        }
-                    }
+                recordingGroups.forEach { group ->
+                    RecordingGroupCard(
+                        group = group,
+                        onOpen = { item ->
+                            selected = item
+                            positionMs = 0L
+                            durationMs = maxOf(1L, item.durationMs)
+                            val ok = playback.togglePlay(item, ui.playerFxConfig, onError = onSetStatus)
+                            onSetStatus(if (ok) "Lecture active: ${item.title}" else "Lecture arrêtée")
+                            durationMs = maxOf(1L, playback.durationMs().coerceAtLeast(item.durationMs))
+                            positionMs = playback.currentPositionMs()
+                        },
+                        onToggleFavorite = onToggleFavorite,
+                        onDeleteRecording = onDeleteRecording
+                    )
                 }
             }
             return@ScreenScaffold
@@ -1941,6 +1910,128 @@ private fun PlayerScreen(
 
         Text("Statut lecteur: ${ui.playerStatusMessage}", style = MaterialTheme.typography.bodySmall)
         Text("Export traité: placeholder roadmap", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+private data class RecordingGroup(
+    val master: RecordingListItem,
+    val tracks: List<RecordingListItem>
+)
+
+private fun buildRecordingGroups(items: List<RecordingListItem>): List<RecordingGroup> {
+    val grouped = linkedMapOf<String, MutableList<RecordingListItem>>()
+    val standalone = mutableListOf<RecordingGroup>()
+
+    items.forEach { item ->
+        val groupKey = item.sessionGroupKey
+        if (groupKey == null) {
+            standalone += RecordingGroup(master = item, tracks = emptyList())
+        } else {
+            grouped.getOrPut(groupKey) { mutableListOf() }.add(item)
+        }
+    }
+
+    return buildList {
+        grouped.values.forEach { groupItems ->
+            val sorted = groupItems.sortedWith(compareBy<RecordingListItem>({ if (it.segmentIndex == null) 0 else 1 }, { it.segmentIndex ?: 0 }))
+            val master = sorted.firstOrNull { it.segmentIndex == null } ?: sorted.first()
+            val tracks = sorted.filter { it.key != master.key && it.segmentIndex != null }
+            add(RecordingGroup(master = master, tracks = tracks))
+        }
+        addAll(standalone)
+    }.sortedByDescending { group ->
+        group.master.sessionGroupKey?.let(RecordingFileNaming::sessionTimestampMs) ?: 0L
+    }
+}
+
+@Composable
+private fun RecordingGroupCard(
+    group: RecordingGroup,
+    onOpen: (RecordingListItem) -> Unit,
+    onToggleFavorite: (String) -> Unit,
+    onDeleteRecording: (String) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        RecordingListCard(
+            item = group.master,
+            titleOverride = group.master.title,
+            subtitle = "${group.master.dateLabel}  •  ${formatDuration(group.master.durationMs)}",
+            modifier = Modifier.fillMaxWidth(),
+            onOpen = onOpen,
+            onToggleFavorite = onToggleFavorite,
+            onDeleteRecording = onDeleteRecording
+        )
+
+        group.tracks.forEachIndexed { index, item ->
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+                RecordingListCard(
+                    item = item,
+                    titleOverride = "Piste ${index + 1}",
+                    subtitle = formatDuration(item.durationMs),
+                    modifier = Modifier.fillMaxWidth(0.86f),
+                    onOpen = onOpen,
+                    onToggleFavorite = onToggleFavorite,
+                    onDeleteRecording = onDeleteRecording
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecordingListCard(
+    item: RecordingListItem,
+    titleOverride: String,
+    subtitle: String,
+    modifier: Modifier = Modifier,
+    onOpen: (RecordingListItem) -> Unit,
+    onToggleFavorite: (String) -> Unit,
+    onDeleteRecording: (String) -> Unit
+) {
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(
+            containerColor = if (item.segmentIndex == null) Color(0xFF2E3238) else Color(0xFF272B31)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = titleOverride,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable { onOpen(item) }
+                )
+                Text(subtitle, style = MaterialTheme.typography.bodySmall)
+            }
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                OutlinedButton(
+                    onClick = { onToggleFavorite(item.key) },
+                    modifier = Modifier.width(52.dp),
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text(if (item.isFavorite) "★" else "☆")
+                }
+                OutlinedButton(
+                    onClick = { onDeleteRecording(item.key) },
+                    modifier = Modifier.width(52.dp),
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text("🗑")
+                }
+            }
+        }
     }
 }
 

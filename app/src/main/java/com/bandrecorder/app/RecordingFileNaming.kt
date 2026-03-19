@@ -7,6 +7,7 @@ import java.util.Locale
 object RecordingFileNaming {
     private val sessionDateFormat = SimpleDateFormat("ddMMyy_HHmmss", Locale.US)
     private val morceauRegex = Regex("""^(session_(?:\d{6}|\d{8})_\d{6})_.*_morceau_(\d{2})\.wav$""")
+    private val sessionBaseRegex = Regex("""^(session_(\d{6,8})_(\d{6})).*$""")
     // Pattern to catch the date part: session_ddMMyy_HHmmss... or session_ddMMyyyy_HHmmss...
     private val sessionDateRegex = Regex("""^session_(\d{6,8})_(\d{6}).*$""")
 
@@ -53,6 +54,20 @@ object RecordingFileNaming {
     fun segmentSortKey(fileName: String): Int {
         val parsed = parseMorceau(fileName) ?: return Int.MAX_VALUE
         return parsed.morceauIndex
+    }
+
+    fun segmentIndex(fileName: String): Int? = parseMorceau(fileName)?.morceauIndex
+
+    fun sessionBaseKey(fileName: String): String? = sessionBaseRegex.matchEntire(fileName)?.groupValues?.get(1)
+
+    fun sessionTimestampMs(sessionBase: String): Long {
+        val match = sessionBaseRegex.matchEntire(sessionBase) ?: return 0L
+        val datePart = match.groupValues[2]
+        val timePart = match.groupValues[3]
+        return runCatching {
+            val pattern = if (datePart.length == 6) "ddMMyy_HHmmss" else "ddMMyyyy_HHmmss"
+            SimpleDateFormat(pattern, Locale.US).parse("${datePart}_$timePart")?.time ?: 0L
+        }.getOrDefault(0L)
     }
 
     private fun parseMorceau(fileName: String): ParsedMorceau? {

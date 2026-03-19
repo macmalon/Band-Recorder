@@ -74,7 +74,9 @@ data class RecordingListItem(
     val durationMs: Long,
     val sourceUri: Uri?,
     val filePath: String?,
-    val isFavorite: Boolean
+    val isFavorite: Boolean,
+    val sessionGroupKey: String? = null,
+    val segmentIndex: Int? = null
 )
 
 enum class GuidedStereoStep {
@@ -1423,7 +1425,9 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         durationMs = duration,
                         sourceUri = uri,
                         filePath = null,
-                        isFavorite = key in favorites
+                        isFavorite = key in favorites,
+                        sessionGroupKey = RecordingFileNaming.sessionBaseKey(name),
+                        segmentIndex = RecordingFileNaming.segmentIndex(name)
                     )
                 }
             }
@@ -1449,7 +1453,9 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     durationMs = readDurationMs(uri = null, path = f.absolutePath),
                     sourceUri = null,
                     filePath = f.absolutePath,
-                    isFavorite = key in favorites
+                    isFavorite = key in favorites,
+                    sessionGroupKey = RecordingFileNaming.sessionBaseKey(f.name),
+                    segmentIndex = RecordingFileNaming.segmentIndex(f.name)
                 )
             }
             ?: emptyList()
@@ -1482,8 +1488,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun sortRecordings(items: List<RecordingListItem>): List<RecordingListItem> {
         return items.sortedWith(
-            compareByDescending<RecordingListItem> { parseDateForSort(it.dateLabel) }
-                .thenBy { RecordingFileNaming.segmentSortKey(it.title) }
+            compareByDescending<RecordingListItem> {
+                it.sessionGroupKey?.let(RecordingFileNaming::sessionTimestampMs) ?: parseDateForSort(it.dateLabel)
+            }
+                .thenBy { if (it.segmentIndex == null) 0 else 1 }
+                .thenBy { it.segmentIndex ?: 0 }
                 .thenBy { it.title.lowercase(Locale.ROOT) }
         )
     }
