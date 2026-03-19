@@ -225,6 +225,7 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onOpenBalance = { navController.navigate(AppRoute.Balance.route) },
                 onOpenMicSettings = { navController.navigate(AppRoute.MicSettings.route) },
                 onOpenPlayer = { navController.navigate(AppRoute.Player.route) },
+                onOpenEditor = { navController.navigate(AppRoute.PostProcess.route) },
                 onOpenSettings = { navController.navigate(AppRoute.Settings.route) },
                 onOpenLink = { navController.navigate(AppRoute.Link.route) }
             )
@@ -279,7 +280,6 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
             PlayerRoute(
                 ui = ui,
                 onBack = { navController.popBackStack() },
-                onOpenPostProcess = { navController.navigate(AppRoute.PostProcess.route) },
                 onRefreshRecordings = vm::refreshPlayerRecordings,
                 onToggleFavorite = vm::toggleRecordingFavorite,
                 onDeleteRecording = vm::deleteRecording,
@@ -325,6 +325,7 @@ private fun HomeRoute(
     onOpenBalance: () -> Unit,
     onOpenMicSettings: () -> Unit,
     onOpenPlayer: () -> Unit,
+    onOpenEditor: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenLink: () -> Unit
 ) {
@@ -335,6 +336,7 @@ private fun HomeRoute(
             onOpenBalance = onOpenBalance,
             onOpenMicSettings = onOpenMicSettings,
             onOpenPlayer = onOpenPlayer,
+            onOpenEditor = onOpenEditor,
             onOpenSettings = onOpenSettings,
             onOpenLink = onOpenLink
         )
@@ -345,6 +347,7 @@ private fun HomeRoute(
             onOpenBalance = onOpenBalance,
             onOpenMicSettings = onOpenMicSettings,
             onOpenPlayer = onOpenPlayer,
+            onOpenEditor = onOpenEditor,
             onOpenSettings = onOpenSettings,
             onOpenLink = onOpenLink
         )
@@ -355,7 +358,6 @@ private fun HomeRoute(
 private fun PlayerRoute(
     ui: RecorderUiState,
     onBack: () -> Unit,
-    onOpenPostProcess: () -> Unit,
     onRefreshRecordings: () -> Unit,
     onToggleFavorite: (String) -> Unit,
     onDeleteRecording: (String) -> Unit,
@@ -373,7 +375,6 @@ private fun PlayerRoute(
         PlayerScreenV2(
             ui = ui,
             onBack = onBack,
-            onOpenPostProcess = onOpenPostProcess,
             onRefreshRecordings = onRefreshRecordings,
             onToggleFavorite = onToggleFavorite,
             onDeleteRecording = onDeleteRecording,
@@ -391,7 +392,6 @@ private fun PlayerRoute(
         PlayerScreen(
             ui = ui,
             onBack = onBack,
-            onOpenPostProcess = onOpenPostProcess,
             onRefreshRecordings = onRefreshRecordings,
             onToggleFavorite = onToggleFavorite,
             onDeleteRecording = onDeleteRecording,
@@ -415,6 +415,7 @@ private fun RecorderScreenV2(
     onOpenBalance: () -> Unit,
     onOpenMicSettings: () -> Unit,
     onOpenPlayer: () -> Unit,
+    onOpenEditor: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenLink: () -> Unit
 ) {
@@ -503,6 +504,7 @@ private fun RecorderScreenV2(
             HardwareBarV2(
                 onOpenLink = onOpenLink,
                 onOpenPlayer = onOpenPlayer,
+                onOpenEditor = onOpenEditor,
                 onOpenSettings = onOpenSettings,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -514,7 +516,6 @@ private fun RecorderScreenV2(
 private fun PlayerScreenV2(
     ui: RecorderUiState,
     onBack: () -> Unit,
-    onOpenPostProcess: () -> Unit,
     onRefreshRecordings: () -> Unit,
     onToggleFavorite: (String) -> Unit,
     onDeleteRecording: (String) -> Unit,
@@ -531,7 +532,6 @@ private fun PlayerScreenV2(
     PlayerScreen(
         ui = ui,
         onBack = onBack,
-        onOpenPostProcess = onOpenPostProcess,
         onRefreshRecordings = onRefreshRecordings,
         onToggleFavorite = onToggleFavorite,
         onDeleteRecording = onDeleteRecording,
@@ -899,6 +899,7 @@ private fun KnobPanelV2(
 private fun HardwareBarV2(
     onOpenLink: () -> Unit,
     onOpenPlayer: () -> Unit,
+    onOpenEditor: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -919,12 +920,13 @@ private fun HardwareBarV2(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 12.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             LinkSwitchV2(onClick = onOpenLink)
             HardwareButtonV2(label = "LECTEUR", onClick = onOpenPlayer)
-            HardwareButtonV2(label = "PARAMS", onClick = onOpenSettings)
+            HardwareButtonV2(label = "EDITEUR", onClick = onOpenEditor)
+            HardwareIconButtonV2(onClick = onOpenSettings)
         }
 
         Canvas(modifier = Modifier.matchParentSize()) {
@@ -954,6 +956,7 @@ private fun HomeScreen(
     onOpenBalance: () -> Unit,
     onOpenMicSettings: () -> Unit,
     onOpenPlayer: () -> Unit,
+    onOpenEditor: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenLink: () -> Unit
 ) {
@@ -1061,10 +1064,11 @@ private fun HomeScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter),
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            SmallActionButton(text = "Lecteur", onClick = onOpenPlayer)
-            SmallActionButton(text = "Paramètres", onClick = onOpenSettings)
+            SmallActionButton(text = "Lecteur", modifier = Modifier.weight(1f), onClick = onOpenPlayer)
+            SmallActionButton(text = "Editeur", modifier = Modifier.weight(1f), onClick = onOpenEditor)
+            SmallActionIconButton(onClick = onOpenSettings)
         }
     }
 }
@@ -1142,10 +1146,12 @@ private fun RecordingStateLabel(
 @Composable
 private fun SmallActionButton(
     text: String,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     OutlinedButton(
         onClick = onClick,
+        modifier = modifier,
         shape = RoundedCornerShape(20.dp),
         colors = ButtonDefaults.outlinedButtonColors(
             contentColor = AmpAccentAmber,
@@ -1154,6 +1160,53 @@ private fun SmallActionButton(
         border = BorderStroke(1.dp, AmpPanelBorder)
     ) {
         Text(text)
+    }
+}
+
+@Composable
+private fun SmallActionIconButton(
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        colors = ButtonDefaults.outlinedButtonColors(
+            contentColor = AmpAccentAmber,
+            containerColor = Color(0xFF2A2D32)
+        ),
+        border = BorderStroke(1.dp, AmpPanelBorder),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
+    ) {
+        Image(
+            painter = painterResource(android.R.drawable.ic_menu_manage),
+            contentDescription = "Paramètres"
+        )
+    }
+}
+
+@Composable
+private fun HardwareIconButtonV2(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .height(VintageDimensions.navButtonHeight)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(id = R.drawable.hardware_panel),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .matchParentSize()
+                .clip(RoundedCornerShape(VintageDimensions.hardwareButtonCorner))
+        )
+        Image(
+            painter = painterResource(android.R.drawable.ic_menu_manage),
+            contentDescription = "Paramètres",
+            modifier = Modifier.size(20.dp)
+        )
     }
 }
 
@@ -1702,7 +1755,6 @@ private fun GuidedStepCard(
 private fun PlayerScreen(
     ui: RecorderUiState,
     onBack: () -> Unit,
-    onOpenPostProcess: () -> Unit,
     onRefreshRecordings: () -> Unit,
     onToggleFavorite: (String) -> Unit,
     onDeleteRecording: (String) -> Unit,
@@ -1864,10 +1916,7 @@ private fun PlayerScreen(
         )
         Text("${formatDuration(positionMs)} / ${formatDuration(durationMs)}", style = MaterialTheme.typography.bodySmall)
 
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { toolsOpen = !toolsOpen }, modifier = Modifier.weight(1f)) { Text("OUTILS") }
-            OutlinedButton(onClick = onOpenPostProcess, modifier = Modifier.weight(1f)) { Text("Découpe") }
-        }
+        Button(onClick = { toolsOpen = !toolsOpen }, modifier = Modifier.fillMaxWidth()) { Text("OUTILS") }
 
         if (toolsOpen) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
