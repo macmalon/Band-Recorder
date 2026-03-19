@@ -2252,7 +2252,9 @@ private fun EnvelopePreviewCard(
                         val removedFill = Color(0xFF4C5560)
                         val keptPeak = AmpAccentAmber.copy(alpha = 0.85f)
                         val removedPeak = Color(0xFF6C7782)
-                        val rmsStroke = Color(0xFFF5E6B3)
+                        val keptBody = AmpAccentAmber.copy(alpha = 0.55f)
+                        val removedBody = Color(0xFF7B8590)
+                        val rmsStroke = Color(0xFFFFF1C7)
                         val gridColor = Color(0x22FFFFFF)
                         val thresholdColor = Color(0xFFFF5252)
 
@@ -2326,23 +2328,34 @@ private fun EnvelopePreviewCard(
                             val overlapsSegment = segments.any { point.startMs < it.endMs && point.endMs > it.startMs }
                             val peakTop = yForDb(normToDb(point.peakNorm))
                             val rmsY = yForDb(point.rmsDb)
-                            val barColor = if (overlapsSegment) keptPeak else removedPeak
+                            val bodyColor = if (overlapsSegment) keptBody else removedBody
+                            val peakColor = if (overlapsSegment) keptPeak else removedPeak
+                            val bodyTop = rmsY.coerceAtMost(baseY - 1f)
 
                             if (!overlapsSegment) {
                                 drawRect(
                                     color = removedFill.copy(alpha = 0.28f),
-                                    topLeft = Offset(startX, peakTop),
-                                    size = Size(barWidth, (baseY - peakTop).coerceAtLeast(1f))
+                                    topLeft = Offset(startX, bodyTop),
+                                    size = Size(barWidth, (baseY - bodyTop).coerceAtLeast(1f))
                                 )
                             }
 
                             drawRect(
-                                color = barColor,
-                                topLeft = Offset(startX, peakTop),
-                                size = Size(barWidth, (baseY - peakTop).coerceAtLeast(1f))
+                                color = bodyColor,
+                                topLeft = Offset(startX, bodyTop),
+                                size = Size(barWidth, (baseY - bodyTop).coerceAtLeast(1f))
                             )
 
-                            val rmsPoint = Offset(startX + (barWidth / 2f), rmsY)
+                            val crestX = startX + (barWidth / 2f)
+                            drawLine(
+                                color = peakColor,
+                                start = Offset(crestX, peakTop),
+                                end = Offset(crestX, bodyTop),
+                                strokeWidth = barWidth.coerceAtMost(2f).coerceAtLeast(1f),
+                                cap = StrokeCap.Round
+                            )
+
+                            val rmsPoint = Offset(crestX, rmsY)
                             previousRmsPoint?.let { previous ->
                                 drawLine(
                                     color = rmsStroke,
