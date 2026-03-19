@@ -2195,7 +2195,7 @@ private fun EnvelopePreviewCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .height(220.dp),
+            .height(248.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1F2328))
     ) {
         Column(
@@ -2236,141 +2236,167 @@ private fun EnvelopePreviewCard(
                         .fillMaxSize()
                         .horizontalScroll(horizontalScroll)
                 ) {
-                    Canvas(
-                        modifier = Modifier
-                            .requiredWidth(canvasWidth)
-                            .fillMaxHeight()
+                    Column(
+                        modifier = Modifier.requiredWidth(canvasWidth)
                     ) {
-                        if (envelope.isEmpty()) return@Canvas
-                        val totalDurationMs = envelope.last().endMs.coerceAtLeast(1L)
-                        val maxPeakNorm = envelope.maxOfOrNull { it.peakNorm.toDouble() }?.toFloat()?.coerceAtLeast(0.05f) ?: 1f
-                        val maxPeakDb = (20.0 * log10(maxPeakNorm.coerceAtLeast(1e-6f).toDouble())).toFloat()
-                        val minDisplayDb = minOf(-80f, thresholdDb - 6f, envelope.minOfOrNull { it.rmsDb } ?: -80f)
-                        val maxDisplayDb = maxOf(-3f, maxPeakDb + 3f)
-                        val baseY = size.height
-                        val segmentFill = AmpAccentAmber.copy(alpha = 0.10f)
-                        val removedFill = Color(0xFF4C5560)
-                        val keptPeak = AmpAccentAmber.copy(alpha = 0.85f)
-                        val removedPeak = Color(0xFF6C7782)
-                        val keptBody = AmpAccentAmber.copy(alpha = 0.55f)
-                        val removedBody = Color(0xFF7B8590)
-                        val rmsStroke = Color(0xFFFFF1C7)
-                        val gridColor = Color(0x22FFFFFF)
-                        val thresholdColor = Color(0xFFFF5252)
+                        Canvas(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                        ) {
+                            if (envelope.isEmpty()) return@Canvas
+                            val totalDurationMs = envelope.last().endMs.coerceAtLeast(1L)
+                            val maxPeakNorm = envelope.maxOfOrNull { it.peakNorm.toDouble() }?.toFloat()?.coerceAtLeast(0.05f) ?: 1f
+                            val maxPeakDb = (20.0 * log10(maxPeakNorm.coerceAtLeast(1e-6f).toDouble())).toFloat()
+                            val minDisplayDb = minOf(-80f, thresholdDb - 6f, envelope.minOfOrNull { it.rmsDb } ?: -80f)
+                            val maxDisplayDb = maxOf(-3f, maxPeakDb + 3f)
+                            val baseY = size.height
+                            val segmentFill = AmpAccentAmber.copy(alpha = 0.10f)
+                            val removedFill = Color(0xFF4C5560)
+                            val keptPeak = AmpAccentAmber.copy(alpha = 0.85f)
+                            val removedPeak = Color(0xFF6C7782)
+                            val keptBody = AmpAccentAmber.copy(alpha = 0.55f)
+                            val removedBody = Color(0xFF7B8590)
+                            val rmsStroke = Color(0xFFFFF1C7)
+                            val gridColor = Color(0x22FFFFFF)
+                            val thresholdColor = Color(0xFFFF5252)
 
-                        fun xFor(ms: Long): Float = (ms.toFloat() / totalDurationMs.toFloat()) * size.width
-                        fun yForDb(db: Float): Float {
-                            val normalized = ((db - minDisplayDb) / (maxDisplayDb - minDisplayDb).coerceAtLeast(1f)).coerceIn(0f, 1f)
-                            return size.height - (normalized * size.height)
-                        }
-                        fun normToDb(norm: Float): Float =
-                            (20.0 * log10(norm.coerceAtLeast(1e-6f).toDouble())).toFloat()
+                            fun xFor(ms: Long): Float = (ms.toFloat() / totalDurationMs.toFloat()) * size.width
+                            fun yForDb(db: Float): Float {
+                                val normalized = ((db - minDisplayDb) / (maxDisplayDb - minDisplayDb).coerceAtLeast(1f)).coerceIn(0f, 1f)
+                                return size.height - (normalized * size.height)
+                            }
+                            fun normToDb(norm: Float): Float =
+                                (20.0 * log10(norm.coerceAtLeast(1e-6f).toDouble())).toFloat()
 
-                        val guideStepMs = when {
-                            totalDurationMs >= 10 * 60_000L -> 60_000L
-                            totalDurationMs >= 3 * 60_000L -> 30_000L
-                            totalDurationMs >= 60_000L -> 10_000L
-                            else -> 5_000L
-                        }
-                        var guideMs = 0L
-                        while (guideMs <= totalDurationMs) {
-                            val x = xFor(guideMs)
-                            drawLine(
-                                color = gridColor,
-                                start = Offset(x, 0f),
-                                end = Offset(x, size.height),
-                                strokeWidth = 1f
-                            )
-                            guideMs += guideStepMs
-                        }
+                            val guideStepMs = editorGuideStepMs(totalDurationMs)
+                            var guideMs = 0L
+                            while (guideMs <= totalDurationMs) {
+                                val x = xFor(guideMs)
+                                drawLine(
+                                    color = gridColor,
+                                    start = Offset(x, 0f),
+                                    end = Offset(x, size.height),
+                                    strokeWidth = 1f
+                                )
+                                guideMs += guideStepMs
+                            }
 
-                        segments.forEach { segment ->
-                            val startX = xFor(segment.startMs)
-                            val endX = xFor(segment.endMs)
-                            drawRect(
-                                color = segmentFill,
-                                topLeft = Offset(startX, 0f),
-                                size = Size((endX - startX).coerceAtLeast(1f), size.height)
-                            )
-                        }
-
-                        val thresholdY = yForDb(thresholdDb)
-                        val thresholdBandTop = (thresholdY - 10f).coerceAtLeast(0f)
-                        val thresholdBandHeight = 20f.coerceAtMost(size.height - thresholdBandTop)
-                        drawRect(
-                            color = thresholdColor.copy(alpha = 0.22f),
-                            topLeft = Offset(0f, thresholdBandTop),
-                            size = Size(size.width, thresholdBandHeight)
-                        )
-                        drawLine(
-                            color = thresholdColor,
-                            start = Offset(0f, thresholdY),
-                            end = Offset(size.width, thresholdY),
-                            strokeWidth = 6f,
-                            cap = StrokeCap.Round
-                        )
-                        drawRect(
-                            color = thresholdColor,
-                            topLeft = Offset(0f, (thresholdY - 12f).coerceAtLeast(0f)),
-                            size = Size(28f, 24f)
-                        )
-                        drawRect(
-                            color = thresholdColor,
-                            topLeft = Offset((size.width - 28f).coerceAtLeast(0f), (thresholdY - 12f).coerceAtLeast(0f)),
-                            size = Size(28f, 24f)
-                        )
-
-                        var previousRmsPoint: Offset? = null
-                        envelope.forEach { point ->
-                            val startX = xFor(point.startMs)
-                            val endX = xFor(point.endMs)
-                            val barWidth = (endX - startX).coerceAtLeast(1f)
-                            val overlapsSegment = segments.any { point.startMs < it.endMs && point.endMs > it.startMs }
-                            val peakTop = yForDb(normToDb(point.peakNorm))
-                            val rmsY = yForDb(point.rmsDb)
-                            val bodyColor = if (overlapsSegment) keptBody else removedBody
-                            val peakColor = if (overlapsSegment) keptPeak else removedPeak
-                            val bodyTop = rmsY.coerceAtMost(baseY - 1f)
-
-                            if (!overlapsSegment) {
+                            segments.forEach { segment ->
+                                val startX = xFor(segment.startMs)
+                                val endX = xFor(segment.endMs)
                                 drawRect(
-                                    color = removedFill.copy(alpha = 0.28f),
+                                    color = segmentFill,
+                                    topLeft = Offset(startX, 0f),
+                                    size = Size((endX - startX).coerceAtLeast(1f), size.height)
+                                )
+                            }
+
+                            val thresholdY = yForDb(thresholdDb)
+                            val thresholdBandTop = (thresholdY - 10f).coerceAtLeast(0f)
+                            val thresholdBandHeight = 20f.coerceAtMost(size.height - thresholdBandTop)
+                            drawRect(
+                                color = thresholdColor.copy(alpha = 0.22f),
+                                topLeft = Offset(0f, thresholdBandTop),
+                                size = Size(size.width, thresholdBandHeight)
+                            )
+                            drawLine(
+                                color = thresholdColor,
+                                start = Offset(0f, thresholdY),
+                                end = Offset(size.width, thresholdY),
+                                strokeWidth = 6f,
+                                cap = StrokeCap.Round
+                            )
+                            drawRect(
+                                color = thresholdColor,
+                                topLeft = Offset(0f, (thresholdY - 12f).coerceAtLeast(0f)),
+                                size = Size(28f, 24f)
+                            )
+                            drawRect(
+                                color = thresholdColor,
+                                topLeft = Offset((size.width - 28f).coerceAtLeast(0f), (thresholdY - 12f).coerceAtLeast(0f)),
+                                size = Size(28f, 24f)
+                            )
+
+                            var previousRmsPoint: Offset? = null
+                            envelope.forEach { point ->
+                                val startX = xFor(point.startMs)
+                                val endX = xFor(point.endMs)
+                                val barWidth = (endX - startX).coerceAtLeast(1f)
+                                val overlapsSegment = segments.any { point.startMs < it.endMs && point.endMs > it.startMs }
+                                val peakTop = yForDb(normToDb(point.peakNorm))
+                                val rmsY = yForDb(point.rmsDb)
+                                val bodyColor = if (overlapsSegment) keptBody else removedBody
+                                val peakColor = if (overlapsSegment) keptPeak else removedPeak
+                                val bodyTop = rmsY.coerceAtMost(baseY - 1f)
+
+                                if (!overlapsSegment) {
+                                    drawRect(
+                                        color = removedFill.copy(alpha = 0.28f),
+                                        topLeft = Offset(startX, bodyTop),
+                                        size = Size(barWidth, (baseY - bodyTop).coerceAtLeast(1f))
+                                    )
+                                }
+
+                                drawRect(
+                                    color = bodyColor,
                                     topLeft = Offset(startX, bodyTop),
                                     size = Size(barWidth, (baseY - bodyTop).coerceAtLeast(1f))
                                 )
-                            }
 
-                            drawRect(
-                                color = bodyColor,
-                                topLeft = Offset(startX, bodyTop),
-                                size = Size(barWidth, (baseY - bodyTop).coerceAtLeast(1f))
-                            )
-
-                            val crestX = startX + (barWidth / 2f)
-                            drawLine(
-                                color = peakColor,
-                                start = Offset(crestX, peakTop),
-                                end = Offset(crestX, bodyTop),
-                                strokeWidth = barWidth.coerceAtMost(2f).coerceAtLeast(1f),
-                                cap = StrokeCap.Round
-                            )
-
-                            val rmsPoint = Offset(crestX, rmsY)
-                            previousRmsPoint?.let { previous ->
+                                val crestX = startX + (barWidth / 2f)
                                 drawLine(
-                                    color = rmsStroke,
-                                    start = previous,
-                                    end = rmsPoint,
-                                    strokeWidth = 2f,
+                                    color = peakColor,
+                                    start = Offset(crestX, peakTop),
+                                    end = Offset(crestX, bodyTop),
+                                    strokeWidth = barWidth.coerceAtMost(2f).coerceAtLeast(1f),
                                     cap = StrokeCap.Round
                                 )
+
+                                val rmsPoint = Offset(crestX, rmsY)
+                                previousRmsPoint?.let { previous ->
+                                    drawLine(
+                                        color = rmsStroke,
+                                        start = previous,
+                                        end = rmsPoint,
+                                        strokeWidth = 2f,
+                                        cap = StrokeCap.Round
+                                    )
+                                }
+                                previousRmsPoint = rmsPoint
                             }
-                            previousRmsPoint = rmsPoint
+                        }
+
+                        val totalDurationMs = envelope.lastOrNull()?.endMs?.coerceAtLeast(1L) ?: 1L
+                        val guideStepMs = editorGuideStepMs(totalDurationMs)
+                        Box(modifier = Modifier.fillMaxWidth().height(24.dp)) {
+                            var tickMs = 0L
+                            while (tickMs <= totalDurationMs) {
+                                val fraction = tickMs.toFloat() / totalDurationMs.toFloat()
+                                val tickOffset = (canvasWidth * fraction).coerceAtLeast(0.dp)
+                                Text(
+                                    formatDuration(tickMs),
+                                    modifier = Modifier.offset(x = tickOffset - 18.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = AmpMetalLight
+                                )
+                                tickMs += guideStepMs
+                            }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+private fun editorGuideStepMs(totalDurationMs: Long): Long {
+    return when {
+        totalDurationMs >= 20 * 60_000L -> 120_000L
+        totalDurationMs >= 10 * 60_000L -> 60_000L
+        totalDurationMs >= 3 * 60_000L -> 30_000L
+        totalDurationMs >= 60_000L -> 10_000L
+        else -> 5_000L
     }
 }
 

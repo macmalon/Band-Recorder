@@ -30,7 +30,7 @@ internal data class WavEnvelopeWindow(
     val peakNorm: Float
 )
 
-private const val MIN_MUSICAL_SEGMENT_SEC = 25
+private const val MIN_MUSICAL_SEGMENT_SEC = 50
 
 internal fun analyzeWavBySilence(
     sourceFile: File,
