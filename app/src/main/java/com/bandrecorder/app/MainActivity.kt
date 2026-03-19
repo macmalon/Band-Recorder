@@ -119,6 +119,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.cos
 import kotlin.math.absoluteValue
+import kotlin.math.log10
 import kotlin.math.pow
 import kotlin.math.min
 import kotlin.math.sin
@@ -2242,8 +2243,10 @@ private fun EnvelopePreviewCard(
                     ) {
                         if (envelope.isEmpty()) return@Canvas
                         val totalDurationMs = envelope.last().endMs.coerceAtLeast(1L)
-                        val maxPeak = envelope.maxOfOrNull { it.peakNorm.toDouble() }?.toFloat()?.coerceAtLeast(0.05f) ?: 1f
-                        val thresholdNorm = ((10.0.pow(thresholdDb / 20.0)).toFloat() / maxPeak).coerceIn(0f, 1f)
+                        val maxPeakNorm = envelope.maxOfOrNull { it.peakNorm.toDouble() }?.toFloat()?.coerceAtLeast(0.05f) ?: 1f
+                        val maxPeakDb = (20.0 * log10(maxPeakNorm.coerceAtLeast(1e-6f).toDouble())).toFloat()
+                        val minDisplayDb = minOf(-80f, thresholdDb - 6f, envelope.minOfOrNull { it.rmsDb } ?: -80f)
+                        val maxDisplayDb = maxOf(-3f, maxPeakDb + 3f)
                         val baseY = size.height
                         val segmentFill = AmpAccentAmber.copy(alpha = 0.10f)
                         val removedFill = Color(0xFF4C5560)
@@ -2254,8 +2257,12 @@ private fun EnvelopePreviewCard(
                         val thresholdColor = Color(0xFFFF5252)
 
                         fun xFor(ms: Long): Float = (ms.toFloat() / totalDurationMs.toFloat()) * size.width
-                        fun heightFor(norm: Float): Float = (norm / maxPeak).coerceIn(0f, 1f) * size.height
-                        fun rmsNorm(db: Float): Float = 10.0.pow(db / 20.0).toFloat().coerceIn(0f, 1f)
+                        fun yForDb(db: Float): Float {
+                            val normalized = ((db - minDisplayDb) / (maxDisplayDb - minDisplayDb).coerceAtLeast(1f)).coerceIn(0f, 1f)
+                            return size.height - (normalized * size.height)
+                        }
+                        fun normToDb(norm: Float): Float =
+                            (20.0 * log10(norm.coerceAtLeast(1e-6f).toDouble())).toFloat()
 
                         val guideStepMs = when {
                             totalDurationMs >= 10 * 60_000L -> 60_000L
@@ -2285,7 +2292,7 @@ private fun EnvelopePreviewCard(
                             )
                         }
 
-                        val thresholdY = baseY - (thresholdNorm * size.height)
+                        val thresholdY = yForDb(thresholdDb)
                         val thresholdBandTop = (thresholdY - 10f).coerceAtLeast(0f)
                         val thresholdBandHeight = 20f.coerceAtMost(size.height - thresholdBandTop)
                         drawRect(
@@ -2317,25 +2324,25 @@ private fun EnvelopePreviewCard(
                             val endX = xFor(point.endMs)
                             val barWidth = (endX - startX).coerceAtLeast(1f)
                             val overlapsSegment = segments.any { point.startMs < it.endMs && point.endMs > it.startMs }
-                            val peakHeight = heightFor(point.peakNorm)
-                            val rmsHeight = heightFor(rmsNorm(point.rmsDb))
+                            val peakTop = yForDb(normToDb(point.peakNorm))
+                            val rmsY = yForDb(point.rmsDb)
                             val barColor = if (overlapsSegment) keptPeak else removedPeak
 
                             if (!overlapsSegment) {
                                 drawRect(
                                     color = removedFill.copy(alpha = 0.28f),
-                                    topLeft = Offset(startX, baseY - peakHeight),
-                                    size = Size(barWidth, peakHeight.coerceAtLeast(1f))
+                                    topLeft = Offset(startX, peakTop),
+                                    size = Size(barWidth, (baseY - peakTop).coerceAtLeast(1f))
                                 )
                             }
 
                             drawRect(
                                 color = barColor,
-                                topLeft = Offset(startX, baseY - peakHeight),
-                                size = Size(barWidth, peakHeight.coerceAtLeast(1f))
+                                topLeft = Offset(startX, peakTop),
+                                size = Size(barWidth, (baseY - peakTop).coerceAtLeast(1f))
                             )
 
-                            val rmsPoint = Offset(startX + (barWidth / 2f), baseY - rmsHeight)
+                            val rmsPoint = Offset(startX + (barWidth / 2f), rmsY)
                             previousRmsPoint?.let { previous ->
                                 drawLine(
                                     color = rmsStroke,
