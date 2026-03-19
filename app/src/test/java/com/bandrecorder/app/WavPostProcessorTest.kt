@@ -28,7 +28,7 @@ class WavPostProcessorTest {
             listOf(
                 section(2, 12_000),
                 section(2, 0),
-                section(2, 12_000)
+                section(5, 12_000)
             )
         )
 
@@ -38,8 +38,30 @@ class WavPostProcessorTest {
         assertEquals(2, analysis.segments.size)
         assertNear(ms(analysis.info, analysis.segments[0].startFrame), 0L)
         assertNear(ms(analysis.info, analysis.segments[0].endFrame), 3_000L)
-        assertNear(ms(analysis.info, analysis.segments[1].startFrame), 4_000L)
-        assertNear(ms(analysis.info, analysis.segments[1].endFrame), 6_000L)
+        assertNear(ms(analysis.info, analysis.segments[1].startFrame), 3_000L)
+        assertNear(ms(analysis.info, analysis.segments[1].endFrame), 9_000L)
+    }
+
+    @Test
+    fun `analysis ignores short volume bumps inside a silence`() {
+        val file = createMonoWav(
+            listOf(
+                section(2, 12_000),
+                section(2, 0),
+                section(2, 7_000),
+                section(2, 0),
+                section(5, 12_000)
+            )
+        )
+
+        val analysis = analyzeWavBySilence(file, silenceThresholdDb = -35f, silenceDurationSec = 1)
+
+        requireNotNull(analysis)
+        assertEquals(2, analysis.segments.size)
+        assertNear(ms(analysis.info, analysis.segments[0].startFrame), 0L)
+        assertNear(ms(analysis.info, analysis.segments[0].endFrame), 3_000L)
+        assertNear(ms(analysis.info, analysis.segments[1].startFrame), 6_000L)
+        assertNear(ms(analysis.info, analysis.segments[1].endFrame), 13_000L)
     }
 
     @Test
@@ -65,8 +87,8 @@ class WavPostProcessorTest {
         val source = createMonoWav(
             listOf(
                 section(2, 12_000),
-                section(2, 0),
-                section(2, 9_000)
+                section(10, 0),
+                section(5, 9_000)
             )
         )
         val analysis = requireNotNull(analyzeWavBySilence(source, silenceThresholdDb = -35f, silenceDurationSec = 1))
@@ -76,7 +98,7 @@ class WavPostProcessorTest {
 
         val outInfo = requireNotNull(readWavInfo(out))
         val totalFrames = outInfo.dataSize / (outInfo.channels * 2)
-        assertNear(ms(outInfo, totalFrames), 5_000L)
+        assertNear(ms(outInfo, totalFrames), 10_000L)
     }
 
     @Test
@@ -85,7 +107,7 @@ class WavPostProcessorTest {
             listOf(
                 section(2, 12_000),
                 section(2, 0),
-                section(2, 12_000)
+                section(5, 12_000)
             )
         )
         val analysis = requireNotNull(analyzeWavBySilence(source, silenceThresholdDb = -35f, silenceDurationSec = 1))

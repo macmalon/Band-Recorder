@@ -44,6 +44,8 @@ internal fun analyzeWavBySilence(
     val windowFrames = (info.sampleRate / 20).coerceAtLeast(1)
     val cutFrames = (info.sampleRate * silenceDurationSec).coerceAtLeast(windowFrames)
     val minSegmentFrames = (info.sampleRate / 2).coerceAtLeast(1)
+    val resumeConfirmFrames = (info.sampleRate * 4).coerceAtLeast(windowFrames)
+    val resumePrerollFrames = (info.sampleRate * 6).coerceAtLeast(resumeConfirmFrames)
     val envelope = mutableListOf<WavEnvelopeWindow>()
 
     val segments = mutableListOf<WavFrameSegment>()
@@ -51,6 +53,9 @@ internal fun analyzeWavBySilence(
         var inSignal = false
         var segmentStart = 0
         var silenceRunStart: Int? = null
+        var signalCandidateStart: Int? = null
+        var requireConfirmedResume = false
+        var resumeStartFloor = 0
         var windowStart = 0
 
         while (windowStart < totalFrames) {
@@ -70,13 +75,32 @@ internal fun analyzeWavBySilence(
                     }
                     inSignal = false
                     silenceRunStart = null
+                    signalCandidateStart = null
+                    requireConfirmedResume = true
+                    resumeStartFloor = end
                 }
             } else {
                 if (!inSignal) {
-                    segmentStart = windowStart
-                    inSignal = true
+                    if (!requireConfirmedResume) {
+                        segmentStart = windowStart
+                        inSignal = true
+                    } else {
+                        val candidateStart = signalCandidateStart ?: windowStart.also {
+                            signalCandidateStart = it
+                        }
+                        if ((windowEnd - candidateStart) >= resumeConfirmFrames) {
+                            val confirmedPoint = candidateStart + resumeConfirmFrames
+                            segmentStart = (confirmedPoint - resumePrerollFrames).coerceAtLeast(resumeStartFloor)
+                            inSignal = true
+                            signalCandidateStart = null
+                        }
+                    }
                 }
                 silenceRunStart = null
+            }
+
+            if (isSilent && !inSignal) {
+                signalCandidateStart = null
             }
 
             windowStart = windowEnd

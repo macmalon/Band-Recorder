@@ -2201,11 +2201,23 @@ private fun EnvelopePreviewCard(
                 .padding(10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                "Aperçu dynamique scrollable",
-                style = MaterialTheme.typography.bodySmall,
-                color = AmpMetalLight
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Aperçu dynamique scrollable",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AmpMetalLight
+                )
+                Text(
+                    "Seuil ${thresholdDb.toInt()} dBFS",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFFF8A80),
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                 val bucketWidth = 3.dp
                 val canvasWidth = maxOf(maxWidth, minOf(12000.dp, bucketWidth * envelope.size.coerceAtLeast(1)))
@@ -2264,11 +2276,22 @@ private fun EnvelopePreviewCard(
                         }
 
                         val thresholdY = baseY - (thresholdNorm * size.height)
+                        drawRect(
+                            color = Color(0x33FF8A80),
+                            topLeft = Offset(0f, (thresholdY - 6f).coerceAtLeast(0f)),
+                            size = Size(size.width, 12f.coerceAtMost(size.height))
+                        )
                         drawLine(
-                            color = Color(0xFFE57373),
+                            color = Color(0xFFFF8A80),
                             start = Offset(0f, thresholdY),
                             end = Offset(size.width, thresholdY),
-                            strokeWidth = 2f
+                            strokeWidth = 4f,
+                            cap = StrokeCap.Round
+                        )
+                        drawRect(
+                            color = Color(0xFFFF8A80),
+                            topLeft = Offset(0f, (thresholdY - 12f).coerceAtLeast(0f)),
+                            size = Size(18f, 24f)
                         )
 
                         var previousRmsPoint: Offset? = null
