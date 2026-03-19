@@ -302,8 +302,8 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onAnalyze = vm::analyzePostProcessSource,
                 onExport = vm::runPostProcessExport,
                 onSetMode = vm::setPostProcessMode,
-                onSetSilenceDurationSec = vm::setSilenceDurationSec,
-                onSetSilenceThresholdDb = vm::setSilenceThresholdDb,
+                onSetSilenceDurationSec = vm::setPostProcessSilenceDurationSec,
+                onSetSilenceThresholdDb = vm::setPostProcessSilenceThresholdDb,
                 onRefreshRecordings = vm::refreshPlayerRecordings,
                 onSetStatus = vm::setPlayerStatusMessage
             )
@@ -2069,6 +2069,19 @@ private fun PostProcessScreen(
                 range = -80f..-20f,
                 onValueChange = onSetSilenceThresholdDb
             )
+            if (ui.postProcessEnvelope.isNotEmpty()) {
+                Text("Aperçu visuel", fontWeight = FontWeight.SemiBold)
+                EnvelopePreviewCard(
+                    envelope = ui.postProcessEnvelope,
+                    segments = ui.postProcessSegments,
+                    thresholdDb = ui.silenceThresholdDb
+                )
+                Text(
+                    "Gris = supprimé, ambre = conservé. La ligne horizontale montre le seuil actuel.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AmpMetalLight
+                )
+            }
             val rmsHint = when {
                 ui.silenceThresholdDb <= -50f -> "Très permissif: garde beaucoup de sons faibles, y compris du blabla."
                 ui.silenceThresholdDb <= -40f -> "Permissif: coupe les vrais blancs, mais garde encore pas mal de sons faibles."
@@ -2162,6 +2175,65 @@ private fun PostProcessScreen(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EnvelopePreviewCard(
+    envelope: List<PostProcessEnvelopePoint>,
+    segments: List<PostProcessSegmentPreview>,
+    thresholdDb: Float
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(180.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF1F2328))
+    ) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(10.dp)
+        ) {
+            if (envelope.isEmpty()) return@Canvas
+            val totalDurationMs = envelope.last().endMs.coerceAtLeast(1L)
+            val minDb = -80f
+            val maxDb = -20f
+
+            fun xFor(ms: Long): Float = (ms.toFloat() / totalDurationMs.toFloat()) * size.width
+            fun yFor(db: Float): Float {
+                val normalized = ((db.coerceIn(minDb, maxDb) - minDb) / (maxDb - minDb)).coerceIn(0f, 1f)
+                return size.height - (normalized * size.height)
+            }
+
+            segments.forEach { segment ->
+                drawRect(
+                    color = AmpAccentAmber.copy(alpha = 0.12f),
+                    topLeft = Offset(xFor(segment.startMs), 0f),
+                    size = Size((xFor(segment.endMs) - xFor(segment.startMs)).coerceAtLeast(1f), size.height)
+                )
+            }
+
+            val thresholdY = yFor(thresholdDb)
+            drawLine(
+                color = Color(0xFFE57373),
+                start = Offset(0f, thresholdY),
+                end = Offset(size.width, thresholdY),
+                strokeWidth = 2f
+            )
+
+            envelope.forEach { point ->
+                val startX = xFor(point.startMs)
+                val endX = xFor(point.endMs)
+                val inSegment = segments.any { point.startMs < it.endMs && point.endMs > it.startMs }
+                val color = if (inSegment) AmpAccentAmber else Color(0xFF66707A)
+                drawRect(
+                    color = color,
+                    topLeft = Offset(startX, yFor(point.rmsDb)),
+                    size = Size((endX - startX).coerceAtLeast(1f), (size.height - yFor(point.rmsDb)).coerceAtLeast(1f))
+                )
             }
         }
     }

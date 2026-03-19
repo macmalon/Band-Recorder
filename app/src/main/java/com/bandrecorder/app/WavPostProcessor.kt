@@ -21,7 +21,8 @@ internal data class WavFrameSegment(
 
 internal data class WavAnalysisResult(
     val info: WavInfo,
-    val segments: List<WavFrameSegment>
+    val segments: List<WavFrameSegment>,
+    val envelopeDb: List<Float>
 )
 
 internal fun analyzeWavBySilence(
@@ -38,6 +39,7 @@ internal fun analyzeWavBySilence(
     val windowFrames = (info.sampleRate / 20).coerceAtLeast(1)
     val cutFrames = (info.sampleRate * silenceDurationSec).coerceAtLeast(windowFrames)
     val minSegmentFrames = (info.sampleRate / 2).coerceAtLeast(1)
+    val envelope = mutableListOf<Float>()
 
     val segments = mutableListOf<WavFrameSegment>()
     RandomAccessFile(sourceFile, "r").use { raf ->
@@ -49,6 +51,7 @@ internal fun analyzeWavBySilence(
         while (windowStart < totalFrames) {
             val windowEnd = (windowStart + windowFrames).coerceAtMost(totalFrames)
             val rmsDb = readWindowRmsDb(raf, info, frameBytes, windowStart, windowEnd)
+            envelope += rmsDb
             val isSilent = rmsDb <= silenceThresholdDb
 
             if (isSilent) {
@@ -82,7 +85,7 @@ internal fun analyzeWavBySilence(
         }
     }
 
-    return WavAnalysisResult(info = info, segments = segments)
+    return WavAnalysisResult(info = info, segments = segments, envelopeDb = envelope)
 }
 
 internal fun writeWavSegment(

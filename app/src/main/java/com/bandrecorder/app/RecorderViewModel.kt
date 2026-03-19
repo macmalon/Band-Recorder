@@ -26,6 +26,7 @@ import com.bandrecorder.core.audio.StereoWindowMeasurement
 import com.bandrecorder.core.audio.WavRecorderEngine
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -100,6 +101,12 @@ data class PostProcessCutPreview(
     val beforeEndMs: Long,
     val afterStartMs: Long,
     val afterEndMs: Long
+)
+
+data class PostProcessEnvelopePoint(
+    val startMs: Long,
+    val endMs: Long,
+    val rmsDb: Float
 )
 
 enum class GuidedStereoStep {
@@ -201,6 +208,7 @@ data class RecorderUiState(
     val postProcessIsExporting: Boolean = false,
     val postProcessSegments: List<PostProcessSegmentPreview> = emptyList(),
     val postProcessCuts: List<PostProcessCutPreview> = emptyList(),
+    val postProcessEnvelope: List<PostProcessEnvelopePoint> = emptyList(),
     val postProcessStatusMessage: String = "Importe un WAV",
     val postProcessLastExportLabel: String? = null
 )
@@ -220,6 +228,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private var recordingWakeLock: PowerManager.WakeLock? = null
     private var postProcessSourceFile: File? = null
     private var postProcessAnalysis: WavAnalysisResult? = null
+    private var postProcessReanalyzeJob: Job? = null
 
     private val silenceVisualHoldMs = 700L
 
@@ -560,6 +569,16 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.update { it.copy(postProcessMode = mode) }
     }
 
+    fun setPostProcessSilenceDurationSec(value: Int) {
+        setSilenceDurationSec(value)
+        schedulePostProcessReanalysis()
+    }
+
+    fun setPostProcessSilenceThresholdDb(value: Float) {
+        setSilenceThresholdDb(value)
+        schedulePostProcessReanalysis()
+    }
+
     fun importPostProcessSource(uri: Uri) {
         viewModelScope.launch {
             val imported = withContext(Dispatchers.IO) { importPostProcessSourceInternal(uri) }
@@ -587,6 +606,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     postProcessSourceChannels = imported.info.channels,
                     postProcessSegments = emptyList(),
                     postProcessCuts = emptyList(),
+                    postProcessEnvelope = emptyList(),
                     postProcessStatusMessage = "Fichier importé. Lance l'analyse.",
                     postProcessLastExportLabel = null
                 )
@@ -623,6 +643,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         postProcessIsAnalyzing = false,
                         postProcessSegments = emptyList(),
                         postProcessCuts = emptyList(),
+                        postProcessEnvelope = emptyList(),
                         postProcessStatusMessage = "Analyse impossible: seul le WAV PCM 16-bit est supporté."
                     )
                 }
@@ -651,11 +672,21 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     afterEndMs = (cutMs + 3_000L).coerceAtMost(durationMs)
                 )
             }
+            val windowMs = ((1_000L * (analysis.info.sampleRate / 20).coerceAtLeast(1)) / analysis.info.sampleRate).coerceAtLeast(1L)
+            val envelope = analysis.envelopeDb.mapIndexed { index, rmsDb ->
+                val startMs = index * windowMs
+                PostProcessEnvelopePoint(
+                    startMs = startMs,
+                    endMs = (startMs + windowMs).coerceAtMost(durationMs),
+                    rmsDb = rmsDb
+                )
+            }
             _uiState.update {
                 it.copy(
                     postProcessIsAnalyzing = false,
                     postProcessSegments = segments,
                     postProcessCuts = cuts,
+                    postProcessEnvelope = envelope,
                     postProcessStatusMessage = if (segments.isEmpty()) {
                         "Aucun segment utile trouvé avec ces réglages."
                     } else {
@@ -2033,6 +2064,15 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         return (frame.toLong() * 1000L) / sampleRate.toLong()
     }
 
+    private fun schedulePostProcessReanalysis() {
+        if (postProcessSourceFile == null) return
+        postProcessReanalyzeJob?.cancel()
+        postProcessReanalyzeJob = viewModelScope.launch {
+            delay(250)
+            analyzePostProcessSource()
+        }
+    }
+
     private fun createSegmentsIfNeededForLastRecording(): List<File> {
         val sourceFile = pendingTempFile
             ?: _uiState.value.lastOutputPath
@@ -2283,6 +2323,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         engine.stopRecording()
         releaseRecordingWakeLock()
         postProcessSourceFile?.let { runCatching { it.delete() } }
+        postProcessReanalyzeJob?.cancel()
         RecordingForegroundService.stop(getApplication())
         super.onCleared()
     }
