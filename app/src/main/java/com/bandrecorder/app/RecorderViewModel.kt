@@ -180,6 +180,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private var pendingDisplayName: String? = null
     private var activeSessionBaseName: String? = null
     private var silenceStartElapsedMs: Long? = null
+    private var autoStopOnSilenceRequested: Boolean = false
     private var lastCpuGuardState: Boolean = false
     private var recordingWakeLock: PowerManager.WakeLock? = null
 
@@ -224,6 +225,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 } else if (silenceStartElapsedMs == null) {
                     silenceStartElapsedMs = status.elapsedMs
                 }
+                val silenceElapsedMs = if (thresholdCrossed) {
+                    status.elapsedMs - (silenceStartElapsedMs ?: status.elapsedMs)
+                } else {
+                    0L
+                }
                 val silenceDetected = thresholdCrossed &&
                     (status.elapsedMs - (silenceStartElapsedMs ?: status.elapsedMs) >= silenceVisualHoldMs)
                 _uiState.update {
@@ -266,6 +272,19 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                             it.globalBalanceConfig
                         }
                     )
+                }
+                if (!status.isRecording) {
+                    autoStopOnSilenceRequested = false
+                }
+                val shouldAutoStopOnSilence = status.isRecording &&
+                    _uiState.value.ignoreSilenceEnabled &&
+                    !_uiState.value.splitOnSilenceEnabled &&
+                    silenceElapsedMs >= (_uiState.value.silenceDurationSec * 1000L) &&
+                    !autoStopOnSilenceRequested
+                if (shouldAutoStopOnSilence) {
+                    autoStopOnSilenceRequested = true
+                    _uiState.update { it.copy(status = "Blanc prolongé détecté, arrêt...") }
+                    stopRecording()
                 }
                 if (status.dspCpuGuardActive && !lastCpuGuardState && _uiState.value.diagnosticModeEnabled) {
                     exportDiagnosticReport(
@@ -1219,6 +1238,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             _uiState.update { it.copy(status = "Stereo requested but not confirmed. Falling back to mono.") }
         }
 
+        autoStopOnSilenceRequested = false
         RecordingForegroundService.start(getApplication())
         acquireRecordingWakeLock()
 
@@ -1280,6 +1300,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun stopRecording() {
+        autoStopOnSilenceRequested = false
         engine.stopRecording()
         silenceStartElapsedMs = null
         _uiState.update { it.copy(status = "Stopping...", isSilenceDetected = false) }
@@ -1779,7 +1800,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         silenceRunStart = windowStart
                     }
                     if (inSignal && silenceRunStart != null && (windowEnd - silenceRunStart) >= cutFrames) {
-                        val end = silenceRunStart
+                        val end = (silenceRunStart + cutFrames).coerceAtMost(totalFrames)
                         if (end - segmentStart >= minSegmentFrames) {
                             segments += segmentStart to end
                         }
