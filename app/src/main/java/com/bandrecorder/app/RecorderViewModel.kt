@@ -41,6 +41,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.log10
+import kotlin.math.pow
 
 data class MicrophoneOption(
     val id: Int,
@@ -674,15 +677,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
             val windowMs = ((1_000L * (analysis.info.sampleRate / 20).coerceAtLeast(1)) / analysis.info.sampleRate).coerceAtLeast(1L)
-            val envelope = analysis.envelope.mapIndexed { index, window ->
-                val startMs = index * windowMs
-                PostProcessEnvelopePoint(
-                    startMs = startMs,
-                    endMs = (startMs + windowMs).coerceAtMost(durationMs),
-                    rmsDb = window.rmsDb,
-                    peakNorm = window.peakNorm
-                )
-            }
+            val envelope = buildPostProcessEnvelopePreview(
+                windows = analysis.envelope,
+                durationMs = durationMs,
+                windowMs = windowMs
+            )
             _uiState.update {
                 it.copy(
                     postProcessIsAnalyzing = false,
@@ -2064,6 +2063,46 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private fun framesToMs(sampleRate: Int, frame: Int): Long {
         if (sampleRate <= 0) return 0L
         return (frame.toLong() * 1000L) / sampleRate.toLong()
+    }
+
+    private fun buildPostProcessEnvelopePreview(
+        windows: List<WavEnvelopeWindow>,
+        durationMs: Long,
+        windowMs: Long,
+        maxPoints: Int = 1800
+    ): List<PostProcessEnvelopePoint> {
+        if (windows.isEmpty()) return emptyList()
+        if (windows.size <= maxPoints) {
+            return windows.mapIndexed { index, window ->
+                val startMs = index * windowMs
+                PostProcessEnvelopePoint(
+                    startMs = startMs,
+                    endMs = (startMs + windowMs).coerceAtMost(durationMs),
+                    rmsDb = window.rmsDb,
+                    peakNorm = window.peakNorm
+                )
+            }
+        }
+
+        val chunkSize = ceil(windows.size.toDouble() / maxPoints.toDouble()).toInt().coerceAtLeast(1)
+        return windows.chunked(chunkSize).mapIndexed { chunkIndex, chunk ->
+            val startMs = chunkIndex * chunkSize.toLong() * windowMs
+            val endMs = (startMs + (chunk.size.toLong() * windowMs)).coerceAtMost(durationMs)
+            val avgRmsNorm = (chunk.sumOf { dbToNorm(it.rmsDb).toDouble() } / chunk.size.toDouble()).toFloat()
+            PostProcessEnvelopePoint(
+                startMs = startMs,
+                endMs = endMs,
+                rmsDb = normToDb(avgRmsNorm),
+                peakNorm = chunk.maxOf { it.peakNorm }
+            )
+        }
+    }
+
+    private fun dbToNorm(db: Float): Float = 10f.pow(db / 20f).coerceIn(0f, 1f)
+
+    private fun normToDb(norm: Float): Float {
+        val safeNorm = norm.coerceAtLeast(1e-6f)
+        return (20.0 * log10(safeNorm.toDouble())).toFloat()
     }
 
     private fun schedulePostProcessReanalysis() {

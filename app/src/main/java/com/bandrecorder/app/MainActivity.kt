@@ -2207,8 +2207,8 @@ private fun EnvelopePreviewCard(
                 color = AmpMetalLight
             )
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                val bucketWidth = 5.dp
-                val canvasWidth = maxOf(maxWidth, bucketWidth * envelope.size.coerceAtLeast(1))
+                val bucketWidth = 3.dp
+                val canvasWidth = maxOf(maxWidth, minOf(12000.dp, bucketWidth * envelope.size.coerceAtLeast(1)))
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
