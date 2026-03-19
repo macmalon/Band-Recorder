@@ -2020,9 +2020,7 @@ private fun PostProcessScreen(
 
     ScreenScaffold(title = "Post-traitement WAV", onBack = onBack) {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState()),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text("Import et analyse", fontWeight = FontWeight.Bold)
