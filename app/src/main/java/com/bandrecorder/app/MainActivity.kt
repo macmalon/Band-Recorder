@@ -2076,7 +2076,8 @@ private fun PostProcessScreen(
                 EnvelopePreviewCard(
                     envelope = ui.postProcessEnvelope,
                     segments = ui.postProcessSegments,
-                    thresholdDb = ui.silenceThresholdDb
+                    thresholdDb = ui.silenceThresholdDb,
+                    isAnalyzing = ui.postProcessIsAnalyzing
                 )
                 Text(
                     "Gris = supprimé, ambre = conservé. La ligne horizontale montre le seuil actuel.",
@@ -2186,7 +2187,8 @@ private fun PostProcessScreen(
 private fun EnvelopePreviewCard(
     envelope: List<PostProcessEnvelopePoint>,
     segments: List<PostProcessSegmentPreview>,
-    thresholdDb: Float
+    thresholdDb: Float,
+    isAnalyzing: Boolean
 ) {
     val horizontalScroll = rememberScrollState()
     Card(
@@ -2201,6 +2203,13 @@ private fun EnvelopePreviewCard(
                 .padding(10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            if (isAnalyzing) {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color(0xFFFF8A80),
+                    trackColor = Color(0x33FFFFFF)
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -2242,6 +2251,7 @@ private fun EnvelopePreviewCard(
                         val removedPeak = Color(0xFF6C7782)
                         val rmsStroke = Color(0xFFF5E6B3)
                         val gridColor = Color(0x22FFFFFF)
+                        val thresholdColor = Color(0xFFFF5252)
 
                         fun xFor(ms: Long): Float = (ms.toFloat() / totalDurationMs.toFloat()) * size.width
                         fun heightFor(norm: Float): Float = (norm / maxPeak).coerceIn(0f, 1f) * size.height
@@ -2276,22 +2286,29 @@ private fun EnvelopePreviewCard(
                         }
 
                         val thresholdY = baseY - (thresholdNorm * size.height)
+                        val thresholdBandTop = (thresholdY - 10f).coerceAtLeast(0f)
+                        val thresholdBandHeight = 20f.coerceAtMost(size.height - thresholdBandTop)
                         drawRect(
-                            color = Color(0x33FF8A80),
-                            topLeft = Offset(0f, (thresholdY - 6f).coerceAtLeast(0f)),
-                            size = Size(size.width, 12f.coerceAtMost(size.height))
+                            color = thresholdColor.copy(alpha = 0.22f),
+                            topLeft = Offset(0f, thresholdBandTop),
+                            size = Size(size.width, thresholdBandHeight)
                         )
                         drawLine(
-                            color = Color(0xFFFF8A80),
+                            color = thresholdColor,
                             start = Offset(0f, thresholdY),
                             end = Offset(size.width, thresholdY),
-                            strokeWidth = 4f,
+                            strokeWidth = 6f,
                             cap = StrokeCap.Round
                         )
                         drawRect(
-                            color = Color(0xFFFF8A80),
+                            color = thresholdColor,
                             topLeft = Offset(0f, (thresholdY - 12f).coerceAtLeast(0f)),
-                            size = Size(18f, 24f)
+                            size = Size(28f, 24f)
+                        )
+                        drawRect(
+                            color = thresholdColor,
+                            topLeft = Offset((size.width - 28f).coerceAtLeast(0f), (thresholdY - 12f).coerceAtLeast(0f)),
+                            size = Size(28f, 24f)
                         )
 
                         var previousRmsPoint: Offset? = null

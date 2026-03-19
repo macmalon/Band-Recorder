@@ -575,11 +575,13 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setPostProcessSilenceDurationSec(value: Int) {
         setSilenceDurationSec(value)
+        markPostProcessPreviewDirty()
         schedulePostProcessReanalysis()
     }
 
     fun setPostProcessSilenceThresholdDb(value: Float) {
         setSilenceThresholdDb(value)
+        markPostProcessPreviewDirty()
         schedulePostProcessReanalysis()
     }
 
@@ -2111,6 +2113,16 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         postProcessReanalyzeJob = viewModelScope.launch {
             delay(250)
             analyzePostProcessSource()
+        }
+    }
+
+    private fun markPostProcessPreviewDirty() {
+        if (postProcessSourceFile == null) return
+        _uiState.update {
+            it.copy(
+                postProcessIsAnalyzing = true,
+                postProcessStatusMessage = "Recalcul de l'aperçu..."
+            )
         }
     }
 

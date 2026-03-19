@@ -30,6 +30,8 @@ internal data class WavEnvelopeWindow(
     val peakNorm: Float
 )
 
+private const val MIN_MUSICAL_SEGMENT_SEC = 25
+
 internal fun analyzeWavBySilence(
     sourceFile: File,
     silenceThresholdDb: Float,
@@ -43,7 +45,7 @@ internal fun analyzeWavBySilence(
 
     val windowFrames = (info.sampleRate / 20).coerceAtLeast(1)
     val cutFrames = (info.sampleRate * silenceDurationSec).coerceAtLeast(windowFrames)
-    val minSegmentFrames = (info.sampleRate / 2).coerceAtLeast(1)
+    val minSegmentFrames = (info.sampleRate * MIN_MUSICAL_SEGMENT_SEC).coerceAtLeast(windowFrames)
     val resumeConfirmFrames = (info.sampleRate * 4).coerceAtLeast(windowFrames)
     val resumePrerollFrames = (info.sampleRate * 6).coerceAtLeast(resumeConfirmFrames)
     val envelope = mutableListOf<WavEnvelopeWindow>()
