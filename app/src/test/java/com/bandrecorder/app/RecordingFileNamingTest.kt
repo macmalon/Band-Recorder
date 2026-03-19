@@ -27,7 +27,7 @@ class RecordingFileNamingTest {
             RecordingFileNaming.userVisibleTitle("session_050326_102030_morceau_15.wav")
         )
         assertEquals(
-            "session_050326_102030_raw.wav",
+            "05/03/2026 10:20",
             RecordingFileNaming.userVisibleTitle("session_050326_102030_raw.wav")
         )
     }
@@ -40,5 +40,13 @@ class RecordingFileNamingTest {
 
         assertTrue(key02 < key10)
         assertEquals(Int.MAX_VALUE, keyRaw)
+    }
+
+    @Test
+    fun `segment metadata is extracted from generated morceau filenames`() {
+        val fileName = "session_050326_102030_morceau_03.wav"
+
+        assertEquals("session_050326_102030", RecordingFileNaming.sessionBaseKey(fileName))
+        assertEquals(3, RecordingFileNaming.segmentIndex(fileName))
     }
 }
