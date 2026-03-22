@@ -238,6 +238,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private var lastCpuGuardState: Boolean = false
     private var recordingWakeLock: PowerManager.WakeLock? = null
     private var postProcessSourceFile: File? = null
+    private var postProcessWorkingFile: File? = null
+    private var postProcessSourceKind: ImportedAudioKind = ImportedAudioKind.UNSUPPORTED
     private var postProcessAnalysis: WavAnalysisResult? = null
     private var postProcessReanalyzeJob: Job? = null
     private val liveDetectionHistory = ArrayDeque<SignalFeatures>()
@@ -640,19 +642,28 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             postProcessSourceFile?.takeIf { it != imported.file }?.let { old ->
                 runCatching { old.delete() }
             }
+            postProcessWorkingFile?.takeIf { it != postProcessSourceFile }?.let { old ->
+                runCatching { old.delete() }
+            }
             postProcessSourceFile = imported.file
+            postProcessWorkingFile = null
+            postProcessSourceKind = imported.kind
             postProcessAnalysis = null
             _uiState.update {
                 it.copy(
                     postProcessSourceName = imported.displayName,
                     postProcessSourcePath = imported.file.absolutePath,
                     postProcessSourceDurationMs = imported.durationMs,
-                    postProcessSourceSampleRateHz = imported.info.sampleRate,
-                    postProcessSourceChannels = imported.info.channels,
+                    postProcessSourceSampleRateHz = imported.sampleRateHz,
+                    postProcessSourceChannels = imported.channels,
                     postProcessSegments = emptyList(),
                     postProcessCuts = emptyList(),
                     postProcessEnvelope = emptyList(),
-                    postProcessStatusMessage = "Fichier importé. Lance l'analyse.",
+                    postProcessStatusMessage = if (imported.kind == ImportedAudioKind.M4A) {
+                        "Fichier importé. Le décodage WAV sera fait à l'analyse."
+                    } else {
+                        "Fichier importé. Lance l'analyse."
+                    },
                     postProcessLastExportLabel = null
                 )
             }
@@ -674,9 +685,25 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     postProcessLastExportLabel = null
                 )
             }
+            val workingFile = withContext(Dispatchers.IO) {
+                preparePostProcessWorkingFile(sourceFile)
+            }
+            if (workingFile == null || !workingFile.exists()) {
+                postProcessAnalysis = null
+                _uiState.update {
+                    it.copy(
+                        postProcessIsAnalyzing = false,
+                        postProcessSegments = emptyList(),
+                        postProcessCuts = emptyList(),
+                        postProcessEnvelope = emptyList(),
+                        postProcessStatusMessage = "Analyse impossible: le fichier audio n'a pas pu être préparé."
+                    )
+                }
+                return@launch
+            }
             val analysis = withContext(Dispatchers.Default) {
                 analyzeWavBySilence(
-                    sourceFile = sourceFile,
+                    sourceFile = workingFile,
                     silenceThresholdDb = _uiState.value.silenceThresholdDb,
                     silenceDurationSec = _uiState.value.silenceDurationSec
                 )
@@ -726,6 +753,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             _uiState.update {
                 it.copy(
                     postProcessIsAnalyzing = false,
+                    postProcessSourceSampleRateHz = analysis.info.sampleRate,
+                    postProcessSourceChannels = analysis.info.channels,
                     postProcessSegments = segments,
                     postProcessCuts = cuts,
                     postProcessEnvelope = envelope,
@@ -743,7 +772,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun runPostProcessExport() {
-        val sourceFile = postProcessSourceFile
+        val sourceFile = postProcessWorkingFile
         val analysis = postProcessAnalysis
         if (sourceFile == null || analysis == null || analysis.segments.isEmpty()) {
             _uiState.update { it.copy(postProcessStatusMessage = "Analyse d'abord le fichier avant l'export.") }
@@ -2020,17 +2049,19 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         val resolver = app.contentResolver
         val displayName = queryDisplayName(resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null))
             ?: "imported_audio"
-        val normalized = normalizeImportedAudio(
+        val imported = importAudioSource(
             context = app,
             uri = uri,
             displayName = displayName,
             mimeType = resolver.getType(uri)
         ) ?: return null
         return ImportedPostProcessSource(
-            file = normalized.file,
-            displayName = normalized.displayName,
-            durationMs = normalized.durationMs,
-            info = normalized.info
+            file = imported.file,
+            displayName = imported.displayName,
+            kind = imported.kind,
+            durationMs = imported.durationMs,
+            sampleRateHz = imported.sampleRateHz,
+            channels = imported.channels
         )
     }
 
@@ -2140,6 +2171,18 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             delay(250)
             analyzePostProcessSource()
         }
+    }
+
+    private fun preparePostProcessWorkingFile(sourceFile: File): File? {
+        postProcessWorkingFile?.takeIf { it.exists() }?.let { return it }
+        val prepared = normalizeImportedAudio(
+            context = getApplication(),
+            sourceFile = sourceFile,
+            displayName = _uiState.value.postProcessSourceName ?: sourceFile.name,
+            kind = postProcessSourceKind
+        ) ?: return null
+        postProcessWorkingFile = prepared.file
+        return prepared.file
     }
 
     private fun markPostProcessPreviewDirty() {
@@ -2406,14 +2449,17 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private data class ImportedPostProcessSource(
         val file: File,
         val displayName: String,
+        val kind: ImportedAudioKind,
         val durationMs: Long,
-        val info: com.bandrecorder.app.WavInfo
+        val sampleRateHz: Int?,
+        val channels: Int?
     )
 
     override fun onCleared() {
         engine.stopRecording()
         releaseRecordingWakeLock()
         postProcessSourceFile?.let { runCatching { it.delete() } }
+        postProcessWorkingFile?.takeIf { it != postProcessSourceFile }?.let { runCatching { it.delete() } }
         postProcessReanalyzeJob?.cancel()
         RecordingForegroundService.stop(getApplication())
         super.onCleared()

@@ -27,6 +27,15 @@ internal data class NormalizedImportedAudio(
     val info: WavInfo
 )
 
+internal data class ImportedAudioSource(
+    val file: File,
+    val displayName: String,
+    val kind: ImportedAudioKind,
+    val durationMs: Long,
+    val sampleRateHz: Int?,
+    val channels: Int?
+)
+
 internal fun detectImportedAudioKind(displayName: String?, mimeType: String?): ImportedAudioKind {
     val normalizedName = displayName?.lowercase(Locale.ROOT).orEmpty()
     val normalizedMime = mimeType?.lowercase(Locale.ROOT).orEmpty()
@@ -45,21 +54,20 @@ internal fun detectImportedAudioKind(displayName: String?, mimeType: String?): I
 
 internal fun normalizeImportedAudio(
     context: Context,
-    uri: Uri,
+    sourceFile: File,
     displayName: String,
-    mimeType: String?
+    kind: ImportedAudioKind
 ): NormalizedImportedAudio? {
     val tempDir = File(context.cacheDir, "post_process_imports").apply { mkdirs() }
     val safeName = displayName.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "imported_audio" }
-    val normalizedFile = when (detectImportedAudioKind(displayName, mimeType)) {
+    val normalizedFile = when (kind) {
         ImportedAudioKind.WAV -> {
-            val target = File(tempDir, "${System.currentTimeMillis()}_$safeName")
-            copyUriToFile(context, uri, target) ?: return null
+            sourceFile
         }
         ImportedAudioKind.M4A -> {
             val baseName = safeName.substringBeforeLast('.', safeName)
             val target = File(tempDir, "${System.currentTimeMillis()}_${baseName}.wav")
-            decodeAudioUriToWav(context, uri, target) ?: return null
+            decodeAudioFileToWav(sourceFile, target) ?: return null
         }
         ImportedAudioKind.UNSUPPORTED -> return null
     }
@@ -84,6 +92,80 @@ internal fun normalizeImportedAudio(
     )
 }
 
+internal fun importAudioSource(
+    context: Context,
+    uri: Uri,
+    displayName: String,
+    mimeType: String?
+): ImportedAudioSource? {
+    val kind = detectImportedAudioKind(displayName, mimeType)
+    if (kind == ImportedAudioKind.UNSUPPORTED) return null
+    val tempDir = File(context.cacheDir, "post_process_imports").apply { mkdirs() }
+    val safeName = displayName.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "imported_audio" }
+    val defaultExtension = when (kind) {
+        ImportedAudioKind.WAV -> ".wav"
+        ImportedAudioKind.M4A -> ".m4a"
+        ImportedAudioKind.UNSUPPORTED -> ""
+    }
+    val fileName = if (safeName.contains('.')) safeName else "$safeName$defaultExtension"
+    val target = File(tempDir, "${System.currentTimeMillis()}_$fileName")
+    val importedFile = copyUriToFile(context, uri, target) ?: return null
+    val metadata = probeImportedAudioMetadata(importedFile, kind)
+    return ImportedAudioSource(
+        file = importedFile,
+        displayName = displayName,
+        kind = kind,
+        durationMs = metadata.durationMs,
+        sampleRateHz = metadata.sampleRateHz,
+        channels = metadata.channels
+    )
+}
+
+private data class ImportedAudioMetadata(
+    val durationMs: Long,
+    val sampleRateHz: Int?,
+    val channels: Int?
+)
+
+private fun probeImportedAudioMetadata(file: File, kind: ImportedAudioKind): ImportedAudioMetadata {
+    return when (kind) {
+        ImportedAudioKind.WAV -> {
+            val info = readWavInfo(file)
+            if (info == null) {
+                ImportedAudioMetadata(0L, null, null)
+            } else {
+                val frameBytes = info.channels * 2
+                val totalFrames = (info.dataSize / frameBytes).coerceAtLeast(0)
+                val durationMs = if (info.sampleRate <= 0) 0L else (totalFrames.toLong() * 1_000L) / info.sampleRate.toLong()
+                ImportedAudioMetadata(durationMs, info.sampleRate, info.channels)
+            }
+        }
+        ImportedAudioKind.M4A -> {
+            val extractor = MediaExtractor()
+            try {
+                extractor.setDataSource(file.absolutePath)
+                val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
+                    extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
+                } ?: return ImportedAudioMetadata(0L, null, null)
+                val format = extractor.getTrackFormat(trackIndex)
+                val durationUs = if (format.containsKey(MediaFormat.KEY_DURATION)) format.getLong(MediaFormat.KEY_DURATION) else 0L
+                ImportedAudioMetadata(
+                    durationMs = durationUs / 1_000L,
+                    sampleRateHz = format.getIntegerOrNull(MediaFormat.KEY_SAMPLE_RATE),
+                    channels = format.getIntegerOrNull(MediaFormat.KEY_CHANNEL_COUNT)
+                )
+            } catch (_: Throwable) {
+                ImportedAudioMetadata(0L, null, null)
+            } finally {
+                runCatching { extractor.release() }
+            }
+        }
+        ImportedAudioKind.UNSUPPORTED -> ImportedAudioMetadata(0L, null, null)
+    }
+}
+
+private fun MediaFormat.getIntegerOrNull(key: String): Int? = if (containsKey(key)) getInteger(key) else null
+
 private fun copyUriToFile(context: Context, uri: Uri, target: File): File? {
     return runCatching {
         context.contentResolver.openInputStream(uri)?.use { input ->
@@ -96,7 +178,7 @@ private fun copyUriToFile(context: Context, uri: Uri, target: File): File? {
     }
 }
 
-private fun decodeAudioUriToWav(context: Context, uri: Uri, target: File): File? {
+private fun decodeAudioFileToWav(sourceFile: File, target: File): File? {
     val extractor = MediaExtractor()
     var codec: MediaCodec? = null
     var outputSampleRate = 0
@@ -104,7 +186,7 @@ private fun decodeAudioUriToWav(context: Context, uri: Uri, target: File): File?
     var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
     var dataBytesWritten = 0
     try {
-        extractor.setDataSource(context, uri, null)
+        extractor.setDataSource(sourceFile.absolutePath)
         val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
             extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
         } ?: return null

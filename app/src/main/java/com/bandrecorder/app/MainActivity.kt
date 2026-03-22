@@ -2004,11 +2004,19 @@ private fun PostProcessScreen(
 ) {
     val context = LocalContext.current
     val previewPlayback = remember { PlaybackController(context) }
+    var thresholdDraft by remember(ui.postProcessSourcePath, ui.silenceThresholdDb) {
+        mutableStateOf(ui.silenceThresholdDb)
+    }
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
             onImport(uri)
+        }
+    }
+    LaunchedEffect(ui.silenceThresholdDb, ui.postProcessIsAnalyzing) {
+        if (!ui.postProcessIsAnalyzing) {
+            thresholdDraft = ui.silenceThresholdDb
         }
     }
 
@@ -2068,9 +2076,10 @@ private fun PostProcessScreen(
             )
             AdvancedConfigSlider(
                 label = "Décalage seuil (dB)",
-                value = ui.silenceThresholdDb,
+                value = thresholdDraft,
                 range = -18f..18f,
-                onValueChange = onSetSilenceThresholdDb
+                onValueChange = { thresholdDraft = it },
+                onValueChangeFinished = { onSetSilenceThresholdDb(thresholdDraft) }
             )
             ui.silenceDetectionSummary?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = AmpMetalLight)
@@ -2080,7 +2089,7 @@ private fun PostProcessScreen(
                 EnvelopePreviewCard(
                     envelope = ui.postProcessEnvelope,
                     segments = ui.postProcessSegments,
-                    thresholdDb = ui.silenceEffectiveThresholdDb ?: -42f,
+                    thresholdDb = ((ui.silenceAutoThresholdDb ?: -42f) + thresholdDraft).coerceIn(-80f, -18f),
                     isAnalyzing = ui.postProcessIsAnalyzing
                 )
                 Text(
@@ -2797,6 +2806,23 @@ private fun AdvancedConfigSlider(
     range: ClosedFloatingPointRange<Float>,
     onValueChange: (Float) -> Unit
 ) {
+    AdvancedConfigSlider(
+        label = label,
+        value = value,
+        range = range,
+        onValueChange = onValueChange,
+        onValueChangeFinished = null
+    )
+}
+
+@Composable
+private fun AdvancedConfigSlider(
+    label: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    onValueChange: (Float) -> Unit,
+    onValueChangeFinished: (() -> Unit)? = null
+) {
     val display = if (range.endInclusive <= 1.2f) {
         "%.2f".format(value)
     } else {
@@ -2811,6 +2837,7 @@ private fun AdvancedConfigSlider(
         Slider(
             value = value.coerceIn(range.start, range.endInclusive),
             onValueChange = onValueChange,
+            onValueChangeFinished = onValueChangeFinished,
             valueRange = range
         )
     }
