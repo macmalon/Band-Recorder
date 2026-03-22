@@ -2021,17 +2021,17 @@ private fun PostProcessScreen(
         }
     }
 
-    ScreenScaffold(title = "Post-traitement WAV", onBack = onBack) {
+    ScreenScaffold(title = "Post-traitement audio", onBack = onBack) {
         Column(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text("Import et analyse", fontWeight = FontWeight.Bold)
             Button(
-                onClick = { importLauncher.launch(arrayOf("audio/wav", "audio/x-wav")) },
+                onClick = { importLauncher.launch(arrayOf("audio/wav", "audio/x-wav", "audio/mp4", "audio/aac", "audio/*")) },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Importer un WAV")
+                Text("Importer un WAV ou M4A")
             }
 
             if (ui.postProcessSourceName != null) {

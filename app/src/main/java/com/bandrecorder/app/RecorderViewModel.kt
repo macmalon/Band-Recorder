@@ -220,7 +220,7 @@ data class RecorderUiState(
     val postProcessSegments: List<PostProcessSegmentPreview> = emptyList(),
     val postProcessCuts: List<PostProcessCutPreview> = emptyList(),
     val postProcessEnvelope: List<PostProcessEnvelopePoint> = emptyList(),
-    val postProcessStatusMessage: String = "Importe un WAV",
+    val postProcessStatusMessage: String = "Importe un WAV ou M4A",
     val postProcessLastExportLabel: String? = null
 )
 
@@ -630,7 +630,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             if (imported == null) {
                 _uiState.update {
                     it.copy(
-                        postProcessStatusMessage = "Import impossible ou fichier WAV non supporté.",
+                        postProcessStatusMessage = "Import impossible ou format audio non supporté.",
                         postProcessLastExportLabel = null
                     )
                 }
@@ -662,7 +662,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     fun analyzePostProcessSource() {
         val sourceFile = postProcessSourceFile
         if (sourceFile == null || !sourceFile.exists()) {
-            _uiState.update { it.copy(postProcessStatusMessage = "Importe un WAV avant l'analyse.") }
+            _uiState.update { it.copy(postProcessStatusMessage = "Importe un WAV ou M4A avant l'analyse.") }
             return
         }
 
@@ -689,7 +689,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         postProcessSegments = emptyList(),
                         postProcessCuts = emptyList(),
                         postProcessEnvelope = emptyList(),
-                        postProcessStatusMessage = "Analyse impossible: seul le WAV PCM 16-bit est supporté."
+                        postProcessStatusMessage = "Analyse impossible: le fichier audio n'a pas pu être préparé."
                     )
                 }
                 return@launch
@@ -2016,39 +2016,21 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun importPostProcessSourceInternal(uri: Uri): ImportedPostProcessSource? {
-        val resolver = getApplication<Application>().contentResolver
+        val app = getApplication<Application>()
+        val resolver = app.contentResolver
         val displayName = queryDisplayName(resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null))
-            ?: "imported.wav"
-        if (!displayName.lowercase(Locale.ROOT).endsWith(".wav")) return null
-
-        val tempDir = File(getApplication<Application>().cacheDir, "post_process_imports").apply { mkdirs() }
-        val target = File(tempDir, "${System.currentTimeMillis()}_${displayName.replace(Regex("[^A-Za-z0-9._-]"), "_")}")
-        runCatching {
-            resolver.openInputStream(uri)?.use { input ->
-                FileOutputStream(target).use { output -> input.copyTo(output) }
-            } ?: error("Cannot open input stream")
-        }.getOrElse {
-            runCatching { target.delete() }
-            return null
-        }
-
-        val info = com.bandrecorder.app.readWavInfo(target) ?: run {
-            runCatching { target.delete() }
-            return null
-        }
-        if (info.bitsPerSample != 16) {
-            runCatching { target.delete() }
-            return null
-        }
-
-        val frameBytes = info.channels * 2
-        val totalFrames = (info.dataSize / frameBytes).coerceAtLeast(0)
-        val durationMs = framesToMs(info.sampleRate, totalFrames)
-        return ImportedPostProcessSource(
-            file = target,
+            ?: "imported_audio"
+        val normalized = normalizeImportedAudio(
+            context = app,
+            uri = uri,
             displayName = displayName,
-            durationMs = durationMs,
-            info = info
+            mimeType = resolver.getType(uri)
+        ) ?: return null
+        return ImportedPostProcessSource(
+            file = normalized.file,
+            displayName = normalized.displayName,
+            durationMs = normalized.durationMs,
+            info = normalized.info
         )
     }
 
