@@ -3,12 +3,14 @@ package com.bandrecorder.app
 import android.Manifest
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.media.MediaPlayer
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
 import android.os.Bundle
+import android.os.Build
 import android.os.Environment
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -112,6 +114,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.compose.ui.res.painterResource
+import androidx.core.content.ContextCompat
 import com.bandrecorder.app.ui.vintage.VintageDimensions
 import com.bandrecorder.app.ui.vintage.VintageColors
 import java.io.File
@@ -180,6 +183,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun MainScreen(vm: RecorderViewModel = viewModel()) {
     val ui by vm.uiState.collectAsState()
+    val context = LocalContext.current
     val navController = rememberNavController()
     var pendingAction by remember { mutableStateOf<PendingAction?>(null) }
 
@@ -204,6 +208,21 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
             null -> Unit
         }
         pendingAction = null
+    }
+
+    val notificationsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return@LaunchedEffect
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            notificationsPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
 
     fun requestAudioPermission(action: PendingAction) {
