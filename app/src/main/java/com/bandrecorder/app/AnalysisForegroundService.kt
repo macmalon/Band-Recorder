@@ -4,6 +4,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.pm.ServiceInfo
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -11,6 +12,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -48,7 +50,7 @@ class AnalysisForegroundService : Service() {
                     ?: ImportedAudioKind.UNSUPPORTED
                 val silenceThresholdDb = intent.getFloatExtra(EXTRA_THRESHOLD_DB, 0f)
                 val silenceDurationSec = intent.getIntExtra(EXTRA_DURATION_SEC, 8)
-                startForeground(NOTIFICATION_ID_RUNNING, buildRunningNotification("Préparation de l'analyse..."))
+                startForegroundCompat(buildRunningNotification("Préparation de l'analyse..."))
                 analysisJob?.cancel()
                 analysisJob = serviceScope.launch {
                     runAnalysis(
@@ -199,6 +201,20 @@ class AnalysisForegroundService : Service() {
     private fun updateRunningNotification(message: String) {
         val manager = getSystemService(NotificationManager::class.java)
         manager.notify(NOTIFICATION_ID_RUNNING, buildRunningNotification(message))
+    }
+
+    private fun startForegroundCompat(notification: android.app.Notification) {
+        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
+        } else {
+            0
+        }
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID_RUNNING,
+            notification,
+            type
+        )
     }
 
     private fun showFinishedNotification(message: String) {
