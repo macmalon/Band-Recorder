@@ -10,7 +10,6 @@ import android.media.MediaMetadataRetriever
 import android.media.MicrophoneInfo
 import android.provider.OpenableColumns
 import android.os.Environment
-import android.os.PowerManager
 import android.provider.MediaStore
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
@@ -33,6 +32,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -228,15 +228,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private val engine = WavRecorderEngine()
     private val settingsStore = AppSettingsStore(app)
     private val historyFile = File(app.filesDir, "mic_test_history.tsv")
-    private val powerManager = app.getSystemService(PowerManager::class.java)
 
-    private var pendingTempFile: File? = null
-    private var pendingDisplayName: String? = null
     private var activeSessionBaseName: String? = null
     private var silenceStartElapsedMs: Long? = null
     private var autoStopOnSilenceRequested: Boolean = false
     private var lastCpuGuardState: Boolean = false
-    private var recordingWakeLock: PowerManager.WakeLock? = null
     private var postProcessSourceFile: File? = null
     private var postProcessWorkingFile: File? = null
     private var postProcessSourceKind: ImportedAudioKind = ImportedAudioKind.UNSUPPORTED
@@ -277,117 +273,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
         refreshMicrophones()
         refreshPlayerRecordings()
-
-        viewModelScope.launch {
-            engine.statusFlow().collect { status ->
-                val liveFeatures = SignalFeatures(
-                    rmsDb = status.rmsDb,
-                    peakNorm = dbToNorm(status.peakDb),
-                    lowBandRatio = status.lowBandRatio,
-                    midBandRatio = status.midBandRatio,
-                    highBandRatio = status.highBandRatio,
-                    zeroCrossingRate = status.zeroCrossingRate,
-                    transientDensity = status.transientDensity,
-                    crestDb = status.crestDb
-                )
-                val liveThresholds = if (status.isRecording) {
-                    pushLiveFeatures(liveFeatures)
-                    computeAdaptiveThresholds(liveDetectionHistory.toList(), _uiState.value.silenceThresholdDb)
-                } else {
-                    resetLiveSilenceState()
-                    null
-                }
-                val silenceDecision = if (status.isRecording && liveThresholds != null) {
-                    evaluateSilence(liveFeatures, liveThresholds, currentlyInSilence = liveDetectorInSilence)
-                } else {
-                    null
-                }
-                val thresholdCrossed = status.isRecording && (silenceDecision?.isSilence == true)
-                if (!thresholdCrossed) {
-                    silenceStartElapsedMs = null
-                } else if (silenceStartElapsedMs == null) {
-                    silenceStartElapsedMs = status.elapsedMs
-                }
-                val silenceElapsedMs = if (thresholdCrossed) {
-                    status.elapsedMs - (silenceStartElapsedMs ?: status.elapsedMs)
-                } else {
-                    0L
-                }
-                val silenceDetected = thresholdCrossed &&
-                    (status.elapsedMs - (silenceStartElapsedMs ?: status.elapsedMs) >= silenceVisualHoldMs)
-                _uiState.update {
-                    val newLeftVu = normalizeVu(status.leftPeakDb)
-                    val newRightVu = normalizeVu(status.rightPeakDb)
-                    val smoothedLeftVu = smoothVu(previous = it.leftVu, newValue = newLeftVu)
-                    val smoothedRightVu = smoothVu(previous = it.rightVu, newValue = newRightVu)
-                    it.copy(
-                        isRecording = status.isRecording,
-                        rmsDb = status.rmsDb,
-                        peakDb = status.peakDb,
-                        leftVu = smoothedLeftVu,
-                        rightVu = smoothedRightVu,
-                        headroomDb = status.headroomDb,
-                        elapsedMs = status.elapsedMs,
-                        isSilenceDetected = silenceDetected,
-                        status = if (status.isRecording) "Recording" else it.status,
-                        silenceAutoThresholdDb = liveThresholds?.autoThresholdDb ?: it.silenceAutoThresholdDb,
-                        silenceEffectiveThresholdDb = liveThresholds?.enterThresholdDb ?: it.silenceEffectiveThresholdDb,
-                        silenceDetectionSummary = liveThresholds?.let { thresholds ->
-                            "Auto ${"%.1f".format(thresholds.autoThresholdDb)} dBFS, réglé ${"%.1f".format(thresholds.enterThresholdDb)} dBFS"
-                        } ?: it.silenceDetectionSummary,
-                        inputSourceLabel = status.inputDiagnostics?.sourceLabel ?: it.inputSourceLabel,
-                        inputPreferredDeviceSet = status.inputDiagnostics?.preferredDeviceSet ?: it.inputPreferredDeviceSet,
-                        inputRoutedDevice = status.inputDiagnostics?.let { diag ->
-                            val type = diag.routedDeviceTypeLabel ?: "type?"
-                            val id = diag.routedDeviceId?.toString() ?: "unknown"
-                            val addr = diag.routedDeviceAddress ?: "n/a"
-                            "$type#$id ($addr)"
-                        } ?: it.inputRoutedDevice,
-                        inputProcessingSummary = status.inputDiagnostics?.let { diag ->
-                            "AGC=${diag.agcEnabled ?: "n/a"} NS=${diag.nsEnabled ?: "n/a"} AEC=${diag.aecEnabled ?: "n/a"}"
-                        } ?: it.inputProcessingSummary,
-                        isGlobalDspAvailable = status.dspAvailable,
-                        isGlobalDspRunning = status.dspRunning,
-                        isGlobalDspCpuGuardActive = status.dspCpuGuardActive,
-                        isNearClipping = status.peakDb > -3f,
-                        compGainReductionDb = status.dspCompGainReductionDb,
-                        deEsserGainReductionDb = status.dspDeEsserGainReductionDb,
-                        globalDspLimiterHits = status.dspLimiterHits,
-                        dspStatusMessage = status.dspStatusMessage,
-                        globalBalanceConfig = if (status.isRecording) {
-                            it.globalBalanceConfig.copy(dspOutputMode = status.dspOutputMode).bounded()
-                        } else {
-                            it.globalBalanceConfig
-                        }
-                    )
-                }
-                if (!status.isRecording) {
-                    autoStopOnSilenceRequested = false
-                    liveDetectorInSilence = false
-                } else if (silenceDecision != null) {
-                    liveDetectorInSilence = silenceDecision.isSilence
-                }
-                val shouldAutoStopOnSilence = status.isRecording &&
-                    _uiState.value.ignoreSilenceEnabled &&
-                    !_uiState.value.splitOnSilenceEnabled &&
-                    silenceElapsedMs >= (_uiState.value.silenceDurationSec * 1000L) &&
-                    !autoStopOnSilenceRequested
-                if (shouldAutoStopOnSilence) {
-                    autoStopOnSilenceRequested = true
-                    _uiState.update { it.copy(status = "Blanc prolongé détecté, arrêt...") }
-                    stopRecording()
-                }
-                if (status.dspCpuGuardActive && !lastCpuGuardState && _uiState.value.diagnosticModeEnabled) {
-                    exportDiagnosticReport(
-                        event = "global_balance_runtime_guard_triggered",
-                        entry = null,
-                        recordingPath = _uiState.value.lastOutputPath,
-                        extraLines = buildGlobalDspDiagnosticLines()
-                    )
-                }
-                lastCpuGuardState = status.dspCpuGuardActive
-            }
-        }
+        observeAnalysisService()
+        observeRecordingService()
     }
 
     fun setStorageLocation(location: StorageLocation) {
@@ -676,99 +563,22 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             _uiState.update { it.copy(postProcessStatusMessage = "Importe un WAV ou M4A avant l'analyse.") }
             return
         }
-
-        viewModelScope.launch {
-            _uiState.update {
-                it.copy(
-                    postProcessIsAnalyzing = true,
-                    postProcessStatusMessage = "Analyse en cours...",
-                    postProcessLastExportLabel = null
-                )
-            }
-            val workingFile = withContext(Dispatchers.IO) {
-                preparePostProcessWorkingFile(sourceFile)
-            }
-            if (workingFile == null || !workingFile.exists()) {
-                postProcessAnalysis = null
-                _uiState.update {
-                    it.copy(
-                        postProcessIsAnalyzing = false,
-                        postProcessSegments = emptyList(),
-                        postProcessCuts = emptyList(),
-                        postProcessEnvelope = emptyList(),
-                        postProcessStatusMessage = "Analyse impossible: le fichier audio n'a pas pu être préparé."
-                    )
-                }
-                return@launch
-            }
-            val analysis = withContext(Dispatchers.Default) {
-                analyzeWavBySilence(
-                    sourceFile = workingFile,
-                    silenceThresholdDb = _uiState.value.silenceThresholdDb,
-                    silenceDurationSec = _uiState.value.silenceDurationSec
-                )
-            }
-            postProcessAnalysis = analysis
-            if (analysis == null) {
-                _uiState.update {
-                    it.copy(
-                        postProcessIsAnalyzing = false,
-                        postProcessSegments = emptyList(),
-                        postProcessCuts = emptyList(),
-                        postProcessEnvelope = emptyList(),
-                        postProcessStatusMessage = "Analyse impossible: le fichier audio n'a pas pu être préparé."
-                    )
-                }
-                return@launch
-            }
-
-            val durationMs = framesToMs(analysis.info.sampleRate, analysis.info.dataSize / (analysis.info.channels * 2))
-            val segments = analysis.segments.mapIndexed { index, segment ->
-                val startMs = framesToMs(analysis.info.sampleRate, segment.startFrame)
-                val endMs = framesToMs(analysis.info.sampleRate, segment.endFrame)
-                PostProcessSegmentPreview(
-                    index = index + 1,
-                    startMs = startMs,
-                    endMs = endMs,
-                    durationMs = (endMs - startMs).coerceAtLeast(0L)
-                )
-            }
-            val cuts = analysis.segments.dropLast(1).mapIndexed { index, segment ->
-                val cutMs = framesToMs(analysis.info.sampleRate, segment.endFrame)
-                PostProcessCutPreview(
-                    index = index + 1,
-                    cutMs = cutMs,
-                    beforeStartMs = (cutMs - 3_000L).coerceAtLeast(0L),
-                    beforeEndMs = cutMs,
-                    afterStartMs = cutMs,
-                    afterEndMs = (cutMs + 3_000L).coerceAtMost(durationMs)
-                )
-            }
-            val windowMs = ((1_000L * (analysis.info.sampleRate / 20).coerceAtLeast(1)) / analysis.info.sampleRate).coerceAtLeast(1L)
-            val envelope = buildPostProcessEnvelopePreview(
-                windows = analysis.envelope,
-                durationMs = durationMs,
-                windowMs = windowMs
+        postProcessAnalysis = null
+        _uiState.update {
+            it.copy(
+                postProcessIsAnalyzing = true,
+                postProcessStatusMessage = "Analyse en cours...",
+                postProcessLastExportLabel = null
             )
-            _uiState.update {
-                it.copy(
-                    postProcessIsAnalyzing = false,
-                    postProcessSourceSampleRateHz = analysis.info.sampleRate,
-                    postProcessSourceChannels = analysis.info.channels,
-                    postProcessSegments = segments,
-                    postProcessCuts = cuts,
-                    postProcessEnvelope = envelope,
-                    silenceAutoThresholdDb = analysis.thresholds.autoThresholdDb,
-                    silenceEffectiveThresholdDb = analysis.thresholds.enterThresholdDb,
-                    silenceDetectionSummary = "Auto ${"%.1f".format(analysis.thresholds.autoThresholdDb)} dBFS, réglé ${"%.1f".format(analysis.thresholds.enterThresholdDb)} dBFS",
-                    postProcessStatusMessage = if (segments.isEmpty()) {
-                        "Aucun segment utile trouvé avec ces réglages."
-                    } else {
-                        "${segments.size} segment(s) trouvé(s)."
-                    }
-                )
-            }
         }
+        AnalysisForegroundService.start(
+            context = getApplication(),
+            sourcePath = sourceFile.absolutePath,
+            displayName = _uiState.value.postProcessSourceName ?: sourceFile.name,
+            sourceKind = postProcessSourceKind,
+            silenceThresholdDb = _uiState.value.silenceThresholdDb,
+            silenceDurationSec = _uiState.value.silenceDurationSec
+        )
     }
 
     fun runPostProcessExport() {
@@ -1531,101 +1341,34 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         autoStopOnSilenceRequested = false
-        RecordingForegroundService.start(getApplication())
-        acquireRecordingWakeLock()
-
-        when (_uiState.value.storageLocation) {
-            StorageLocation.DOWNLOADS -> {
-                val target = buildTempOutputFile()
-                pendingTempFile = target.file
-                pendingDisplayName = target.displayName
-                activeSessionBaseName = target.sessionBaseName
-                silenceStartElapsedMs = null
-                engine.startRecording(
-                    target.file,
-                    preferredDevice = selectedMic,
-                    requestedChannelCount = channels,
-                    swapStereoChannels = _uiState.value.stereoChannelsSwapped,
-                    inputGainDb = _uiState.value.recordingInputGainDb
-                )
-                _uiState.update {
-                    it.copy(
-                        status = if (channels == 2) "Recording (stereo)" else "Recording (mono)",
-                        elapsedMs = 0L,
-                        isSilenceDetected = false,
-                        currentSessionName = target.sessionBaseName,
-                        currentSessionSegments = emptyList(),
-                        lastOutputPath = "Downloads/Band Recorder/${target.displayName}"
-                    )
-                }
-            }
-
-            StorageLocation.APP_PRIVATE -> {
-                val target = buildAppPrivateOutputFile()
-                activeSessionBaseName = target.sessionBaseName
-                silenceStartElapsedMs = null
-                engine.startRecording(
-                    target.file,
-                    preferredDevice = selectedMic,
-                    requestedChannelCount = channels,
-                    swapStereoChannels = _uiState.value.stereoChannelsSwapped,
-                    inputGainDb = _uiState.value.recordingInputGainDb
-                )
-                _uiState.update {
-                    it.copy(
-                        status = if (channels == 2) "Recording (stereo)" else "Recording (mono)",
-                        elapsedMs = 0L,
-                        isSilenceDetected = false,
-                        currentSessionName = target.sessionBaseName,
-                        currentSessionSegments = emptyList(),
-                        lastOutputPath = target.file.absolutePath
-                    )
-                }
-            }
-        }
-
-        if (!engine.statusFlow().value.isRecording) {
-            releaseRecordingWakeLock()
-            RecordingForegroundService.stop(getApplication())
-            _uiState.update { it.copy(status = "Impossible de démarrer l'enregistrement") }
+        silenceStartElapsedMs = null
+        RecordingForegroundService.start(
+            context = getApplication(),
+            storageLocation = _uiState.value.storageLocation,
+            preferredMicId = selectedMic?.id,
+            requestedChannels = channels,
+            swapStereoChannels = _uiState.value.stereoChannelsSwapped,
+            inputGainDb = _uiState.value.recordingInputGainDb,
+            ignoreSilenceEnabled = _uiState.value.ignoreSilenceEnabled,
+            splitOnSilenceEnabled = _uiState.value.splitOnSilenceEnabled,
+            silenceThresholdDb = _uiState.value.silenceThresholdDb,
+            silenceDurationSec = _uiState.value.silenceDurationSec
+        )
+        _uiState.update {
+            it.copy(
+                status = if (channels == 2) "Recording (stereo)" else "Recording (mono)",
+                elapsedMs = 0L,
+                isSilenceDetected = false,
+                currentSessionSegments = emptyList()
+            )
         }
     }
 
     fun stopRecording() {
         autoStopOnSilenceRequested = false
-        engine.stopRecording()
         silenceStartElapsedMs = null
         _uiState.update { it.copy(status = "Stopping...", isSilenceDetected = false) }
-
-        viewModelScope.launch {
-            while (engine.statusFlow().value.isRecording) {
-                delay(50)
-            }
-            delay(150)
-            val splitEnabled = _uiState.value.ignoreSilenceEnabled && _uiState.value.splitOnSilenceEnabled
-            val segmentFilesForDownloads = if (splitEnabled) {
-                withContext(Dispatchers.Default) { createSegmentsIfNeededForLastRecording() }
-            } else {
-                emptyList()
-            }
-            if (pendingTempFile != null) {
-                exportPendingRecordingToDownloads(segmentFilesForDownloads)
-            } else {
-                val label = if (segmentFilesForDownloads.isNotEmpty()) {
-                    "Stopped • ${segmentFilesForDownloads.size} morceaux"
-                } else {
-                    "Stopped"
-                }
-                _uiState.update { it.copy(status = label) }
-            }
-            releaseRecordingWakeLock()
-            refreshPlayerRecordings()
-            refreshCurrentSessionSegments()
-            if (_uiState.value.diagnosticModeEnabled) {
-                exportDiagnosticReport(event = "recording_stop", entry = null, recordingPath = _uiState.value.lastOutputPath)
-            }
-            RecordingForegroundService.stop(getApplication())
-        }
+        RecordingForegroundService.stop(getApplication())
     }
 
     private fun resolveEffectiveMicDevice(): AudioDeviceInfo? {
@@ -1958,65 +1701,6 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun isoNow(): String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(Date())
 
-    private fun buildTempOutputFile(): RecordingOutputTarget {
-        val root = File(getApplication<Application>().cacheDir, "band_recordings_tmp")
-        root.mkdirs()
-        val baseName = RecordingFileNaming.sessionBaseName()
-        val displayName = RecordingFileNaming.rawFileName(baseName)
-        return RecordingOutputTarget(
-            displayName = displayName,
-            sessionBaseName = baseName,
-            file = File(root, displayName)
-        )
-    }
-
-    private fun buildAppPrivateOutputFile(): RecordingOutputTarget {
-        val root = getApplication<Application>()
-            .getExternalFilesDir(Environment.DIRECTORY_MUSIC)
-            ?: getApplication<Application>().filesDir
-        val folder = File(root, "band_recordings")
-        folder.mkdirs()
-        val baseName = RecordingFileNaming.sessionBaseName()
-        val displayName = RecordingFileNaming.rawFileName(baseName)
-        return RecordingOutputTarget(
-            displayName = displayName,
-            sessionBaseName = baseName,
-            file = File(folder, displayName)
-        )
-    }
-
-    private fun exportPendingRecordingToDownloads(segmentFiles: List<File> = emptyList()) {
-        val source = pendingTempFile ?: run {
-            _uiState.update { it.copy(status = "Stopped") }
-            return
-        }
-        val displayName = pendingDisplayName ?: source.name
-
-        val exportedRaw = exportSingleWavToDownloads(source, displayName)
-        val exportedSegments = segmentFiles.count { exportSingleWavToDownloads(it, it.name) }
-
-        if (exportedRaw) {
-            val statusLabel = if (segmentFiles.isNotEmpty()) {
-                "Stopped • $exportedSegments morceaux"
-            } else {
-                "Stopped"
-            }
-            _uiState.update {
-                it.copy(
-                    status = statusLabel,
-                    lastOutputPath = "Downloads/Band Recorder/$displayName"
-                )
-            }
-            runCatching { source.delete() }
-            segmentFiles.forEach { runCatching { it.delete() } }
-        } else {
-            _uiState.update { it.copy(status = "Export failed") }
-        }
-
-        pendingTempFile = null
-        pendingDisplayName = null
-    }
-
     private fun exportSingleWavToDownloads(
         source: File,
         displayName: String,
@@ -2173,18 +1857,6 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun preparePostProcessWorkingFile(sourceFile: File): File? {
-        postProcessWorkingFile?.takeIf { it.exists() }?.let { return it }
-        val prepared = normalizeImportedAudio(
-            context = getApplication(),
-            sourceFile = sourceFile,
-            displayName = _uiState.value.postProcessSourceName ?: sourceFile.name,
-            kind = postProcessSourceKind
-        ) ?: return null
-        postProcessWorkingFile = prepared.file
-        return prepared.file
-    }
-
     private fun markPostProcessPreviewDirty() {
         if (postProcessSourceFile == null) return
         _uiState.update {
@@ -2205,39 +1877,6 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private fun resetLiveSilenceState() {
         liveDetectionHistory.clear()
         liveDetectorInSilence = false
-    }
-
-    private fun createSegmentsIfNeededForLastRecording(): List<File> {
-        val sourceFile = pendingTempFile
-            ?: _uiState.value.lastOutputPath
-                ?.takeIf { !it.startsWith("Downloads/") }
-                ?.let(::File)
-                ?.takeIf { it.exists() }
-            ?: return emptyList()
-        val sessionBase = activeSessionBaseName ?: _uiState.value.currentSessionName ?: return emptyList()
-        val outDir = sourceFile.parentFile ?: return emptyList()
-        return splitWavOnSilence(sourceFile, sessionBase, outDir, _uiState.value.silenceThresholdDb, _uiState.value.silenceDurationSec)
-    }
-
-    private fun splitWavOnSilence(
-        sourceFile: File,
-        sessionBase: String,
-        outputDir: File,
-        silenceThresholdDb: Float,
-        silenceDurationSec: Int
-    ): List<File> {
-        val analysis = analyzeWavBySilence(sourceFile, silenceThresholdDb, silenceDurationSec) ?: return emptyList()
-        if (analysis.segments.isEmpty()) return emptyList()
-        outputDir.mkdirs()
-        val created = mutableListOf<File>()
-        analysis.segments.forEachIndexed { idx, segment ->
-            val out = File(outputDir, RecordingFileNaming.morceauFileName(sessionBase, idx + 1))
-            runCatching {
-                com.bandrecorder.app.writeWavSegment(sourceFile, analysis.info, segment, out)
-                created += out
-            }
-        }
-        return created
     }
 
     private fun readWindowRmsDb(
@@ -2440,12 +2079,6 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             ?: emptyList()
     }
 
-    private data class RecordingOutputTarget(
-        val displayName: String,
-        val sessionBaseName: String,
-        val file: File
-    )
-
     private data class ImportedPostProcessSource(
         val file: File,
         val displayName: String,
@@ -2456,8 +2089,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     )
 
     override fun onCleared() {
-        engine.stopRecording()
-        releaseRecordingWakeLock()
+        runCatching { engine.stopRecording() }
+        AnalysisForegroundService.stop(getApplication())
         postProcessSourceFile?.let { runCatching { it.delete() } }
         postProcessWorkingFile?.takeIf { it != postProcessSourceFile }?.let { runCatching { it.delete() } }
         postProcessReanalyzeJob?.cancel()
@@ -2465,25 +2098,248 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 
-    private fun acquireRecordingWakeLock() {
-        if (recordingWakeLock?.isHeld == true) return
-        val lock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BandRecorder:RecordingWakeLock")
-        lock.setReferenceCounted(false)
-        runCatching {
-            // Safety timeout to prevent leaked lock in edge cases.
-            lock.acquire(4L * 60L * 60L * 1000L)
-            recordingWakeLock = lock
-        }.onFailure {
-            runCatching { lock.release() }
-            recordingWakeLock = null
+    private fun observeAnalysisService() {
+        viewModelScope.launch {
+            AnalysisCoordinator.state.collectLatest { state ->
+                when (state) {
+                    AnalysisServiceState.Idle -> Unit
+                    is AnalysisServiceState.Running -> {
+                        if (postProcessSourceFile?.absolutePath != state.sourcePath) return@collectLatest
+                        _uiState.update {
+                            it.copy(
+                                postProcessIsAnalyzing = true,
+                                postProcessStatusMessage = state.message
+                            )
+                        }
+                    }
+                    is AnalysisServiceState.Failed -> {
+                        if (postProcessSourceFile?.absolutePath != state.sourcePath) return@collectLatest
+                        postProcessAnalysis = null
+                        _uiState.update {
+                            it.copy(
+                                postProcessIsAnalyzing = false,
+                                postProcessSegments = emptyList(),
+                                postProcessCuts = emptyList(),
+                                postProcessEnvelope = emptyList(),
+                                postProcessStatusMessage = state.message
+                            )
+                        }
+                    }
+                    is AnalysisServiceState.Completed -> {
+                        if (postProcessSourceFile?.absolutePath != state.sourcePath) return@collectLatest
+                        postProcessWorkingFile = File(state.workingFilePath)
+                        applyCompletedAnalysis(state.analysis)
+                    }
+                }
+            }
         }
     }
 
-    private fun releaseRecordingWakeLock() {
-        val lock = recordingWakeLock ?: return
-        if (lock.isHeld) {
-            runCatching { lock.release() }
+    private fun applyCompletedAnalysis(analysis: WavAnalysisResult) {
+        postProcessAnalysis = analysis
+        val durationMs = framesToMs(analysis.info.sampleRate, analysis.info.dataSize / (analysis.info.channels * 2))
+        val segments = analysis.segments.mapIndexed { index, segment ->
+            val startMs = framesToMs(analysis.info.sampleRate, segment.startFrame)
+            val endMs = framesToMs(analysis.info.sampleRate, segment.endFrame)
+            PostProcessSegmentPreview(
+                index = index + 1,
+                startMs = startMs,
+                endMs = endMs,
+                durationMs = (endMs - startMs).coerceAtLeast(0L)
+            )
         }
-        recordingWakeLock = null
+        val cuts = analysis.segments.dropLast(1).mapIndexed { index, segment ->
+            val cutMs = framesToMs(analysis.info.sampleRate, segment.endFrame)
+            PostProcessCutPreview(
+                index = index + 1,
+                cutMs = cutMs,
+                beforeStartMs = (cutMs - 3_000L).coerceAtLeast(0L),
+                beforeEndMs = cutMs,
+                afterStartMs = cutMs,
+                afterEndMs = (cutMs + 3_000L).coerceAtMost(durationMs)
+            )
+        }
+        val windowMs = ((1_000L * (analysis.info.sampleRate / 20).coerceAtLeast(1)) / analysis.info.sampleRate).coerceAtLeast(1L)
+        val envelope = buildPostProcessEnvelopePreview(
+            windows = analysis.envelope,
+            durationMs = durationMs,
+            windowMs = windowMs
+        )
+        _uiState.update {
+            it.copy(
+                postProcessIsAnalyzing = false,
+                postProcessSourceSampleRateHz = analysis.info.sampleRate,
+                postProcessSourceChannels = analysis.info.channels,
+                postProcessSegments = segments,
+                postProcessCuts = cuts,
+                postProcessEnvelope = envelope,
+                silenceAutoThresholdDb = analysis.thresholds.autoThresholdDb,
+                silenceEffectiveThresholdDb = analysis.thresholds.enterThresholdDb,
+                silenceDetectionSummary = "Auto ${"%.1f".format(analysis.thresholds.autoThresholdDb)} dBFS, réglé ${"%.1f".format(analysis.thresholds.enterThresholdDb)} dBFS",
+                postProcessStatusMessage = if (segments.isEmpty()) {
+                    "Aucun segment utile trouvé avec ces réglages."
+                } else {
+                    "${segments.size} segment(s) trouvé(s)."
+                }
+            )
+        }
+    }
+
+    private fun observeRecordingService() {
+        viewModelScope.launch {
+            RecordingCoordinator.state.collectLatest { state ->
+                when (state) {
+                    RecordingServiceState.Idle -> Unit
+                    is RecordingServiceState.Failed -> {
+                        resetLiveSilenceState()
+                        _uiState.update {
+                            it.copy(
+                                isRecording = false,
+                                isSilenceDetected = false,
+                                leftVu = 0f,
+                                rightVu = 0f,
+                                status = state.message
+                            )
+                        }
+                    }
+                    is RecordingServiceState.Stopping -> {
+                        activeSessionBaseName = state.sessionBaseName ?: activeSessionBaseName
+                        _uiState.update {
+                            it.copy(
+                                isRecording = false,
+                                isSilenceDetected = false,
+                                currentSessionName = state.sessionBaseName ?: it.currentSessionName,
+                                lastOutputPath = state.uiOutputPath ?: it.lastOutputPath,
+                                status = state.message
+                            )
+                        }
+                    }
+                    is RecordingServiceState.Running -> {
+                        activeSessionBaseName = state.sessionBaseName
+                        applyRecordingStatus(state.status, state.sessionBaseName, state.uiOutputPath)
+                    }
+                    is RecordingServiceState.Completed -> {
+                        activeSessionBaseName = state.sessionBaseName ?: activeSessionBaseName
+                        resetLiveSilenceState()
+                        _uiState.update {
+                            it.copy(
+                                isRecording = false,
+                                isSilenceDetected = false,
+                                leftVu = 0f,
+                                rightVu = 0f,
+                                currentSessionName = state.sessionBaseName ?: it.currentSessionName,
+                                lastOutputPath = state.lastOutputPath ?: it.lastOutputPath,
+                                status = state.message
+                            )
+                        }
+                        refreshPlayerRecordings()
+                        refreshCurrentSessionSegments()
+                        if (_uiState.value.diagnosticModeEnabled) {
+                            exportDiagnosticReport(
+                                event = "recording_stop",
+                                entry = null,
+                                recordingPath = state.lastOutputPath ?: _uiState.value.lastOutputPath
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun applyRecordingStatus(
+        status: com.bandrecorder.core.audio.RecordingStatus,
+        sessionBaseName: String,
+        uiOutputPath: String
+    ) {
+        val liveFeatures = SignalFeatures(
+            rmsDb = status.rmsDb,
+            peakNorm = dbToNorm(status.peakDb),
+            lowBandRatio = status.lowBandRatio,
+            midBandRatio = status.midBandRatio,
+            highBandRatio = status.highBandRatio,
+            zeroCrossingRate = status.zeroCrossingRate,
+            transientDensity = status.transientDensity,
+            crestDb = status.crestDb
+        )
+        pushLiveFeatures(liveFeatures)
+        val liveThresholds = computeAdaptiveThresholds(liveDetectionHistory.toList(), _uiState.value.silenceThresholdDb)
+        val silenceDecision = evaluateSilence(liveFeatures, liveThresholds, currentlyInSilence = liveDetectorInSilence)
+        val thresholdCrossed = silenceDecision.isSilence
+        if (!thresholdCrossed) {
+            silenceStartElapsedMs = null
+        } else if (silenceStartElapsedMs == null) {
+            silenceStartElapsedMs = status.elapsedMs
+        }
+        val silenceElapsedMs = if (thresholdCrossed) {
+            status.elapsedMs - (silenceStartElapsedMs ?: status.elapsedMs)
+        } else {
+            0L
+        }
+        val silenceDetected = thresholdCrossed &&
+            (status.elapsedMs - (silenceStartElapsedMs ?: status.elapsedMs) >= silenceVisualHoldMs)
+
+        _uiState.update {
+            val newLeftVu = normalizeVu(status.leftPeakDb)
+            val newRightVu = normalizeVu(status.rightPeakDb)
+            val smoothedLeftVu = smoothVu(previous = it.leftVu, newValue = newLeftVu)
+            val smoothedRightVu = smoothVu(previous = it.rightVu, newValue = newRightVu)
+            it.copy(
+                isRecording = true,
+                rmsDb = status.rmsDb,
+                peakDb = status.peakDb,
+                leftVu = smoothedLeftVu,
+                rightVu = smoothedRightVu,
+                headroomDb = status.headroomDb,
+                elapsedMs = status.elapsedMs,
+                isSilenceDetected = silenceDetected,
+                currentSessionName = sessionBaseName,
+                currentSessionSegments = emptyList(),
+                lastOutputPath = uiOutputPath,
+                status = "Recording",
+                silenceAutoThresholdDb = liveThresholds.autoThresholdDb,
+                silenceEffectiveThresholdDb = liveThresholds.enterThresholdDb,
+                silenceDetectionSummary = "Auto ${"%.1f".format(liveThresholds.autoThresholdDb)} dBFS, réglé ${"%.1f".format(liveThresholds.enterThresholdDb)} dBFS",
+                inputSourceLabel = status.inputDiagnostics?.sourceLabel ?: it.inputSourceLabel,
+                inputPreferredDeviceSet = status.inputDiagnostics?.preferredDeviceSet ?: it.inputPreferredDeviceSet,
+                inputRoutedDevice = status.inputDiagnostics?.let { diag ->
+                    val type = diag.routedDeviceTypeLabel ?: "type?"
+                    val id = diag.routedDeviceId?.toString() ?: "unknown"
+                    val addr = diag.routedDeviceAddress ?: "n/a"
+                    "$type#$id ($addr)"
+                } ?: it.inputRoutedDevice,
+                inputProcessingSummary = status.inputDiagnostics?.let { diag ->
+                    "AGC=${diag.agcEnabled ?: "n/a"} NS=${diag.nsEnabled ?: "n/a"} AEC=${diag.aecEnabled ?: "n/a"}"
+                } ?: it.inputProcessingSummary,
+                isGlobalDspAvailable = status.dspAvailable,
+                isGlobalDspRunning = status.dspRunning,
+                isGlobalDspCpuGuardActive = status.dspCpuGuardActive,
+                isNearClipping = status.peakDb > -3f,
+                compGainReductionDb = status.dspCompGainReductionDb,
+                deEsserGainReductionDb = status.dspDeEsserGainReductionDb,
+                globalDspLimiterHits = status.dspLimiterHits,
+                dspStatusMessage = status.dspStatusMessage,
+                globalBalanceConfig = it.globalBalanceConfig.copy(dspOutputMode = status.dspOutputMode).bounded()
+            )
+        }
+        liveDetectorInSilence = silenceDecision.isSilence
+        val shouldAutoStopOnSilence = _uiState.value.ignoreSilenceEnabled &&
+            !_uiState.value.splitOnSilenceEnabled &&
+            silenceElapsedMs >= (_uiState.value.silenceDurationSec * 1000L) &&
+            !autoStopOnSilenceRequested
+        if (shouldAutoStopOnSilence) {
+            autoStopOnSilenceRequested = true
+            _uiState.update { it.copy(status = "Blanc prolongé détecté, arrêt...") }
+            stopRecording()
+        }
+        if (status.dspCpuGuardActive && !lastCpuGuardState && _uiState.value.diagnosticModeEnabled) {
+            exportDiagnosticReport(
+                event = "global_balance_runtime_guard_triggered",
+                entry = null,
+                recordingPath = _uiState.value.lastOutputPath,
+                extraLines = buildGlobalDspDiagnosticLines()
+            )
+        }
+        lastCpuGuardState = status.dspCpuGuardActive
     }
 }

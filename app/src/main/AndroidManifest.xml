@@ -28,6 +28,9 @@
             android:name=".RecordingForegroundService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+        <service
+            android:name=".AnalysisForegroundService"
+            android:exported="false" />
     </application>
 
 </manifest>
