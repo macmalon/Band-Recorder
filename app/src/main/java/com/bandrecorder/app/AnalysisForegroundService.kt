@@ -12,7 +12,6 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -204,17 +203,16 @@ class AnalysisForegroundService : Service() {
     }
 
     private fun startForegroundCompat(notification: android.app.Notification) {
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
+            startForeground(
+                NOTIFICATION_ID_RUNNING,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
+            )
         } else {
-            0
+            startForeground(NOTIFICATION_ID_RUNNING, notification)
         }
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID_RUNNING,
-            notification,
-            type
-        )
     }
 
     private fun showFinishedNotification(message: String) {
