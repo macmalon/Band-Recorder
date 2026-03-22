@@ -24,8 +24,10 @@ import java.io.File
 class AnalysisForegroundService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val powerManager by lazy { getSystemService(PowerManager::class.java) }
+    private val notificationManager by lazy { getSystemService(NotificationManager::class.java) }
     private var analysisJob: Job? = null
     private var analysisWakeLock: PowerManager.WakeLock? = null
+    private var runningStartedAtMs: Long = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -49,7 +51,8 @@ class AnalysisForegroundService : Service() {
                     ?: ImportedAudioKind.UNSUPPORTED
                 val silenceThresholdDb = intent.getFloatExtra(EXTRA_THRESHOLD_DB, 0f)
                 val silenceDurationSec = intent.getIntExtra(EXTRA_DURATION_SEC, 8)
-                startForegroundCompat(buildRunningNotification("Préparation de l'analyse..."))
+                runningStartedAtMs = System.currentTimeMillis()
+                startForegroundCompat(buildRunningNotification("Préparation de l'analyse...", displayName))
                 analysisJob?.cancel()
                 analysisJob = serviceScope.launch {
                     runAnalysis(
@@ -103,7 +106,7 @@ class AnalysisForegroundService : Service() {
         }
 
         AnalysisCoordinator.publish(AnalysisServiceState.Running(sourcePath, "Analyse en cours..."))
-        updateRunningNotification("Analyse en cours...")
+        updateRunningNotification("Analyse en cours...", displayName)
         val analysis = withContext(Dispatchers.Default) {
             analyzeWavBySilence(
                 sourceFile = workingFile,
@@ -125,7 +128,8 @@ class AnalysisForegroundService : Service() {
         )
         showFinishedNotification(
             if (analysis.segments.isEmpty()) "Analyse terminée: aucun segment utile."
-            else "Analyse terminée: ${analysis.segments.size} segment(s) détecté(s)."
+            else "Analyse terminée: ${analysis.segments.size} segment(s) détecté(s).",
+            displayName
         )
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -134,7 +138,7 @@ class AnalysisForegroundService : Service() {
 
     private fun finishFailure(sourcePath: String, message: String) {
         AnalysisCoordinator.publish(AnalysisServiceState.Failed(sourcePath, message))
-        showFinishedNotification(message)
+        showFinishedNotification(message, null)
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -163,43 +167,50 @@ class AnalysisForegroundService : Service() {
 
     private fun ensureNotificationChannels() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
+        notificationManager.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID_RUNNING,
                 "Band Recorder Analysis",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
                 description = "Maintient l'analyse audio active en arrière-plan."
                 setShowBadge(false)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
             }
         )
-        manager.createNotificationChannel(
+        notificationManager.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID_FINISHED,
                 "Band Recorder Analysis Done",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Informe quand une analyse audio est terminée."
-                setShowBadge(false)
-                enableVibration(false)
-                setSound(null, null)
+                setShowBadge(true)
+                enableVibration(true)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
             }
         )
     }
 
-    private fun buildRunningNotification(message: String) = NotificationCompat.Builder(this, CHANNEL_ID_RUNNING)
+    private fun buildRunningNotification(message: String, displayName: String?) = NotificationCompat.Builder(this, CHANNEL_ID_RUNNING)
         .setSmallIcon(android.R.drawable.ic_popup_sync)
-        .setContentTitle("Band Recorder")
+        .setContentTitle("Analyse audio en cours")
         .setContentText(message)
+        .setSubText(displayName)
         .setOngoing(true)
-        .setSilent(true)
+        .setOnlyAlertOnce(true)
+        .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+        .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+        .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+        .setProgress(0, 0, true)
+        .setUsesChronometer(true)
+        .setWhen(runningStartedAtMs)
+        .setShowWhen(true)
         .setContentIntent(mainActivityPendingIntent())
         .build()
 
-    private fun updateRunningNotification(message: String) {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID_RUNNING, buildRunningNotification(message))
+    private fun updateRunningNotification(message: String, displayName: String?) {
+        notificationManager.notify(NOTIFICATION_ID_RUNNING, buildRunningNotification(message, displayName))
     }
 
     private fun startForegroundCompat(notification: android.app.Notification) {
@@ -215,14 +226,17 @@ class AnalysisForegroundService : Service() {
         }
     }
 
-    private fun showFinishedNotification(message: String) {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(
+    private fun showFinishedNotification(message: String, displayName: String?) {
+        notificationManager.notify(
             NOTIFICATION_ID_FINISHED,
             NotificationCompat.Builder(this, CHANNEL_ID_FINISHED)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle("Band Recorder")
+                .setContentTitle("Analyse audio terminée")
                 .setContentText(message)
+                .setSubText(displayName)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_STATUS)
                 .setAutoCancel(true)
                 .setContentIntent(mainActivityPendingIntent())
                 .build()
