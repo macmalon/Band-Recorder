@@ -2316,8 +2316,8 @@ private fun EnvelopePreviewCard(
                             val totalDurationMs = envelope.last().endMs.coerceAtLeast(1L)
                             val maxPeakNorm = envelope.maxOfOrNull { it.peakNorm.toDouble() }?.toFloat()?.coerceAtLeast(0.05f) ?: 1f
                             val maxPeakDb = (20.0 * log10(maxPeakNorm.coerceAtLeast(1e-6f).toDouble())).toFloat()
-                            val minDisplayDb = minOf(-80f, thresholdDb - 6f, envelope.minOfOrNull { it.rmsDb } ?: -80f)
-                            val maxDisplayDb = maxOf(-3f, maxPeakDb + 3f)
+                            val minDisplayDb = minOf(-84f, thresholdDb - 10f, envelope.minOfOrNull { it.rmsDb } ?: -84f)
+                            val maxDisplayDb = maxOf(-6f, maxPeakDb + 1.5f)
                             val baseY = size.height
                             val segmentFill = AmpAccentAmber.copy(alpha = 0.10f)
                             val removedFill = Color(0xFF4C5560)
@@ -2332,7 +2332,8 @@ private fun EnvelopePreviewCard(
                             fun xFor(ms: Long): Float = (ms.toFloat() / totalDurationMs.toFloat()) * size.width
                             fun yForDb(db: Float): Float {
                                 val normalized = ((db - minDisplayDb) / (maxDisplayDb - minDisplayDb).coerceAtLeast(1f)).coerceIn(0f, 1f)
-                                return size.height - (normalized * size.height)
+                                val shaped = normalized.pow(1.65f)
+                                return size.height - (shaped * size.height)
                             }
                             fun normToDb(norm: Float): Float =
                                 (20.0 * log10(norm.coerceAtLeast(1e-6f).toDouble())).toFloat()
