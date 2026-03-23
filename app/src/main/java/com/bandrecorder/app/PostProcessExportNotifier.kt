@@ -54,10 +54,6 @@ internal object PostProcessExportNotifier {
         )
     }
 
-    fun cancelRunning(context: Context) {
-        context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID_RUNNING)
-    }
-
     private fun ensureChannels(manager: NotificationManager) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         manager.createNotificationChannel(

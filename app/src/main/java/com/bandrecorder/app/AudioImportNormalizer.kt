@@ -543,7 +543,9 @@ internal fun exportDecodedAudioSelectionToTempWavs(
     val handles = mutableListOf<OutputHandle>()
     val outputFiles = mutableListOf<File>()
     val totalOutputBytes = sortedSegments.sumOf { ((it.endFrame - it.startFrame) * bytesPerFrame).coerceAtLeast(0L) }
-    if (totalOutputBytes <= 0L || totalOutputBytes > Int.MAX_VALUE.toLong()) return null
+    if (totalOutputBytes <= 0L) return null
+    if (mode == PostProcessMode.CLEAN_SINGLE_FILE && totalOutputBytes > Int.MAX_VALUE.toLong()) return null
+    var completedSuccessfully = false
 
     try {
         fun createHandle(file: File, expectedDataBytes: Long): OutputHandle? {
@@ -707,6 +709,7 @@ internal fun exportDecodedAudioSelectionToTempWavs(
             finalizeTemporaryWavHeader(handle.file, handle.writtenDataBytes, analysis.info.sampleRate, analysis.info.channels)
         }
         onProgress?.invoke(100)
+        completedSuccessfully = true
         return outputFiles
     } catch (_: Throwable) {
         return null
@@ -715,5 +718,8 @@ internal fun exportDecodedAudioSelectionToTempWavs(
         runCatching { codec?.stop() }
         runCatching { codec?.release() }
         runCatching { extractor.release() }
+        if (!completedSuccessfully) {
+            outputFiles.forEach { file -> runCatching { file.delete() } }
+        }
     }
 }

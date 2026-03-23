@@ -244,13 +244,13 @@ class RecordingForegroundService : Service() {
                     )
                 } else if (wasRecording && !didFinalizeStop) {
                     didFinalizeStop = true
-                    finalizeStop(status)
+                    finalizeStop()
                 }
             }
         }
     }
 
-    private suspend fun finalizeStop(status: com.bandrecorder.core.audio.RecordingStatus) {
+    private suspend fun finalizeStop() {
         RecordingCoordinator.publish(
             RecordingServiceState.Stopping(
                 sessionBaseName = sessionBaseName,
