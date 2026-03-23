@@ -595,6 +595,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         viewModelScope.launch {
+            val app = getApplication<Application>()
+            val exportDisplayName = _uiState.value.postProcessSourceName ?: sourceFile?.name ?: postProcessSourceFile?.name
             _uiState.update {
                 it.copy(
                     postProcessIsExporting = true,
@@ -603,6 +605,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     postProcessLastExportLabel = null
                 )
             }
+            PostProcessExportNotifier.showRunning(app, 0, exportDisplayName)
 
             val exportResult = withContext(Dispatchers.IO) {
                 val exportSourceFile = sourceFile ?: postProcessSourceFile ?: return@withContext null
@@ -619,6 +622,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                                 postProcessStatusMessage = "Export en cours... ${progress.coerceIn(0, 100)}%"
                             )
                         }
+                        PostProcessExportNotifier.showRunning(app, progress.coerceIn(0, 100), exportDisplayName)
                     }
                 )
             }
@@ -630,6 +634,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     postProcessStatusMessage = exportResult ?: "Export impossible.",
                     postProcessLastExportLabel = exportResult
                 )
+            }
+            if (exportResult != null) {
+                PostProcessExportNotifier.showFinished(app, exportResult, exportDisplayName)
+            } else {
+                PostProcessExportNotifier.showFinished(app, "Export impossible.", exportDisplayName)
             }
             if (exportResult != null) {
                 setPlayerStatusMessage(exportResult)
