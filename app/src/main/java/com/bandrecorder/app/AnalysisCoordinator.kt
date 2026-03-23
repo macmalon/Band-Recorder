@@ -15,7 +15,7 @@ internal sealed class AnalysisServiceState {
 
     data class Completed(
         val sourcePath: String,
-        val workingFilePath: String,
+        val workingFilePath: String?,
         val analysis: WavAnalysisResult
     ) : AnalysisServiceState()
 

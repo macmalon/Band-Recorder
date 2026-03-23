@@ -74,6 +74,30 @@ internal fun analyzeWavBySilence(
         }
     }
 
+    return analyzeSignalWindows(
+        info = info,
+        windows = windows,
+        silenceThresholdDb = silenceThresholdDb,
+        silenceDurationSec = silenceDurationSec
+    ).also { onProgress?.invoke(100) }
+}
+
+internal fun analyzeSignalWindows(
+    info: WavInfo,
+    windows: List<SignalFeatures>,
+    silenceThresholdDb: Float,
+    silenceDurationSec: Int
+): WavAnalysisResult? {
+    if (info.bitsPerSample != 16) return null
+    val frameBytes = info.channels * 2
+    val totalFrames = (info.dataSize / frameBytes).coerceAtLeast(0)
+    if (totalFrames <= 0 || windows.isEmpty()) return null
+
+    val windowFrames = (info.sampleRate / 20).coerceAtLeast(1)
+    val cutFrames = (info.sampleRate * silenceDurationSec).coerceAtLeast(windowFrames)
+    val minSegmentFrames = (info.sampleRate * MIN_MUSICAL_SEGMENT_SEC).coerceAtLeast(windowFrames)
+    val resumeConfirmFrames = (info.sampleRate * 4).coerceAtLeast(windowFrames)
+    val resumePrerollFrames = (info.sampleRate * 6).coerceAtLeast(resumeConfirmFrames)
     val thresholds = computeAdaptiveThresholds(windows, silenceThresholdDb)
     val envelope = mutableListOf<WavEnvelopeWindow>()
 
@@ -143,7 +167,6 @@ internal fun analyzeWavBySilence(
         }
     }
 
-    onProgress?.invoke(100)
     return WavAnalysisResult(info = info, segments = segments, envelope = envelope, thresholds = thresholds)
 }
 

@@ -530,6 +530,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             postProcessSourceFile?.takeIf { it != imported.file }?.let { old ->
                 runCatching { old.delete() }
             }
+            ImportedAudioAnalysisCache.clear()
             postProcessWorkingFile?.takeIf { it != postProcessSourceFile }?.let { old ->
                 runCatching { old.delete() }
             }
@@ -587,7 +588,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     fun runPostProcessExport() {
         val sourceFile = postProcessWorkingFile
         val analysis = postProcessAnalysis
-        if (sourceFile == null || analysis == null || analysis.segments.isEmpty()) {
+        if (analysis == null || analysis.segments.isEmpty()) {
             _uiState.update { it.copy(postProcessStatusMessage = "Analyse d'abord le fichier avant l'export.") }
             return
         }
@@ -602,11 +603,12 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             val exportResult = withContext(Dispatchers.IO) {
+                val exportSourceFile = sourceFile ?: prepareWorkingFileForPostProcessExport() ?: return@withContext null
                 exportPostProcessedFiles(
-                    sourceFile = sourceFile,
+                    sourceFile = exportSourceFile,
                     analysis = analysis,
                     mode = _uiState.value.postProcessMode,
-                    sourceDisplayName = _uiState.value.postProcessSourceName ?: sourceFile.name
+                    sourceDisplayName = _uiState.value.postProcessSourceName ?: exportSourceFile.name
                 )
             }
 
@@ -2097,6 +2099,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         postProcessSourceFile?.let { runCatching { it.delete() } }
         postProcessWorkingFile?.takeIf { it != postProcessSourceFile }?.let { runCatching { it.delete() } }
         postProcessReanalyzeJob?.cancel()
+        ImportedAudioAnalysisCache.clear()
         RecordingForegroundService.stop(getApplication())
         super.onCleared()
     }
@@ -2132,7 +2135,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     is AnalysisServiceState.Completed -> {
                         if (postProcessSourceFile?.absolutePath != state.sourcePath) return@collectLatest
-                        postProcessWorkingFile = File(state.workingFilePath)
+                        postProcessWorkingFile = state.workingFilePath?.let(::File) ?: postProcessWorkingFile
                         applyCompletedAnalysis(state.analysis)
                     }
                 }
@@ -2189,6 +2192,22 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 }
             )
         }
+    }
+
+    private fun prepareWorkingFileForPostProcessExport(): File? {
+        val sourceFile = postProcessSourceFile ?: return null
+        if (!sourceFile.exists()) return null
+        val normalized = normalizeImportedAudio(
+            context = getApplication(),
+            sourceFile = sourceFile,
+            displayName = _uiState.value.postProcessSourceName ?: sourceFile.name,
+            kind = postProcessSourceKind
+        ) ?: return null
+        postProcessWorkingFile?.takeIf { it != postProcessSourceFile && it != normalized.file }?.let { old ->
+            runCatching { old.delete() }
+        }
+        postProcessWorkingFile = normalized.file
+        return normalized.file
     }
 
     private fun observeRecordingService() {

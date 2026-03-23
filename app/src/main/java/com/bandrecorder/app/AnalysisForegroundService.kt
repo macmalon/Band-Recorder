@@ -99,6 +99,60 @@ class AnalysisForegroundService : Service() {
             return
         }
 
+        val cachedDecodedAnalysis = if (sourceKind == ImportedAudioKind.M4A) {
+            ImportedAudioAnalysisCache.get(sourceFile)
+        } else {
+            null
+        }
+        if (cachedDecodedAnalysis != null) {
+            publishRunningState(sourcePath, displayName, "Cache analyse réutilisé... 100%", 100)
+            val analysis = analyzeSignalWindows(
+                info = cachedDecodedAnalysis.info,
+                windows = cachedDecodedAnalysis.windows,
+                silenceThresholdDb = silenceThresholdDb,
+                silenceDurationSec = silenceDurationSec
+            )
+            if (analysis == null) {
+                finishFailure(sourcePath, "Analyse impossible: le cache audio n'a pas pu être relu.")
+                return
+            }
+            finishSuccess(sourcePath, null, analysis, displayName)
+            return
+        }
+
+        if (sourceKind == ImportedAudioKind.M4A) {
+            val decodedAnalysis = withContext(Dispatchers.IO) {
+                decodeAudioFileToAnalysisCache(
+                    sourceFile = sourceFile,
+                    onProgress = { stepProgress ->
+                        publishRunningState(
+                            sourcePath = sourcePath,
+                            displayName = displayName,
+                            message = "Décodage et analyse... ${stepProgress.coerceIn(0, 100)}%",
+                            progressPercent = stepProgress
+                        )
+                    }
+                )
+            }
+            if (decodedAnalysis == null) {
+                finishFailure(sourcePath, "Analyse impossible: le fichier audio n'a pas pu être décodé.")
+                return
+            }
+            ImportedAudioAnalysisCache.put(sourceFile, decodedAnalysis)
+            val analysis = analyzeSignalWindows(
+                info = decodedAnalysis.info,
+                windows = decodedAnalysis.windows,
+                silenceThresholdDb = silenceThresholdDb,
+                silenceDurationSec = silenceDurationSec
+            )
+            if (analysis == null) {
+                finishFailure(sourcePath, "Analyse impossible: le signal décodé n'a pas pu être exploité.")
+                return
+            }
+            finishSuccess(sourcePath, null, analysis, displayName)
+            return
+        }
+
         val cachedWorkingFile = cachedWorkingFilePath?.let(::File)?.takeIf { it.exists() }
         val workingFile = if (cachedWorkingFile != null) {
             publishRunningState(sourcePath, displayName, "WAV préparé réutilisé... 35%", 35)
@@ -148,10 +202,19 @@ class AnalysisForegroundService : Service() {
             return
         }
 
+        finishSuccess(sourcePath, workingFile.absolutePath, analysis, displayName)
+    }
+
+    private fun finishSuccess(
+        sourcePath: String,
+        workingFilePath: String?,
+        analysis: WavAnalysisResult,
+        displayName: String
+    ) {
         AnalysisCoordinator.publish(
             AnalysisServiceState.Completed(
                 sourcePath = sourcePath,
-                workingFilePath = workingFile.absolutePath,
+                workingFilePath = workingFilePath,
                 analysis = analysis
             )
         )
