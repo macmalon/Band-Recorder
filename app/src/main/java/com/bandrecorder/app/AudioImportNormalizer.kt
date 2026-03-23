@@ -325,7 +325,7 @@ internal fun decodeAudioFileToAnalysisCache(
     var durationUs = 0L
     var lastProgress = -1
     val windows = mutableListOf<SignalFeatures>()
-    var totalFrames = 0
+    var totalFrames = 0L
     var windowFrames = 0
     var windowSampleCapacity = 0
     var windowSamples = ShortArray(0)
@@ -465,7 +465,7 @@ internal fun decodeAudioFileToAnalysisCache(
                 channels = outputChannels,
                 bitsPerSample = 16,
                 dataOffset = 44L,
-                dataSize = totalFrames * outputChannels * 2
+                dataSize = totalFrames * outputChannels.toLong() * 2L
             ),
             windows = windows
         )
