@@ -65,6 +65,42 @@ class WavPostProcessorTest {
     }
 
     @Test
+    fun `analysis keeps low but audible music instead of classifying it as silence`() {
+        val file = createAlternatingMonoWav(
+            sections = listOf(
+                section(60, 12_000),
+                section(20, 1_600),
+                section(60, 12_000)
+            )
+        )
+
+        val analysis = analyzeWavBySilence(file, silenceThresholdDb = 0f, silenceDurationSec = 2)
+
+        requireNotNull(analysis)
+        assertEquals(1, analysis.segments.size)
+        assertNear(ms(analysis.info, analysis.segments.first().startFrame), 0L)
+        assertNear(ms(analysis.info, analysis.segments.first().endFrame), 140_000L, toleranceMs = 1_500L)
+    }
+
+    @Test
+    fun `analysis still removes prolonged very low passages`() {
+        val file = createAlternatingMonoWav(
+            sections = listOf(
+                section(60, 12_000),
+                section(4, 120),
+                section(60, 12_000)
+            )
+        )
+
+        val analysis = analyzeWavBySilence(file, silenceThresholdDb = 0f, silenceDurationSec = 2)
+
+        requireNotNull(analysis)
+        assertEquals(2, analysis.segments.size)
+        assertNear(ms(analysis.info, analysis.segments[0].endFrame), 62_000L, toleranceMs = 1_500L)
+        assertTrue(ms(analysis.info, analysis.segments[1].startFrame) >= 62_000L)
+    }
+
+    @Test
     fun `analysis ignores silence at file edges and trims after n seconds`() {
         val file = createMonoWav(
             listOf(
@@ -169,9 +205,30 @@ class WavPostProcessorTest {
         }
     }
 
+    private fun createAlternatingMonoWav(sections: List<Section>, sampleRate: Int = 1_000): File {
+        val samples = ShortArray(sections.sumOf { it.durationSec * sampleRate })
+        var cursor = 0
+        sections.forEach { section ->
+            repeat(section.durationSec * sampleRate) { index ->
+                val sign = if (index % 2 == 0) 1 else -1
+                samples[cursor++] = (section.amplitude * sign).toShort()
+            }
+        }
+
+        return File.createTempFile("wav_post_alt_", ".wav").apply {
+            FileOutputStream(this).use { out ->
+                out.write(buildWavHeader(samples.size * 2, sampleRate, 1))
+                samples.forEach { sample ->
+                    out.write(sample.toInt() and 0xFF)
+                    out.write((sample.toInt() shr 8) and 0xFF)
+                }
+            }
+        }
+    }
+
     private fun section(durationSec: Int, amplitude: Int): Section = Section(durationSec, amplitude)
 
-    private fun ms(info: WavInfo, frame: Int): Long = (frame.toLong() * 1_000L) / info.sampleRate.toLong()
+    private fun ms(info: WavInfo, frame: Long): Long = (frame * 1_000L) / info.sampleRate.toLong()
 
     private fun assertNear(actual: Long, expected: Long, toleranceMs: Long = 60L) {
         assertTrue("expected=$expected actual=$actual", abs(actual - expected) <= toleranceMs)

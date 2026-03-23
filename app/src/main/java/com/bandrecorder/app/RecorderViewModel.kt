@@ -218,6 +218,7 @@ data class RecorderUiState(
     val postProcessIsAnalyzing: Boolean = false,
     val postProcessAnalysisProgressPercent: Int = 0,
     val postProcessIsExporting: Boolean = false,
+    val postProcessExportProgressPercent: Int = 0,
     val postProcessSegments: List<PostProcessSegmentPreview> = emptyList(),
     val postProcessCuts: List<PostProcessCutPreview> = emptyList(),
     val postProcessEnvelope: List<PostProcessEnvelopePoint> = emptyList(),
@@ -597,6 +598,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             _uiState.update {
                 it.copy(
                     postProcessIsExporting = true,
+                    postProcessExportProgressPercent = 0,
                     postProcessStatusMessage = "Export en cours...",
                     postProcessLastExportLabel = null
                 )
@@ -608,13 +610,22 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     sourceFile = exportSourceFile,
                     analysis = analysis,
                     mode = _uiState.value.postProcessMode,
-                    sourceDisplayName = _uiState.value.postProcessSourceName ?: exportSourceFile.name
+                    sourceDisplayName = _uiState.value.postProcessSourceName ?: exportSourceFile.name,
+                    onProgress = { progress ->
+                        _uiState.update { state ->
+                            state.copy(
+                                postProcessExportProgressPercent = progress.coerceIn(0, 100),
+                                postProcessStatusMessage = "Export en cours... ${progress.coerceIn(0, 100)}%"
+                            )
+                        }
+                    }
                 )
             }
 
             _uiState.update {
                 it.copy(
                     postProcessIsExporting = false,
+                    postProcessExportProgressPercent = 0,
                     postProcessStatusMessage = exportResult ?: "Export impossible.",
                     postProcessLastExportLabel = exportResult
                 )
@@ -1709,7 +1720,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private fun exportSingleWavToDownloads(
         source: File,
         displayName: String,
-        relativePath: String = "${Environment.DIRECTORY_DOWNLOADS}/Band Recorder"
+        relativePath: String = "${Environment.DIRECTORY_DOWNLOADS}/Band Recorder",
+        onProgress: ((bytesCopied: Long, totalBytes: Long) -> Unit)? = null
     ): Boolean {
         val resolver = getApplication<Application>().contentResolver
         val values = ContentValues().apply {
@@ -1721,7 +1733,18 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
         return runCatching {
             resolver.openOutputStream(uri)?.use { out ->
-                source.inputStream().use { input -> input.copyTo(out) }
+                source.inputStream().use { input ->
+                    val totalBytes = source.length().coerceAtLeast(0L)
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    var copied = 0L
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        out.write(buffer, 0, read)
+                        copied += read
+                        onProgress?.invoke(copied, totalBytes)
+                    }
+                }
             } ?: error("Cannot open output stream")
             values.clear()
             values.put(MediaStore.MediaColumns.IS_PENDING, 0)
@@ -1768,7 +1791,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         sourceFile: File,
         analysis: WavAnalysisResult,
         mode: PostProcessMode,
-        sourceDisplayName: String
+        sourceDisplayName: String,
+        onProgress: ((Int) -> Unit)? = null
     ): String? {
         val baseName = sourceDisplayName.substringBeforeLast('.').replace(Regex("[^A-Za-z0-9_-]"), "_").ifBlank { "processed" }
         val editedRelativePath = "${Environment.DIRECTORY_DOWNLOADS}/Band Recorder/Fichiers édités/$baseName"
@@ -1776,12 +1800,28 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             mkdirs()
         }
         val generated = mutableListOf<File>()
+        fun publish(progress: Int) {
+            onProgress?.invoke(progress.coerceIn(0, 100))
+        }
+        publish(0)
         val message = when (mode) {
             PostProcessMode.CLEAN_SINGLE_FILE -> {
                 val outFile = File(tempDir, "${baseName}_cleaned.wav")
-                com.bandrecorder.app.writeCleanedWav(sourceFile, analysis.info, analysis.segments, outFile)
+                com.bandrecorder.app.writeCleanedWav(
+                    sourceFile,
+                    analysis.info,
+                    analysis.segments,
+                    outFile,
+                    onProgress = { writtenBytes, totalBytes ->
+                        val phase = scaledProgress(writtenBytes, totalBytes, 0, 70)
+                        publish(phase)
+                    }
+                )
                 generated += outFile
-                if (exportSingleWavToDownloads(outFile, outFile.name, editedRelativePath)) {
+                if (exportSingleWavToDownloads(outFile, outFile.name, editedRelativePath) { copied, total ->
+                        publish(scaledProgress(copied, total, 70, 100))
+                    }) {
+                    publish(100)
                     "Export traité: ${outFile.name}"
                 } else {
                     null
@@ -1789,13 +1829,42 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             PostProcessMode.SPLIT_MULTIPLE_TRACKS -> {
+                val totalBytesToGenerate = analysis.segments.sumOf {
+                    (it.endFrame - it.startFrame).coerceAtLeast(0) * analysis.info.channels.toLong() * 2L
+                }.coerceAtLeast(1L)
+                var generatedBytes = 0L
                 analysis.segments.forEachIndexed { index, segment ->
                     val outFile = File(tempDir, "${baseName}_track_${"%02d".format(Locale.US, index + 1)}.wav")
-                    com.bandrecorder.app.writeWavSegment(sourceFile, analysis.info, segment, outFile)
+                    val segmentBytes = (segment.endFrame - segment.startFrame).coerceAtLeast(0) * analysis.info.channels.toLong() * 2L
+                    com.bandrecorder.app.writeWavSegment(
+                        sourceFile,
+                        analysis.info,
+                        segment,
+                        outFile,
+                        onProgress = { writtenBytes, totalBytes ->
+                            val safeTotal = totalBytes.coerceAtLeast(1L)
+                            val aggregateWritten = generatedBytes + writtenBytes.coerceAtMost(safeTotal)
+                            publish(scaledProgress(aggregateWritten, totalBytesToGenerate, 0, 70))
+                        }
+                    )
+                    generatedBytes += segmentBytes
                     generated += outFile
                 }
-                val exported = generated.count { exportSingleWavToDownloads(it, it.name, editedRelativePath) }
+                val totalBytesToCopy = generated.sumOf { it.length().coerceAtLeast(0L) }.coerceAtLeast(1L)
+                var copiedBytes = 0L
+                val exported = generated.count { file ->
+                    exportSingleWavToDownloads(file, file.name, editedRelativePath) { copied, total ->
+                        val safeTotal = total.coerceAtLeast(1L)
+                        val aggregateCopied = copiedBytes + copied.coerceAtMost(safeTotal)
+                        publish(scaledProgress(aggregateCopied, totalBytesToCopy, 70, 100))
+                    }.also { success ->
+                        if (success) {
+                            copiedBytes += file.length().coerceAtLeast(0L)
+                        }
+                    }
+                }
                 if (exported == generated.size && exported > 0) {
+                    publish(100)
                     "Export traité: $exported piste(s)"
                 } else {
                     null
@@ -1806,7 +1875,13 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         return message
     }
 
-    private fun framesToMs(sampleRate: Int, frame: Int): Long {
+    private fun scaledProgress(done: Long, total: Long, start: Int, end: Int): Int {
+        val safeTotal = total.coerceAtLeast(1L)
+        val ratio = (done.coerceIn(0L, safeTotal)).toDouble() / safeTotal.toDouble()
+        return (start + ((end - start) * ratio)).toInt().coerceIn(start, end)
+    }
+
+    private fun framesToMs(sampleRate: Int, frame: Long): Long {
         if (sampleRate <= 0) return 0L
         return (frame.toLong() * 1000L) / sampleRate.toLong()
     }
@@ -2145,7 +2220,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun applyCompletedAnalysis(analysis: WavAnalysisResult) {
         postProcessAnalysis = analysis
-        val durationMs = framesToMs(analysis.info.sampleRate, analysis.info.dataSize / (analysis.info.channels * 2))
+        val durationMs = framesToMs(analysis.info.sampleRate, analysis.info.dataSize / (analysis.info.channels * 2L))
         val segments = analysis.segments.mapIndexed { index, segment ->
             val startMs = framesToMs(analysis.info.sampleRate, segment.startFrame)
             val endMs = framesToMs(analysis.info.sampleRate, segment.endFrame)
@@ -2184,7 +2259,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 postProcessEnvelope = envelope,
                 silenceAutoThresholdDb = analysis.thresholds.autoThresholdDb,
                 silenceEffectiveThresholdDb = analysis.thresholds.enterThresholdDb,
-                silenceDetectionSummary = "Auto ${"%.1f".format(analysis.thresholds.autoThresholdDb)} dBFS, réglé ${"%.1f".format(analysis.thresholds.enterThresholdDb)} dBFS",
+                silenceDetectionSummary = "Auto ${"%.1f".format(analysis.thresholds.autoThresholdDb)} dBFS sur passages faibles durables, réglé ${"%.1f".format(analysis.thresholds.enterThresholdDb)} dBFS",
                 postProcessStatusMessage = if (segments.isEmpty()) {
                     "Aucun segment utile trouvé avec ces réglages."
                 } else {

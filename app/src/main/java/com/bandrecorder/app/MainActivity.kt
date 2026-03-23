@@ -2169,6 +2169,23 @@ private fun PostProcessScreen(
                     color = AmpAccentAmber
                 )
             }
+            if (ui.postProcessIsExporting) {
+                val progress = (ui.postProcessExportProgressPercent.coerceIn(0, 100) / 100f)
+                LinearProgressIndicator(
+                    progress = { progress },
+                    color = AmpMetalLight,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics {
+                            progressBarRangeInfo = ProgressBarRangeInfo(progress, 0f..1f)
+                        }
+                )
+                Text(
+                    "${ui.postProcessExportProgressPercent.coerceIn(0, 100)}%",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AmpMetalLight
+                )
+            }
             ui.postProcessLastExportLabel?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = AmpAccentAmber)
             }

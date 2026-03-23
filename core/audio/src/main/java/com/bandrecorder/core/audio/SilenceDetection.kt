@@ -111,7 +111,7 @@ fun computeAdaptiveThresholds(
     if (windows.isEmpty()) {
         val auto = -42f
         val enter = (auto + thresholdOffsetDb).coerceIn(-80f, -18f)
-        return AdaptiveSilenceThresholds(auto, enter, (enter + 4f).coerceAtMost(-10f))
+        return AdaptiveSilenceThresholds(auto, enter, (enter + 3f).coerceAtMost(-10f))
     }
 
     val rmsValues = windows.map { it.rmsDb }.sorted()
@@ -119,14 +119,14 @@ fun computeAdaptiveThresholds(
     val activityFloor = percentile(rmsValues, 0.72f)
     val spread = (activityFloor - noiseFloor).coerceAtLeast(0f)
     val baseLift = when {
-        spread >= 24f -> 12f
-        spread >= 16f -> 10f
-        spread >= 10f -> 8f
-        else -> 6f
+        spread >= 24f -> 7f
+        spread >= 16f -> 6f
+        spread >= 10f -> 5f
+        else -> 4f
     }
-    val auto = (noiseFloor + baseLift).coerceIn(-72f, -24f)
+    val auto = (noiseFloor + baseLift).coerceIn(-78f, -30f)
     val enter = (auto + thresholdOffsetDb).coerceIn(-80f, -18f)
-    val exit = (enter + 4f).coerceAtMost(-10f)
+    val exit = (enter + 3f).coerceAtMost(-10f)
     return AdaptiveSilenceThresholds(autoThresholdDb = auto, enterThresholdDb = enter, exitThresholdDb = exit)
 }
 
@@ -137,13 +137,23 @@ fun evaluateSilence(
 ): SilenceDecision {
     val speechLikelihood = computeSpeechLikelihood(features, thresholds.enterThresholdDb, thresholds.exitThresholdDb)
     val belowEnter = features.rmsDb <= thresholds.enterThresholdDb
-    val belowExit = features.rmsDb <= thresholds.exitThresholdDb
-    val nearExit = features.rmsDb <= thresholds.exitThresholdDb + 1.5f
+    val insideBand = features.rmsDb <= thresholds.exitThresholdDb && features.rmsDb >= thresholds.enterThresholdDb - 1.25f
+    val clearlyAboveExit = features.rmsDb >= thresholds.exitThresholdDb + 1.25f
 
     val isSilence = if (currentlyInSilence) {
-        belowExit || (nearExit && speechLikelihood >= 0.55f)
+        when {
+            clearlyAboveExit -> false
+            belowEnter -> true
+            insideBand -> speechLikelihood >= 0.74f
+            else -> false
+        }
     } else {
-        belowEnter || (nearExit && speechLikelihood >= 0.72f)
+        when {
+            belowEnter -> true
+            clearlyAboveExit -> false
+            insideBand -> speechLikelihood >= 0.88f
+            else -> false
+        }
     }
     return SilenceDecision(isSilence = isSilence, speechLikelihood = speechLikelihood)
 }
@@ -153,22 +163,22 @@ private fun computeSpeechLikelihood(
     enterThresholdDb: Float,
     exitThresholdDb: Float
 ): Float {
-    val lowLevelScore = normalize((exitThresholdDb + 8f) - features.rmsDb, 0f, 18f)
-    val midFocusScore = normalize(features.midBandRatio, 0.28f, 0.7f)
-    val edgePenalty = 1f - normalize(features.lowBandRatio + features.highBandRatio, 0.35f, 0.9f)
-    val transientPenalty = 1f - normalize(features.transientDensity, 0.01f, 0.12f)
-    val crestPenalty = 1f - normalize(features.crestDb, 5f, 20f)
-    val zcrScore = 1f - abs(normalize(features.zeroCrossingRate, 0.03f, 0.18f) - 0.45f) * 1.8f
-    val borderlineBonus = normalize((exitThresholdDb + 4f) - features.rmsDb, -6f, 10f)
+    val lowLevelScore = normalize((enterThresholdDb + 4f) - features.rmsDb, -2f, 12f)
+    val midFocusScore = normalize(features.midBandRatio, 0.32f, 0.68f)
+    val edgePenalty = 1f - normalize(features.lowBandRatio + features.highBandRatio, 0.42f, 0.92f)
+    val transientPenalty = 1f - normalize(features.transientDensity, 0.015f, 0.11f)
+    val crestPenalty = 1f - normalize(features.crestDb, 6f, 18f)
+    val zcrScore = 1f - abs(normalize(features.zeroCrossingRate, 0.04f, 0.16f) - 0.5f) * 1.9f
+    val borderlineBonus = normalize(exitThresholdDb - features.rmsDb, -1.5f, 4.5f)
 
     return (
-        (lowLevelScore * 0.24f) +
-            (midFocusScore * 0.24f) +
-            (edgePenalty * 0.16f) +
-            (transientPenalty * 0.18f) +
-            (crestPenalty * 0.10f) +
-            (zcrScore.coerceIn(0f, 1f) * 0.08f) +
-            (borderlineBonus * 0.10f)
+        (lowLevelScore * 0.18f) +
+            (midFocusScore * 0.18f) +
+            (edgePenalty * 0.12f) +
+            (transientPenalty * 0.12f) +
+            (crestPenalty * 0.08f) +
+            (zcrScore.coerceIn(0f, 1f) * 0.06f) +
+            (borderlineBonus * 0.08f)
         ).coerceIn(0f, 1f)
 }
 

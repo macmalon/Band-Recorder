@@ -14,12 +14,12 @@ internal data class WavInfo(
     val channels: Int,
     val bitsPerSample: Int,
     val dataOffset: Long,
-    val dataSize: Int
+    val dataSize: Long
 )
 
 internal data class WavFrameSegment(
-    val startFrame: Int,
-    val endFrame: Int
+    val startFrame: Long,
+    val endFrame: Long
 )
 
 internal data class WavAnalysisResult(
@@ -49,18 +49,14 @@ internal fun analyzeWavBySilence(
     val totalFrames = (info.dataSize / frameBytes).coerceAtLeast(0)
     if (totalFrames <= 0) return null
 
-    val windowFrames = (info.sampleRate / 20).coerceAtLeast(1)
-    val cutFrames = (info.sampleRate * silenceDurationSec).coerceAtLeast(windowFrames)
-    val minSegmentFrames = (info.sampleRate * MIN_MUSICAL_SEGMENT_SEC).coerceAtLeast(windowFrames)
-    val resumeConfirmFrames = (info.sampleRate * 4).coerceAtLeast(windowFrames)
-    val resumePrerollFrames = (info.sampleRate * 6).coerceAtLeast(resumeConfirmFrames)
+    val windowFrames = (info.sampleRate / 20).coerceAtLeast(1).toLong()
     val windows = mutableListOf<SignalFeatures>()
     val totalWindows = ((totalFrames + windowFrames - 1) / windowFrames).coerceAtLeast(1)
     var lastProgress = -1
 
     RandomAccessFile(sourceFile, "r").use { raf ->
-        var windowStart = 0
-        var processedWindows = 0
+        var windowStart = 0L
+        var processedWindows = 0L
         while (windowStart < totalFrames) {
             val windowEnd = (windowStart + windowFrames).coerceAtMost(totalFrames)
             windows += readWindowStats(raf, info, frameBytes, windowStart, windowEnd)
@@ -93,21 +89,21 @@ internal fun analyzeSignalWindows(
     val totalFrames = (info.dataSize / frameBytes).coerceAtLeast(0)
     if (totalFrames <= 0 || windows.isEmpty()) return null
 
-    val windowFrames = (info.sampleRate / 20).coerceAtLeast(1)
-    val cutFrames = (info.sampleRate * silenceDurationSec).coerceAtLeast(windowFrames)
-    val minSegmentFrames = (info.sampleRate * MIN_MUSICAL_SEGMENT_SEC).coerceAtLeast(windowFrames)
-    val resumeConfirmFrames = (info.sampleRate * 4).coerceAtLeast(windowFrames)
-    val resumePrerollFrames = (info.sampleRate * 6).coerceAtLeast(resumeConfirmFrames)
+    val windowFrames = (info.sampleRate / 20).coerceAtLeast(1).toLong()
+    val cutFrames = (info.sampleRate.toLong() * silenceDurationSec).coerceAtLeast(windowFrames)
+    val minSegmentFrames = (info.sampleRate.toLong() * MIN_MUSICAL_SEGMENT_SEC).coerceAtLeast(windowFrames)
+    val resumeConfirmFrames = (info.sampleRate.toLong() * 4L).coerceAtLeast(windowFrames)
+    val resumePrerollFrames = (info.sampleRate.toLong() * 6L).coerceAtLeast(resumeConfirmFrames)
     val thresholds = computeAdaptiveThresholds(windows, silenceThresholdDb)
     val envelope = mutableListOf<WavEnvelopeWindow>()
 
     val segments = mutableListOf<WavFrameSegment>()
     var inSignal = false
-    var segmentStart = 0
-    var silenceRunStart: Int? = null
-    var signalCandidateStart: Int? = null
+    var segmentStart = 0L
+    var silenceRunStart: Long? = null
+    var signalCandidateStart: Long? = null
     var requireConfirmedResume = false
-    var resumeStartFloor = 0
+    var resumeStartFloor = 0L
 
     windows.forEachIndexed { index, features ->
         val windowStart = index * windowFrames
@@ -174,26 +170,30 @@ internal fun writeWavSegment(
     sourceFile: File,
     info: WavInfo,
     segment: WavFrameSegment,
-    outFile: File
+    outFile: File,
+    onProgress: ((writtenBytes: Long, totalBytes: Long) -> Unit)? = null
 ) {
     val frameBytes = info.channels * 2
     val dataSize = ((segment.endFrame - segment.startFrame).coerceAtLeast(0) * frameBytes).coerceAtLeast(0)
-    if (dataSize <= 0) return
+    if (dataSize <= 0 || dataSize > Int.MAX_VALUE.toLong()) return
     outFile.parentFile?.mkdirs()
 
     RandomAccessFile(sourceFile, "r").use { src ->
         FileOutputStream(outFile).use { out ->
-            out.write(buildWavHeader(dataSize, info.sampleRate, info.channels))
+            out.write(buildWavHeader(dataSize.toInt(), info.sampleRate, info.channels))
             val start = info.dataOffset + (segment.startFrame.toLong() * frameBytes.toLong())
             src.seek(start)
             val buffer = ByteArray(8192)
             var remaining = dataSize
+            var written = 0L
             while (remaining > 0) {
-                val toRead = minOf(buffer.size, remaining)
+                val toRead = minOf(buffer.size.toLong(), remaining).toInt()
                 val read = src.read(buffer, 0, toRead)
                 if (read <= 0) break
                 out.write(buffer, 0, read)
                 remaining -= read
+                written += read
+                onProgress?.invoke(written, dataSize)
             }
         }
     }
@@ -203,27 +203,31 @@ internal fun writeCleanedWav(
     sourceFile: File,
     info: WavInfo,
     segments: List<WavFrameSegment>,
-    outFile: File
+    outFile: File,
+    onProgress: ((writtenBytes: Long, totalBytes: Long) -> Unit)? = null
 ) {
     val frameBytes = info.channels * 2
     val dataSize = segments.sumOf { (it.endFrame - it.startFrame).coerceAtLeast(0) * frameBytes }
-    if (dataSize <= 0) return
+    if (dataSize <= 0 || dataSize > Int.MAX_VALUE.toLong()) return
     outFile.parentFile?.mkdirs()
 
     RandomAccessFile(sourceFile, "r").use { src ->
         FileOutputStream(outFile).use { out ->
-            out.write(buildWavHeader(dataSize, info.sampleRate, info.channels))
+            out.write(buildWavHeader(dataSize.toInt(), info.sampleRate, info.channels))
             val buffer = ByteArray(8192)
+            var written = 0L
             segments.forEach { segment ->
                 var remaining = ((segment.endFrame - segment.startFrame).coerceAtLeast(0) * frameBytes).coerceAtLeast(0)
                 val start = info.dataOffset + (segment.startFrame.toLong() * frameBytes.toLong())
                 src.seek(start)
                 while (remaining > 0) {
-                    val toRead = minOf(buffer.size, remaining)
+                    val toRead = minOf(buffer.size.toLong(), remaining).toInt()
                     val read = src.read(buffer, 0, toRead)
                     if (read <= 0) break
                     out.write(buffer, 0, read)
                     remaining -= read
+                    written += read
+                    onProgress?.invoke(written, dataSize)
                 }
             }
         }
@@ -239,9 +243,9 @@ internal fun readWavInfo(file: File): WavInfo? {
         val sampleRate = readIntLE(header, 24)
         val channels = readShortLE(header, 22)
         val bitsPerSample = readShortLE(header, 34)
-        val headerDataSize = readIntLE(header, 40)
+        val headerDataSize = readIntLE(header, 40).toLong() and 0xFFFF_FFFFL
         if (sampleRate <= 0 || channels <= 0 || bitsPerSample <= 0) return null
-        val fileDataSize = (file.length() - 44L).coerceAtLeast(0L).toInt()
+        val fileDataSize = (file.length() - 44L).coerceAtLeast(0L)
         val dataSize = headerDataSize.coerceAtMost(fileDataSize).coerceAtLeast(0)
         return WavInfo(
             sampleRate = sampleRate,
@@ -289,12 +293,12 @@ private fun readWindowStats(
     raf: RandomAccessFile,
     info: WavInfo,
     frameBytes: Int,
-    startFrame: Int,
-    endFrame: Int
+    startFrame: Long,
+    endFrame: Long
 ): SignalFeatures {
     val frameCount = (endFrame - startFrame).coerceAtLeast(0)
     if (frameCount <= 0) return SignalFeatures(-90f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
-    val bytesToRead = frameCount * frameBytes
+    val bytesToRead = (frameCount * frameBytes).toInt()
     val buffer = ByteArray(bytesToRead)
     raf.seek(info.dataOffset + (startFrame.toLong() * frameBytes.toLong()))
     val read = raf.read(buffer, 0, buffer.size).coerceAtLeast(0)
