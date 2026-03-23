@@ -51,6 +51,7 @@ class AnalysisForegroundService : Service() {
                 val sourceKind = intent.getStringExtra(EXTRA_SOURCE_KIND)
                     ?.let { runCatching { ImportedAudioKind.valueOf(it) }.getOrNull() }
                     ?: ImportedAudioKind.UNSUPPORTED
+                val cachedWorkingFilePath = intent.getStringExtra(EXTRA_CACHED_WORKING_FILE_PATH)
                 val silenceThresholdDb = intent.getFloatExtra(EXTRA_THRESHOLD_DB, 0f)
                 val silenceDurationSec = intent.getIntExtra(EXTRA_DURATION_SEC, 8)
                 runningStartedAtMs = System.currentTimeMillis()
@@ -63,6 +64,7 @@ class AnalysisForegroundService : Service() {
                         sourcePath = sourcePath,
                         displayName = displayName,
                         sourceKind = sourceKind,
+                        cachedWorkingFilePath = cachedWorkingFilePath,
                         silenceThresholdDb = silenceThresholdDb,
                         silenceDurationSec = silenceDurationSec
                     )
@@ -85,6 +87,7 @@ class AnalysisForegroundService : Service() {
         sourcePath: String,
         displayName: String,
         sourceKind: ImportedAudioKind,
+        cachedWorkingFilePath: String?,
         silenceThresholdDb: Float,
         silenceDurationSec: Int
     ) {
@@ -96,21 +99,27 @@ class AnalysisForegroundService : Service() {
             return
         }
 
-        val workingFile = withContext(Dispatchers.IO) {
-            normalizeImportedAudio(
-                context = applicationContext,
-                sourceFile = sourceFile,
-                displayName = displayName,
-                kind = sourceKind,
-                onProgress = { stepProgress ->
-                    publishRunningState(
-                        sourcePath = sourcePath,
-                        displayName = displayName,
-                        message = "Préparation du fichier... ${stepProgress.coerceIn(0, 100)}%",
-                        progressPercent = combineProgress(preparationPercent = stepProgress, analysisPercent = null)
-                    )
-                }
-            )?.file
+        val cachedWorkingFile = cachedWorkingFilePath?.let(::File)?.takeIf { it.exists() }
+        val workingFile = if (cachedWorkingFile != null) {
+            publishRunningState(sourcePath, displayName, "WAV préparé réutilisé... 35%", 35)
+            cachedWorkingFile
+        } else {
+            withContext(Dispatchers.IO) {
+                normalizeImportedAudio(
+                    context = applicationContext,
+                    sourceFile = sourceFile,
+                    displayName = displayName,
+                    kind = sourceKind,
+                    onProgress = { stepProgress ->
+                        publishRunningState(
+                            sourcePath = sourcePath,
+                            displayName = displayName,
+                            message = "Préparation du fichier... ${stepProgress.coerceIn(0, 100)}%",
+                            progressPercent = combineProgress(preparationPercent = stepProgress, analysisPercent = null)
+                        )
+                    }
+                )?.file
+            }
         }
         if (workingFile == null || !workingFile.exists()) {
             finishFailure(sourcePath, "Analyse impossible: le fichier audio n'a pas pu être préparé.")
@@ -319,6 +328,7 @@ class AnalysisForegroundService : Service() {
         private const val EXTRA_SOURCE_PATH = "extra_source_path"
         private const val EXTRA_DISPLAY_NAME = "extra_display_name"
         private const val EXTRA_SOURCE_KIND = "extra_source_kind"
+        private const val EXTRA_CACHED_WORKING_FILE_PATH = "extra_cached_working_file_path"
         private const val EXTRA_THRESHOLD_DB = "extra_threshold_db"
         private const val EXTRA_DURATION_SEC = "extra_duration_sec"
 
@@ -327,6 +337,7 @@ class AnalysisForegroundService : Service() {
             sourcePath: String,
             displayName: String,
             sourceKind: ImportedAudioKind,
+            cachedWorkingFilePath: String?,
             silenceThresholdDb: Float,
             silenceDurationSec: Int
         ) {
@@ -335,6 +346,7 @@ class AnalysisForegroundService : Service() {
                 putExtra(EXTRA_SOURCE_PATH, sourcePath)
                 putExtra(EXTRA_DISPLAY_NAME, displayName)
                 putExtra(EXTRA_SOURCE_KIND, sourceKind.name)
+                putExtra(EXTRA_CACHED_WORKING_FILE_PATH, cachedWorkingFilePath)
                 putExtra(EXTRA_THRESHOLD_DB, silenceThresholdDb)
                 putExtra(EXTRA_DURATION_SEC, silenceDurationSec)
             }

@@ -578,6 +578,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             sourcePath = sourceFile.absolutePath,
             displayName = _uiState.value.postProcessSourceName ?: sourceFile.name,
             sourceKind = postProcessSourceKind,
+            cachedWorkingFilePath = postProcessWorkingFile?.takeIf { it.exists() }?.absolutePath,
             silenceThresholdDb = _uiState.value.silenceThresholdDb,
             silenceDurationSec = _uiState.value.silenceDurationSec
         )
