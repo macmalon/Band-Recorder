@@ -325,6 +325,7 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onBack = { navController.popBackStack() },
                 onImport = vm::importPostProcessSource,
                 onAnalyze = vm::analyzePostProcessSource,
+                onCancelAnalyze = vm::cancelPostProcessAnalysis,
                 onExport = vm::runPostProcessExport,
                 onSetMode = vm::setPostProcessMode,
                 onSetSilenceDurationSec = vm::setPostProcessSilenceDurationSec,
@@ -2017,6 +2018,7 @@ private fun PostProcessScreen(
     onBack: () -> Unit,
     onImport: (Uri) -> Unit,
     onAnalyze: () -> Unit,
+    onCancelAnalyze: () -> Unit,
     onExport: () -> Unit,
     onSetMode: (PostProcessMode) -> Unit,
     onSetSilenceDurationSec: (Int) -> Unit,
@@ -2145,11 +2147,13 @@ private fun PostProcessScreen(
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
-                    onClick = onAnalyze,
-                    enabled = ui.postProcessSourcePath != null && !ui.postProcessIsAnalyzing && !ui.postProcessIsExporting,
+                    onClick = {
+                        if (ui.postProcessIsAnalyzing) onCancelAnalyze() else onAnalyze()
+                    },
+                    enabled = ui.postProcessSourcePath != null && !ui.postProcessIsExporting,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text(if (ui.postProcessIsAnalyzing) "Analyse..." else "Analyser")
+                    Text(if (ui.postProcessIsAnalyzing) "Annuler" else "Analyser")
                 }
                 OutlinedButton(
                     onClick = onExport,

@@ -507,8 +507,13 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         val bounded = value.coerceIn(2, 20)
         if (_uiState.value.silenceDurationSec == bounded) return
         setSilenceDurationSec(bounded)
-        markPostProcessPreviewDirty()
-        schedulePostProcessReanalysis()
+        if (postProcessSourceFile != null) {
+            _uiState.update {
+                it.copy(
+                    postProcessStatusMessage = "Durée modifiée. Appuie sur Analyser pour recalculer l'aperçu."
+                )
+            }
+        }
     }
 
     fun setPostProcessSilenceThresholdDb(value: Float) {
@@ -586,6 +591,18 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             silenceThresholdDb = _uiState.value.silenceThresholdDb,
             silenceDurationSec = _uiState.value.silenceDurationSec
         )
+    }
+
+    fun cancelPostProcessAnalysis() {
+        postProcessReanalyzeJob?.cancel()
+        AnalysisForegroundService.stop(getApplication())
+        _uiState.update {
+            it.copy(
+                postProcessIsAnalyzing = false,
+                postProcessAnalysisProgressPercent = 0,
+                postProcessStatusMessage = "Analyse annulée."
+            )
+        }
     }
 
     fun runPostProcessExport() {
