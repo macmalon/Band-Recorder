@@ -605,9 +605,10 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             val exportResult = withContext(Dispatchers.IO) {
-                val exportSourceFile = sourceFile ?: prepareWorkingFileForPostProcessExport() ?: return@withContext null
+                val exportSourceFile = sourceFile ?: postProcessSourceFile ?: return@withContext null
                 exportPostProcessedFiles(
                     sourceFile = exportSourceFile,
+                    sourceKind = if (sourceFile != null) ImportedAudioKind.WAV else postProcessSourceKind,
                     analysis = analysis,
                     mode = _uiState.value.postProcessMode,
                     sourceDisplayName = _uiState.value.postProcessSourceName ?: exportSourceFile.name,
@@ -1789,6 +1790,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun exportPostProcessedFiles(
         sourceFile: File,
+        sourceKind: ImportedAudioKind,
         analysis: WavAnalysisResult,
         mode: PostProcessMode,
         sourceDisplayName: String,
@@ -1804,6 +1806,49 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             onProgress?.invoke(progress.coerceIn(0, 100))
         }
         publish(0)
+        if (sourceKind == ImportedAudioKind.M4A) {
+            val generatedFromDecode = exportDecodedAudioSelectionToTempWavs(
+                sourceFile = sourceFile,
+                analysis = analysis,
+                mode = mode,
+                outputDir = tempDir,
+                baseName = baseName,
+                onProgress = { progress ->
+                    publish(scaledProgress(progress.toLong(), 100L, 0, 70))
+                }
+            ) ?: return null
+            generated += generatedFromDecode
+            val totalBytesToCopy = generated.sumOf { it.length().coerceAtLeast(0L) }.coerceAtLeast(1L)
+            var copiedBytes = 0L
+            val exported = generated.count { file ->
+                exportSingleWavToDownloads(file, file.name, editedRelativePath) { copied, total ->
+                    val safeTotal = total.coerceAtLeast(1L)
+                    val aggregateCopied = copiedBytes + copied.coerceAtMost(safeTotal)
+                    publish(scaledProgress(aggregateCopied, totalBytesToCopy, 70, 100))
+                }.also { success ->
+                    if (success) copiedBytes += file.length().coerceAtLeast(0L)
+                }
+            }
+            val message = when (mode) {
+                PostProcessMode.CLEAN_SINGLE_FILE ->
+                    if (exported == 1 && generated.size == 1) {
+                        publish(100)
+                        "Export traité: ${generated.first().name}"
+                    } else {
+                        null
+                    }
+                PostProcessMode.SPLIT_MULTIPLE_TRACKS ->
+                    if (exported == generated.size && exported > 0) {
+                        publish(100)
+                        "Export traité: $exported piste(s)"
+                    } else {
+                        null
+                    }
+            }
+            generated.forEach { runCatching { it.delete() } }
+            return message
+        }
+
         val message = when (mode) {
             PostProcessMode.CLEAN_SINGLE_FILE -> {
                 val outFile = File(tempDir, "${baseName}_cleaned.wav")

@@ -511,3 +511,209 @@ private fun finalizeTemporaryWavHeader(file: File, dataSize: Int, sampleRate: In
         raf.write(buildWavHeader(dataSize, sampleRate, channels))
     }
 }
+
+internal fun exportDecodedAudioSelectionToTempWavs(
+    sourceFile: File,
+    analysis: WavAnalysisResult,
+    mode: PostProcessMode,
+    outputDir: File,
+    baseName: String,
+    onProgress: ((Int) -> Unit)? = null
+): List<File>? {
+    if (analysis.segments.isEmpty()) return emptyList()
+    val extractor = MediaExtractor()
+    var codec: MediaCodec? = null
+    var outputSampleRate = 0
+    var outputChannels = 0
+    var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
+    var durationUs = 0L
+    var lastProgress = -1
+    val bytesPerFrame = analysis.info.channels * 2L
+    val sortedSegments = analysis.segments.sortedBy { it.startFrame }
+    if (sortedSegments.any { it.endFrame <= it.startFrame }) return null
+    outputDir.mkdirs()
+
+    data class OutputHandle(
+        val file: File,
+        val expectedDataBytes: Int,
+        val stream: FileOutputStream,
+        var writtenDataBytes: Int = 0
+    )
+
+    val handles = mutableListOf<OutputHandle>()
+    val outputFiles = mutableListOf<File>()
+    val totalOutputBytes = sortedSegments.sumOf { ((it.endFrame - it.startFrame) * bytesPerFrame).coerceAtLeast(0L) }
+    if (totalOutputBytes <= 0L || totalOutputBytes > Int.MAX_VALUE.toLong()) return null
+
+    try {
+        fun createHandle(file: File, expectedDataBytes: Long): OutputHandle? {
+            if (expectedDataBytes <= 0L || expectedDataBytes > Int.MAX_VALUE.toLong()) return null
+            FileOutputStream(file).use { it.write(ByteArray(44)) }
+            val stream = FileOutputStream(file, true)
+            return OutputHandle(file, expectedDataBytes.toInt(), stream).also {
+                handles += it
+                outputFiles += file
+            }
+        }
+
+        when (mode) {
+            PostProcessMode.CLEAN_SINGLE_FILE -> {
+                createHandle(
+                    File(outputDir, "${baseName}_cleaned.wav"),
+                    totalOutputBytes
+                ) ?: return null
+            }
+            PostProcessMode.SPLIT_MULTIPLE_TRACKS -> {
+                sortedSegments.forEachIndexed { index, segment ->
+                    createHandle(
+                        File(outputDir, "${baseName}_track_${"%02d".format(Locale.US, index + 1)}.wav"),
+                        ((segment.endFrame - segment.startFrame) * bytesPerFrame).coerceAtLeast(0L)
+                    ) ?: return null
+                }
+            }
+        }
+
+        extractor.setDataSource(sourceFile.absolutePath)
+        val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
+            extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
+        } ?: return null
+        extractor.selectTrack(trackIndex)
+        val inputFormat = extractor.getTrackFormat(trackIndex)
+        durationUs = if (inputFormat.containsKey(MediaFormat.KEY_DURATION)) {
+            inputFormat.getLong(MediaFormat.KEY_DURATION).coerceAtLeast(0L)
+        } else {
+            0L
+        }
+        val mimeType = inputFormat.getString(MediaFormat.KEY_MIME) ?: return null
+        codec = MediaCodec.createDecoderByType(mimeType)
+        codec.configure(inputFormat, null, null, 0)
+        codec.start()
+
+        val bufferInfo = MediaCodec.BufferInfo()
+        var inputDone = false
+        var outputDone = false
+        var chunkStartFrame = 0L
+        var firstMatchingSegmentIndex = 0
+        while (!outputDone) {
+            if (!inputDone) {
+                val inputBufferIndex = codec.dequeueInputBuffer(10_000)
+                if (inputBufferIndex >= 0) {
+                    val inputBuffer = codec.getInputBuffer(inputBufferIndex) ?: return null
+                    val sampleSize = extractor.readSampleData(inputBuffer, 0)
+                    if (sampleSize < 0) {
+                        codec.queueInputBuffer(inputBufferIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        inputDone = true
+                    } else {
+                        codec.queueInputBuffer(
+                            inputBufferIndex,
+                            0,
+                            sampleSize,
+                            extractor.sampleTime.coerceAtLeast(0L),
+                            extractor.sampleFlags
+                        )
+                        extractor.advance()
+                    }
+                }
+            }
+
+            when (val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000)) {
+                MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
+                MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    val format = codec.outputFormat
+                    outputSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                    outputChannels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    pcmEncoding = if (format.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                        format.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                    } else {
+                        AudioFormat.ENCODING_PCM_16BIT
+                    }
+                    if (outputSampleRate != analysis.info.sampleRate || outputChannels != analysis.info.channels) {
+                        return null
+                    }
+                }
+                MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> Unit
+                else -> {
+                    if (outputIndex >= 0) {
+                        val outputBuffer = codec.getOutputBuffer(outputIndex)
+                        if (outputBuffer != null && bufferInfo.size > 0) {
+                            if (outputSampleRate <= 0 || outputChannels <= 0) {
+                                val format = codec.outputFormat
+                                outputSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                                outputChannels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                                if (outputSampleRate != analysis.info.sampleRate || outputChannels != analysis.info.channels) {
+                                    return null
+                                }
+                            }
+                            val chunk = extractPcm16Chunk(outputBuffer, bufferInfo, pcmEncoding) ?: return null
+                            val framesInChunk = chunk.size / (outputChannels * 2)
+                            val chunkEndFrame = chunkStartFrame + framesInChunk
+
+                            while (
+                                firstMatchingSegmentIndex < sortedSegments.size &&
+                                sortedSegments[firstMatchingSegmentIndex].endFrame <= chunkStartFrame
+                            ) {
+                                firstMatchingSegmentIndex += 1
+                            }
+
+                            var segmentIndex = firstMatchingSegmentIndex
+                            while (segmentIndex < sortedSegments.size) {
+                                val segment = sortedSegments[segmentIndex]
+                                if (segment.startFrame >= chunkEndFrame) break
+                                val overlapStart = maxOf(chunkStartFrame, segment.startFrame)
+                                val overlapEnd = minOf(chunkEndFrame, segment.endFrame)
+                                if (overlapEnd > overlapStart) {
+                                    val startByte = ((overlapStart - chunkStartFrame) * bytesPerFrame).toInt()
+                                    val endByte = ((overlapEnd - chunkStartFrame) * bytesPerFrame).toInt()
+                                    val handle = when (mode) {
+                                        PostProcessMode.CLEAN_SINGLE_FILE -> handles.first()
+                                        PostProcessMode.SPLIT_MULTIPLE_TRACKS -> handles[segmentIndex]
+                                    }
+                                    handle.stream.write(chunk, startByte, endByte - startByte)
+                                    handle.writtenDataBytes += (endByte - startByte)
+                                }
+                                if (segment.endFrame <= chunkEndFrame) {
+                                    segmentIndex += 1
+                                } else {
+                                    break
+                                }
+                            }
+
+                            chunkStartFrame = chunkEndFrame
+                            if (durationUs > 0L && bufferInfo.presentationTimeUs >= 0L) {
+                                val progress = ((bufferInfo.presentationTimeUs.coerceAtMost(durationUs) * 100L) / durationUs)
+                                    .toInt()
+                                    .coerceIn(0, 100)
+                                if (progress != lastProgress) {
+                                    lastProgress = progress
+                                    onProgress?.invoke(progress)
+                                }
+                            }
+                        }
+                        codec.releaseOutputBuffer(outputIndex, false)
+                        if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                            outputDone = true
+                        }
+                    }
+                }
+            }
+        }
+
+        handles.forEach { handle ->
+            handle.stream.flush()
+            handle.stream.close()
+            if (handle.writtenDataBytes <= 0 || handle.writtenDataBytes != handle.expectedDataBytes) {
+                return null
+            }
+            finalizeTemporaryWavHeader(handle.file, handle.writtenDataBytes, analysis.info.sampleRate, analysis.info.channels)
+        }
+        onProgress?.invoke(100)
+        return outputFiles
+    } catch (_: Throwable) {
+        return null
+    } finally {
+        handles.forEach { handle -> runCatching { handle.stream.close() } }
+        runCatching { codec?.stop() }
+        runCatching { codec?.release() }
+        runCatching { extractor.release() }
+    }
+}
