@@ -504,7 +504,9 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setPostProcessSilenceDurationSec(value: Int) {
-        setSilenceDurationSec(value)
+        val bounded = value.coerceIn(2, 20)
+        if (_uiState.value.silenceDurationSec == bounded) return
+        setSilenceDurationSec(bounded)
         markPostProcessPreviewDirty()
         schedulePostProcessReanalysis()
     }
