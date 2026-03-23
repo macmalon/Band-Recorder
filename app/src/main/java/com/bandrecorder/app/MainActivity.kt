@@ -2026,6 +2026,9 @@ private fun PostProcessScreen(
 ) {
     val context = LocalContext.current
     val previewPlayback = remember { PlaybackController(context) }
+    var durationDraft by remember(ui.postProcessSourcePath, ui.silenceDurationSec) {
+        mutableStateOf(ui.silenceDurationSec.toFloat())
+    }
     var thresholdDraft by remember(ui.postProcessSourcePath, ui.silenceThresholdDb) {
         mutableStateOf(ui.silenceThresholdDb)
     }
@@ -2034,6 +2037,11 @@ private fun PostProcessScreen(
     ) { uri ->
         if (uri != null) {
             onImport(uri)
+        }
+    }
+    LaunchedEffect(ui.silenceDurationSec, ui.postProcessIsAnalyzing) {
+        if (!ui.postProcessIsAnalyzing) {
+            durationDraft = ui.silenceDurationSec.toFloat()
         }
     }
     LaunchedEffect(ui.silenceThresholdDb, ui.postProcessIsAnalyzing) {
@@ -2092,9 +2100,10 @@ private fun PostProcessScreen(
 
             AdvancedConfigSlider(
                 label = "Durée du blanc (s)",
-                value = ui.silenceDurationSec.toFloat(),
+                value = durationDraft,
                 range = 2f..20f,
-                onValueChange = { onSetSilenceDurationSec(it.roundToInt()) }
+                onValueChange = { durationDraft = it },
+                onValueChangeFinished = { onSetSilenceDurationSec(durationDraft.roundToInt()) }
             )
             AdvancedConfigSlider(
                 label = "Décalage seuil (dB)",
