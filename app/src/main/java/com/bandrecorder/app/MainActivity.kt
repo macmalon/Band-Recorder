@@ -73,6 +73,9 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -2149,6 +2152,23 @@ private fun PostProcessScreen(
             }
 
             Text(ui.postProcessStatusMessage, style = MaterialTheme.typography.bodySmall, color = AmpMetalLight)
+            if (ui.postProcessIsAnalyzing) {
+                val progress = (ui.postProcessAnalysisProgressPercent.coerceIn(0, 100) / 100f)
+                LinearProgressIndicator(
+                    progress = { progress },
+                    color = AmpAccentAmber,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics {
+                            progressBarRangeInfo = ProgressBarRangeInfo(progress, 0f..1f)
+                        }
+                )
+                Text(
+                    "${ui.postProcessAnalysisProgressPercent.coerceIn(0, 100)}%",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AmpAccentAmber
+                )
+            }
             ui.postProcessLastExportLabel?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = AmpAccentAmber)
             }

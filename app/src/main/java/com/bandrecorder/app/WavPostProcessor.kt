@@ -40,7 +40,8 @@ private const val MIN_MUSICAL_SEGMENT_SEC = 50
 internal fun analyzeWavBySilence(
     sourceFile: File,
     silenceThresholdDb: Float,
-    silenceDurationSec: Int
+    silenceDurationSec: Int,
+    onProgress: ((Int) -> Unit)? = null
 ): WavAnalysisResult? {
     val info = readWavInfo(sourceFile) ?: return null
     if (info.bitsPerSample != 16) return null
@@ -54,12 +55,21 @@ internal fun analyzeWavBySilence(
     val resumeConfirmFrames = (info.sampleRate * 4).coerceAtLeast(windowFrames)
     val resumePrerollFrames = (info.sampleRate * 6).coerceAtLeast(resumeConfirmFrames)
     val windows = mutableListOf<SignalFeatures>()
+    val totalWindows = ((totalFrames + windowFrames - 1) / windowFrames).coerceAtLeast(1)
+    var lastProgress = -1
 
     RandomAccessFile(sourceFile, "r").use { raf ->
         var windowStart = 0
+        var processedWindows = 0
         while (windowStart < totalFrames) {
             val windowEnd = (windowStart + windowFrames).coerceAtMost(totalFrames)
             windows += readWindowStats(raf, info, frameBytes, windowStart, windowEnd)
+            processedWindows += 1
+            val progress = ((processedWindows * 100L) / totalWindows.toLong()).toInt().coerceIn(0, 100)
+            if (progress != lastProgress) {
+                lastProgress = progress
+                onProgress?.invoke(progress)
+            }
             windowStart = windowEnd
         }
     }
@@ -133,6 +143,7 @@ internal fun analyzeWavBySilence(
         }
     }
 
+    onProgress?.invoke(100)
     return WavAnalysisResult(info = info, segments = segments, envelope = envelope, thresholds = thresholds)
 }
 

@@ -28,6 +28,8 @@ class AnalysisForegroundService : Service() {
     private var analysisJob: Job? = null
     private var analysisWakeLock: PowerManager.WakeLock? = null
     private var runningStartedAtMs: Long = 0L
+    private var lastPublishedProgressPercent: Int = -1
+    private var lastPublishedMessage: String = ""
 
     override fun onCreate() {
         super.onCreate()
@@ -52,7 +54,9 @@ class AnalysisForegroundService : Service() {
                 val silenceThresholdDb = intent.getFloatExtra(EXTRA_THRESHOLD_DB, 0f)
                 val silenceDurationSec = intent.getIntExtra(EXTRA_DURATION_SEC, 8)
                 runningStartedAtMs = System.currentTimeMillis()
-                startForegroundCompat(buildRunningNotification("Préparation de l'analyse...", displayName))
+                lastPublishedProgressPercent = -1
+                lastPublishedMessage = ""
+                startForegroundCompat(buildRunningNotification("Préparation de l'analyse...", displayName, 0))
                 analysisJob?.cancel()
                 analysisJob = serviceScope.launch {
                     runAnalysis(
@@ -85,7 +89,7 @@ class AnalysisForegroundService : Service() {
         silenceDurationSec: Int
     ) {
         acquireWakeLock()
-        AnalysisCoordinator.publish(AnalysisServiceState.Running(sourcePath, "Préparation de l'analyse..."))
+        publishRunningState(sourcePath, displayName, "Préparation du fichier...", 0)
         val sourceFile = File(sourcePath)
         if (!sourceFile.exists()) {
             finishFailure(sourcePath, "Analyse impossible: fichier introuvable.")
@@ -97,7 +101,15 @@ class AnalysisForegroundService : Service() {
                 context = applicationContext,
                 sourceFile = sourceFile,
                 displayName = displayName,
-                kind = sourceKind
+                kind = sourceKind,
+                onProgress = { stepProgress ->
+                    publishRunningState(
+                        sourcePath = sourcePath,
+                        displayName = displayName,
+                        message = "Préparation du fichier... ${stepProgress.coerceIn(0, 100)}%",
+                        progressPercent = combineProgress(preparationPercent = stepProgress, analysisPercent = null)
+                    )
+                }
             )?.file
         }
         if (workingFile == null || !workingFile.exists()) {
@@ -105,13 +117,21 @@ class AnalysisForegroundService : Service() {
             return
         }
 
-        AnalysisCoordinator.publish(AnalysisServiceState.Running(sourcePath, "Analyse en cours..."))
-        updateRunningNotification("Analyse en cours...", displayName)
+        publishRunningState(sourcePath, displayName, "Analyse du signal... 35%", 35)
         val analysis = withContext(Dispatchers.Default) {
             analyzeWavBySilence(
                 sourceFile = workingFile,
                 silenceThresholdDb = silenceThresholdDb,
-                silenceDurationSec = silenceDurationSec
+                silenceDurationSec = silenceDurationSec,
+                onProgress = { stepProgress ->
+                    val combined = combineProgress(preparationPercent = 100, analysisPercent = stepProgress)
+                    publishRunningState(
+                        sourcePath = sourcePath,
+                        displayName = displayName,
+                        message = "Analyse du signal... $combined%",
+                        progressPercent = combined
+                    )
+                }
             )
         }
         if (analysis == null) {
@@ -192,7 +212,11 @@ class AnalysisForegroundService : Service() {
         )
     }
 
-    private fun buildRunningNotification(message: String, displayName: String?) = NotificationCompat.Builder(this, CHANNEL_ID_RUNNING)
+    private fun buildRunningNotification(
+        message: String,
+        displayName: String?,
+        progressPercent: Int
+    ) = NotificationCompat.Builder(this, CHANNEL_ID_RUNNING)
         .setSmallIcon(android.R.drawable.ic_popup_sync)
         .setContentTitle("Analyse audio en cours")
         .setContentText(message)
@@ -202,15 +226,48 @@ class AnalysisForegroundService : Service() {
         .setPriority(NotificationCompat.PRIORITY_DEFAULT)
         .setCategory(NotificationCompat.CATEGORY_PROGRESS)
         .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-        .setProgress(0, 0, true)
+        .setProgress(100, progressPercent.coerceIn(0, 100), false)
         .setUsesChronometer(true)
         .setWhen(runningStartedAtMs)
         .setShowWhen(true)
         .setContentIntent(mainActivityPendingIntent())
         .build()
 
-    private fun updateRunningNotification(message: String, displayName: String?) {
-        notificationManager.notify(NOTIFICATION_ID_RUNNING, buildRunningNotification(message, displayName))
+    private fun updateRunningNotification(message: String, displayName: String?, progressPercent: Int) {
+        notificationManager.notify(
+            NOTIFICATION_ID_RUNNING,
+            buildRunningNotification(message, displayName, progressPercent)
+        )
+    }
+
+    private fun publishRunningState(
+        sourcePath: String,
+        displayName: String,
+        message: String,
+        progressPercent: Int
+    ) {
+        val boundedProgress = progressPercent.coerceIn(0, 100)
+        if (message == lastPublishedMessage && boundedProgress == lastPublishedProgressPercent) return
+        lastPublishedMessage = message
+        lastPublishedProgressPercent = boundedProgress
+        AnalysisCoordinator.publish(
+            AnalysisServiceState.Running(
+                sourcePath = sourcePath,
+                message = message,
+                progressPercent = boundedProgress
+            )
+        )
+        updateRunningNotification(message, displayName, boundedProgress)
+    }
+
+    private fun combineProgress(preparationPercent: Int? = null, analysisPercent: Int? = null): Int {
+        val prep = preparationPercent?.coerceIn(0, 100)
+        val analysis = analysisPercent?.coerceIn(0, 100)
+        return when {
+            prep != null && analysis == null -> ((prep * 35L) / 100L).toInt()
+            analysis != null -> 35 + ((analysis * 65L) / 100L).toInt()
+            else -> 0
+        }.coerceIn(0, 100)
     }
 
     private fun startForegroundCompat(notification: android.app.Notification) {

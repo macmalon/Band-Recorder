@@ -9,7 +9,8 @@ internal sealed class AnalysisServiceState {
 
     data class Running(
         val sourcePath: String,
-        val message: String
+        val message: String,
+        val progressPercent: Int
     ) : AnalysisServiceState()
 
     data class Completed(

@@ -216,6 +216,7 @@ data class RecorderUiState(
     val postProcessSourceChannels: Int? = null,
     val postProcessMode: PostProcessMode = PostProcessMode.CLEAN_SINGLE_FILE,
     val postProcessIsAnalyzing: Boolean = false,
+    val postProcessAnalysisProgressPercent: Int = 0,
     val postProcessIsExporting: Boolean = false,
     val postProcessSegments: List<PostProcessSegmentPreview> = emptyList(),
     val postProcessCuts: List<PostProcessCutPreview> = emptyList(),
@@ -567,6 +568,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.update {
             it.copy(
                 postProcessIsAnalyzing = true,
+                postProcessAnalysisProgressPercent = 0,
                 postProcessStatusMessage = "Analyse en cours...",
                 postProcessLastExportLabel = null
             )
@@ -2108,6 +2110,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         _uiState.update {
                             it.copy(
                                 postProcessIsAnalyzing = true,
+                                postProcessAnalysisProgressPercent = state.progressPercent,
                                 postProcessStatusMessage = state.message
                             )
                         }
@@ -2118,6 +2121,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         _uiState.update {
                             it.copy(
                                 postProcessIsAnalyzing = false,
+                                postProcessAnalysisProgressPercent = 0,
                                 postProcessSegments = emptyList(),
                                 postProcessCuts = emptyList(),
                                 postProcessEnvelope = emptyList(),
@@ -2168,6 +2172,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.update {
             it.copy(
                 postProcessIsAnalyzing = false,
+                postProcessAnalysisProgressPercent = 100,
                 postProcessSourceSampleRateHz = analysis.info.sampleRate,
                 postProcessSourceChannels = analysis.info.channels,
                 postProcessSegments = segments,

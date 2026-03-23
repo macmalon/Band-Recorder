@@ -56,18 +56,20 @@ internal fun normalizeImportedAudio(
     context: Context,
     sourceFile: File,
     displayName: String,
-    kind: ImportedAudioKind
+    kind: ImportedAudioKind,
+    onProgress: ((Int) -> Unit)? = null
 ): NormalizedImportedAudio? {
     val tempDir = File(context.cacheDir, "post_process_imports").apply { mkdirs() }
     val safeName = displayName.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "imported_audio" }
     val normalizedFile = when (kind) {
         ImportedAudioKind.WAV -> {
+            onProgress?.invoke(100)
             sourceFile
         }
         ImportedAudioKind.M4A -> {
             val baseName = safeName.substringBeforeLast('.', safeName)
             val target = File(tempDir, "${System.currentTimeMillis()}_${baseName}.wav")
-            decodeAudioFileToWav(sourceFile, target) ?: return null
+            decodeAudioFileToWav(sourceFile, target, onProgress) ?: return null
         }
         ImportedAudioKind.UNSUPPORTED -> return null
     }
@@ -178,13 +180,19 @@ private fun copyUriToFile(context: Context, uri: Uri, target: File): File? {
     }
 }
 
-private fun decodeAudioFileToWav(sourceFile: File, target: File): File? {
+private fun decodeAudioFileToWav(
+    sourceFile: File,
+    target: File,
+    onProgress: ((Int) -> Unit)? = null
+): File? {
     val extractor = MediaExtractor()
     var codec: MediaCodec? = null
     var outputSampleRate = 0
     var outputChannels = 0
     var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
     var dataBytesWritten = 0
+    var durationUs = 0L
+    var lastProgress = -1
     try {
         extractor.setDataSource(sourceFile.absolutePath)
         val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
@@ -192,6 +200,11 @@ private fun decodeAudioFileToWav(sourceFile: File, target: File): File? {
         } ?: return null
         extractor.selectTrack(trackIndex)
         val inputFormat = extractor.getTrackFormat(trackIndex)
+        durationUs = if (inputFormat.containsKey(MediaFormat.KEY_DURATION)) {
+            inputFormat.getLong(MediaFormat.KEY_DURATION).coerceAtLeast(0L)
+        } else {
+            0L
+        }
         val mimeType = inputFormat.getString(MediaFormat.KEY_MIME) ?: return null
         codec = MediaCodec.createDecoderByType(mimeType)
         codec.configure(inputFormat, null, null, 0)
@@ -255,6 +268,15 @@ private fun decodeAudioFileToWav(sourceFile: File, target: File): File? {
                                 val chunk = extractPcm16Chunk(outputBuffer, bufferInfo, pcmEncoding) ?: return null
                                 output.write(chunk)
                                 dataBytesWritten += chunk.size
+                                if (durationUs > 0L && bufferInfo.presentationTimeUs >= 0L) {
+                                    val progress = ((bufferInfo.presentationTimeUs.coerceAtMost(durationUs) * 100L) / durationUs)
+                                        .toInt()
+                                        .coerceIn(0, 100)
+                                    if (progress != lastProgress) {
+                                        lastProgress = progress
+                                        onProgress?.invoke(progress)
+                                    }
+                                }
                             }
                             codec.releaseOutputBuffer(outputIndex, false)
                             if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
@@ -277,6 +299,7 @@ private fun decodeAudioFileToWav(sourceFile: File, target: File): File? {
             return null
         }
         finalizeTemporaryWavHeader(target, dataBytesWritten, outputSampleRate, outputChannels)
+        onProgress?.invoke(100)
         return target
     } catch (_: Throwable) {
         runCatching { target.delete() }
