@@ -877,6 +877,88 @@ private data class PendingMediaStoreWav(
     var writtenDataBytes: Int = 0
 )
 
+internal data class DecodedSegmentExportSpec(
+    val segmentIndex: Int,
+    val segment: WavFrameSegment,
+    val displayName: String,
+    val expectedDataBytes: Long
+)
+
+internal data class DecodedChunkSegmentWrite(
+    val segmentIndex: Int,
+    val startByte: Int,
+    val byteCount: Int
+)
+
+internal data class DecodedChunkDispatch(
+    val writes: List<DecodedChunkSegmentWrite>,
+    val nextSegmentIndex: Int
+)
+
+internal fun buildDecodedSegmentExportSpecs(
+    baseName: String,
+    segments: List<WavFrameSegment>,
+    bytesPerFrame: Long
+): List<DecodedSegmentExportSpec> {
+    return segments.mapIndexedNotNull { index, segment ->
+        val expectedBytes = ((segment.endFrame - segment.startFrame) * bytesPerFrame).coerceAtLeast(0L)
+        if (expectedBytes <= 0L) {
+            null
+        } else {
+            DecodedSegmentExportSpec(
+                segmentIndex = index,
+                segment = segment,
+                displayName = "${baseName}_track_${"%02d".format(Locale.US, index + 1)}.wav",
+                expectedDataBytes = expectedBytes
+            )
+        }
+    }
+}
+
+internal fun computeDecodedChunkDispatch(
+    segments: List<WavFrameSegment>,
+    chunkStartFrame: Long,
+    chunkEndFrame: Long,
+    bytesPerFrame: Long,
+    firstMatchingSegmentIndex: Int
+): DecodedChunkDispatch {
+    var nextSegmentIndex = firstMatchingSegmentIndex
+    while (
+        nextSegmentIndex < segments.size &&
+        segments[nextSegmentIndex].endFrame <= chunkStartFrame
+    ) {
+        nextSegmentIndex += 1
+    }
+
+    val writes = mutableListOf<DecodedChunkSegmentWrite>()
+    var segmentIndex = nextSegmentIndex
+    while (segmentIndex < segments.size) {
+        val segment = segments[segmentIndex]
+        if (segment.startFrame >= chunkEndFrame) break
+        val overlapStart = maxOf(chunkStartFrame, segment.startFrame)
+        val overlapEnd = minOf(chunkEndFrame, segment.endFrame)
+        if (overlapEnd > overlapStart) {
+            val startByte = ((overlapStart - chunkStartFrame) * bytesPerFrame).toInt()
+            val endByte = ((overlapEnd - chunkStartFrame) * bytesPerFrame).toInt()
+            writes += DecodedChunkSegmentWrite(
+                segmentIndex = segmentIndex,
+                startByte = startByte,
+                byteCount = endByte - startByte
+            )
+        }
+        if (segment.endFrame <= chunkEndFrame) {
+            segmentIndex += 1
+        } else {
+            break
+        }
+    }
+
+    return DecodedChunkDispatch(
+        writes = writes,
+        nextSegmentIndex = maxOf(nextSegmentIndex, segmentIndex)
+    )
+}
+
 private fun createPendingMediaStoreWav(
     context: Context,
     displayName: String,
@@ -941,6 +1023,7 @@ internal fun exportDecodedAudioSelectionToTempWavs(
     val pcmChunkBuffer = ReusablePcmChunkBuffer()
     val bytesPerFrame = analysis.info.channels * 2L
     val sortedSegments = analysis.segments.sortedBy { it.startFrame }
+    val segmentExportSpecs = buildDecodedSegmentExportSpecs(baseName, sortedSegments, bytesPerFrame)
     if (sortedSegments.any { it.endFrame <= it.startFrame }) return null
     outputDir.mkdirs()
 
@@ -977,10 +1060,10 @@ internal fun exportDecodedAudioSelectionToTempWavs(
                 ) ?: return null
             }
             PostProcessMode.SPLIT_MULTIPLE_TRACKS -> {
-                sortedSegments.forEachIndexed { index, segment ->
+                segmentExportSpecs.forEach { spec ->
                     createHandle(
-                        File(outputDir, "${baseName}_track_${"%02d".format(Locale.US, index + 1)}.wav"),
-                        ((segment.endFrame - segment.startFrame) * bytesPerFrame).coerceAtLeast(0L)
+                        File(outputDir, spec.displayName),
+                        spec.expectedDataBytes
                     ) ?: return null
                 }
             }
@@ -1065,37 +1148,22 @@ internal fun exportDecodedAudioSelectionToTempWavs(
                             }
                             val framesInChunk = chunkSize / (outputChannels * 2)
                             val chunkEndFrame = chunkStartFrame + framesInChunk
-
-                            while (
-                                firstMatchingSegmentIndex < sortedSegments.size &&
-                                sortedSegments[firstMatchingSegmentIndex].endFrame <= chunkStartFrame
-                            ) {
-                                firstMatchingSegmentIndex += 1
-                            }
-
-                            var segmentIndex = firstMatchingSegmentIndex
-                            while (segmentIndex < sortedSegments.size) {
-                                val segment = sortedSegments[segmentIndex]
-                                if (segment.startFrame >= chunkEndFrame) break
-                                val overlapStart = maxOf(chunkStartFrame, segment.startFrame)
-                                val overlapEnd = minOf(chunkEndFrame, segment.endFrame)
-                                if (overlapEnd > overlapStart) {
-                                    val startByte = ((overlapStart - chunkStartFrame) * bytesPerFrame).toInt()
-                                    val endByte = ((overlapEnd - chunkStartFrame) * bytesPerFrame).toInt()
-                                    val handle = when (mode) {
-                                        PostProcessMode.CLEAN_SINGLE_FILE -> handles.first()
-                                        PostProcessMode.SPLIT_MULTIPLE_TRACKS -> handles[segmentIndex]
-                                    }
-                                    handle.stream.write(chunk, startByte, endByte - startByte)
-                                    handle.writtenDataBytes += (endByte - startByte)
+                            val dispatch = computeDecodedChunkDispatch(
+                                segments = sortedSegments,
+                                chunkStartFrame = chunkStartFrame,
+                                chunkEndFrame = chunkEndFrame,
+                                bytesPerFrame = bytesPerFrame,
+                                firstMatchingSegmentIndex = firstMatchingSegmentIndex
+                            )
+                            dispatch.writes.forEach { write ->
+                                val handle = when (mode) {
+                                    PostProcessMode.CLEAN_SINGLE_FILE -> handles.first()
+                                    PostProcessMode.SPLIT_MULTIPLE_TRACKS -> handles[write.segmentIndex]
                                 }
-                                if (segment.endFrame <= chunkEndFrame) {
-                                    segmentIndex += 1
-                                } else {
-                                    break
-                                }
+                                handle.stream.write(chunk, write.startByte, write.byteCount)
+                                handle.writtenDataBytes += write.byteCount
                             }
-
+                            firstMatchingSegmentIndex = dispatch.nextSegmentIndex
                             chunkStartFrame = chunkEndFrame
                             lastProgress = publishDecodeProgress(
                                 durationUs = durationUs,
@@ -1243,80 +1311,206 @@ private fun exportDecodedSplitSegmentsToDownloads(
 ): DirectDecodedAudioExportResult? {
     val bytesPerFrame = analysis.info.channels * 2L
     val requestedCount = segments.size
-    val totalExpectedBytes = segments.sumOf {
-        ((it.endFrame - it.startFrame) * bytesPerFrame).coerceAtLeast(0L)
-    }.coerceAtLeast(1L)
-    var completedBytes = 0L
-    val exportedNames = mutableListOf<String>()
-
-    segments.forEachIndexed { index, segment ->
-        val expectedBytes = ((segment.endFrame - segment.startFrame) * bytesPerFrame).coerceAtLeast(0L)
-        if (expectedBytes <= 0L) return@forEachIndexed
-        onProgress?.invoke(
-            PostProcessExportProgress(
-                progressPercent = ((completedBytes * 100L) / totalExpectedBytes).toInt().coerceIn(0, 100),
-                detailMessage = "Segment ${index + 1}/$requestedCount - 0%"
-            )
-        )
-        val pending = createPendingMediaStoreWav(
-            context = context,
-            displayName = "${baseName}_track_${"%02d".format(Locale.US, index + 1)}.wav",
-            relativePath = relativePath,
-            expectedDataBytes = expectedBytes,
-            sampleRate = analysis.info.sampleRate,
-            channels = analysis.info.channels
-        ) ?: return if (exportedNames.isEmpty()) null else DirectDecodedAudioExportResult(exportedNames.toList(), requestedCount)
-
-        val completed = runCatching {
-            decodeAudioSelectionToPendingWav(
-                context = context,
-                sourceFile = sourceFile,
-                sourceUri = sourceUri,
-                analysis = analysis,
-                segments = listOf(segment),
-                pending = pending
-            ) { writtenBytes, _, decodedFrame, _ ->
-                val overallBytes = (completedBytes + writtenBytes).coerceAtMost(totalExpectedBytes)
-                val progress = ((overallBytes * 100L) / totalExpectedBytes).toInt().coerceIn(0, 100)
-                val boundedWrittenBytes = writtenBytes.coerceIn(0L, expectedBytes)
-                val boundedDecodedFrame = decodedFrame.coerceIn(0L, segment.endFrame)
-                val segmentProgress = when {
-                    expectedBytes <= 0L -> 0
-                    segment.startFrame <= 0L -> {
-                        ((boundedWrittenBytes * 100L) / expectedBytes).toInt().coerceIn(0, 99)
-                    }
-                    boundedDecodedFrame < segment.startFrame -> {
-                        ((boundedDecodedFrame * 90L) / segment.startFrame).toInt().coerceIn(0, 89)
-                    }
-                    else -> {
-                        val writePhaseProgress = ((boundedWrittenBytes * 10L) / expectedBytes).toInt().coerceIn(0, 10)
-                        (90 + writePhaseProgress).coerceIn(90, 99)
-                    }
-                }
-                onProgress?.invoke(
-                    PostProcessExportProgress(
-                        progressPercent = progress,
-                        detailMessage = "Segment ${index + 1}/$requestedCount - $segmentProgress%"
-                    )
-                )
-            }
-        }.getOrDefault(false)
-
-        if (!completed) {
-            runCatching { pending.stream.close() }
-            discardPendingMediaStoreWav(context, pending.uri)
-            return if (exportedNames.isEmpty()) null else DirectDecodedAudioExportResult(exportedNames.toList(), requestedCount)
-        }
-
-        completedBytes += expectedBytes
-        exportedNames += pending.displayName
+    val segmentExportSpecs = buildDecodedSegmentExportSpecs(baseName, segments, bytesPerFrame)
+    if (segmentExportSpecs.isEmpty()) {
+        return DirectDecodedAudioExportResult(emptyList(), requestedCount)
     }
 
-    onProgress?.invoke(PostProcessExportProgress(100, "Segment $requestedCount/$requestedCount - 100%"))
-    return DirectDecodedAudioExportResult(
-        displayNames = exportedNames,
-        requestedCount = requestedCount
-    )
+    val totalExpectedBytes = segmentExportSpecs.sumOf { it.expectedDataBytes }.coerceAtLeast(1L)
+    val pendingHandles = mutableListOf<PendingMediaStoreWav>()
+    val extractor = MediaExtractor()
+    var extractorSource: ConfiguredExtractorSource? = null
+    var codec: MediaCodec? = null
+    var outputSampleRate = 0
+    var outputChannels = 0
+    var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
+    var totalWrittenBytes = 0L
+    var inputDone = false
+    var outputDone = false
+    var chunkStartFrame = 0L
+    var firstMatchingSegmentIndex = 0
+    var completedSuccessfully = false
+    val pcmChunkBuffer = ReusablePcmChunkBuffer()
+
+    fun currentSegmentDetail(decodedFrame: Long): String {
+        val safeSegmentIndex = firstMatchingSegmentIndex.coerceIn(0, segmentExportSpecs.lastIndex)
+        val spec = segmentExportSpecs[safeSegmentIndex]
+        val pending = pendingHandles[safeSegmentIndex]
+        val expectedBytes = spec.expectedDataBytes
+        val boundedWrittenBytes = pending.writtenDataBytes.toLong().coerceIn(0L, expectedBytes)
+        val boundedDecodedFrame = decodedFrame.coerceIn(0L, spec.segment.endFrame)
+        val segmentProgress = when {
+            expectedBytes <= 0L -> 0
+            spec.segment.startFrame <= 0L -> {
+                ((boundedWrittenBytes * 100L) / expectedBytes).toInt().coerceIn(0, 99)
+            }
+            boundedDecodedFrame < spec.segment.startFrame -> {
+                ((boundedDecodedFrame * 90L) / spec.segment.startFrame).toInt().coerceIn(0, 89)
+            }
+            else -> {
+                val writePhaseProgress = ((boundedWrittenBytes * 10L) / expectedBytes).toInt().coerceIn(0, 10)
+                (90 + writePhaseProgress).coerceIn(90, 99)
+            }
+        }
+        return "Segment ${safeSegmentIndex + 1}/$requestedCount - $segmentProgress%"
+    }
+
+    try {
+        segmentExportSpecs.forEach { spec ->
+            val pending = createPendingMediaStoreWav(
+                context = context,
+                displayName = spec.displayName,
+                relativePath = relativePath,
+                expectedDataBytes = spec.expectedDataBytes,
+                sampleRate = analysis.info.sampleRate,
+                channels = analysis.info.channels
+            ) ?: return null
+            pendingHandles += pending
+        }
+
+        onProgress?.invoke(PostProcessExportProgress(0, "Segment 1/$requestedCount - 0%"))
+
+        extractorSource = configureExtractorDataSource(extractor, context, sourceFile, sourceUri) ?: return null
+        val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
+            extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
+        } ?: return null
+        extractor.selectTrack(trackIndex)
+        val inputFormat = extractor.getTrackFormat(trackIndex)
+        val mimeType = inputFormat.getString(MediaFormat.KEY_MIME) ?: return null
+        codec = MediaCodec.createDecoderByType(mimeType)
+        codec.configure(inputFormat, null, null, 0)
+        codec.start()
+
+        val bufferInfo = MediaCodec.BufferInfo()
+        val lastSegmentEndFrame = segments.last().endFrame
+        while (!outputDone) {
+            if (!inputDone) {
+                val inputBufferIndex = codec.dequeueInputBuffer(10_000)
+                if (inputBufferIndex >= 0) {
+                    val inputBuffer = codec.getInputBuffer(inputBufferIndex) ?: return null
+                    val sampleSize = extractor.readSampleData(inputBuffer, 0)
+                    if (sampleSize < 0) {
+                        codec.queueInputBuffer(inputBufferIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        inputDone = true
+                    } else {
+                        codec.queueInputBuffer(
+                            inputBufferIndex,
+                            0,
+                            sampleSize,
+                            extractor.sampleTime.coerceAtLeast(0L),
+                            extractor.sampleFlags
+                        )
+                        extractor.advance()
+                    }
+                }
+            }
+
+            when (val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000)) {
+                MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
+                MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    val format = codec.outputFormat
+                    outputSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                    outputChannels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    pcmEncoding = if (format.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                        format.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                    } else {
+                        AudioFormat.ENCODING_PCM_16BIT
+                    }
+                    if (outputSampleRate != analysis.info.sampleRate || outputChannels != analysis.info.channels) {
+                        return null
+                    }
+                }
+                MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> Unit
+                else -> {
+                    if (outputIndex < 0) continue
+                    val outputBuffer = codec.getOutputBuffer(outputIndex)
+                    if (outputBuffer != null && bufferInfo.size > 0) {
+                        if (outputSampleRate <= 0 || outputChannels <= 0) {
+                            val format = codec.outputFormat
+                            outputSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                            outputChannels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                            if (outputSampleRate != analysis.info.sampleRate || outputChannels != analysis.info.channels) {
+                                return null
+                            }
+                        }
+                        val chunk = pcmChunkBuffer.decode(outputBuffer, bufferInfo, pcmEncoding) ?: return null
+                        val chunkSize = when (pcmEncoding) {
+                            AudioFormat.ENCODING_PCM_16BIT -> bufferInfo.size
+                            AudioFormat.ENCODING_PCM_FLOAT -> (bufferInfo.size / 4) * 2
+                            else -> return null
+                        }
+                        val framesInChunk = chunkSize / (outputChannels * 2)
+                        val chunkEndFrame = chunkStartFrame + framesInChunk
+                        val dispatch = computeDecodedChunkDispatch(
+                            segments = segments,
+                            chunkStartFrame = chunkStartFrame,
+                            chunkEndFrame = chunkEndFrame,
+                            bytesPerFrame = bytesPerFrame,
+                            firstMatchingSegmentIndex = firstMatchingSegmentIndex
+                        )
+
+                        dispatch.writes.forEach { write ->
+                            val handle = pendingHandles[write.segmentIndex]
+                            handle.stream.write(chunk, write.startByte, write.byteCount)
+                            handle.writtenDataBytes += write.byteCount
+                            totalWrittenBytes += write.byteCount
+                        }
+
+                        firstMatchingSegmentIndex = dispatch.nextSegmentIndex
+                        chunkStartFrame = chunkEndFrame
+
+                        val progress = ((totalWrittenBytes * 100L) / totalExpectedBytes).toInt().coerceIn(0, 100)
+                        onProgress?.invoke(
+                            PostProcessExportProgress(
+                                progressPercent = progress,
+                                detailMessage = currentSegmentDetail(chunkEndFrame)
+                            )
+                        )
+                        if (chunkEndFrame >= lastSegmentEndFrame && firstMatchingSegmentIndex >= segments.size) {
+                            outputDone = true
+                        }
+                    }
+                    codec.releaseOutputBuffer(outputIndex, false)
+                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        outputDone = true
+                    }
+                }
+            }
+        }
+
+        pendingHandles.forEach { handle ->
+            handle.stream.flush()
+            handle.stream.close()
+            if (handle.writtenDataBytes <= 0 || handle.writtenDataBytes != handle.expectedDataBytes) {
+                return null
+            }
+        }
+        if (totalWrittenBytes != totalExpectedBytes) return null
+
+        pendingHandles.forEach { handle ->
+            if (!publishPendingMediaStoreWav(context, handle.uri)) {
+                return null
+            }
+        }
+
+        completedSuccessfully = true
+        onProgress?.invoke(PostProcessExportProgress(100, "Segment $requestedCount/$requestedCount - 100%"))
+        return DirectDecodedAudioExportResult(
+            displayNames = pendingHandles.map { it.displayName },
+            requestedCount = requestedCount
+        )
+    } catch (_: Throwable) {
+        return null
+    } finally {
+        pendingHandles.forEach { handle -> runCatching { handle.stream.close() } }
+        if (!completedSuccessfully) {
+            pendingHandles.forEach { handle -> discardPendingMediaStoreWav(context, handle.uri) }
+        }
+        runCatching { extractorSource?.assetFileDescriptor?.close() }
+        runCatching { codec?.stop() }
+        runCatching { codec?.release() }
+        runCatching { extractor.release() }
+    }
 }
 
 private fun decodeAudioSelectionToPendingWav(
