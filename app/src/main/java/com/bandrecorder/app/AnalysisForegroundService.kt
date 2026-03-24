@@ -105,7 +105,7 @@ class AnalysisForegroundService : Service() {
         silenceDurationSec: Int
     ) {
         acquireWakeLock()
-        publishRunningState(sourcePath, displayName, "Préparation du fichier...", 0)
+        publishRunningState(sourcePath, displayName, "Préparation de l'analyse...", 0)
         val sourceUri = sourceUriString?.let(Uri::parse)
         val sourceFile = sourceUri?.let { null } ?: File(sourcePath).takeIf { it.exists() }
         if (sourceFile == null && sourceUri == null) {
@@ -113,11 +113,7 @@ class AnalysisForegroundService : Service() {
             return
         }
 
-        val cachedWorkingFile = cachedWorkingFilePath?.let(::File)?.takeIf { it.exists() }
-        val workingFile = if (cachedWorkingFile != null) {
-            publishRunningState(sourcePath, displayName, "WAV préparé réutilisé... 35%", 35)
-            cachedWorkingFile
-        } else {
+        if (sourceKind == ImportedAudioKind.M4A) {
             val preflightFailure = buildImportPreflightMessage(
                 context = applicationContext,
                 sourceFile = sourceFile,
@@ -132,6 +128,51 @@ class AnalysisForegroundService : Service() {
                 finishFailure(sourcePath, preflightFailure)
                 return
             }
+
+            val decoded = withContext(Dispatchers.IO) {
+                decodeAudioFileToAnalysisCache(
+                    context = applicationContext,
+                    sourceFile = sourceFile,
+                    sourceUri = sourceUri,
+                    onProgress = { stepProgress ->
+                        val progress = ((stepProgress.coerceIn(0, 100) * 99L) / 100L).toInt()
+                        publishRunningState(
+                            sourcePath = sourcePath,
+                            displayName = displayName,
+                            message = "Décodage et analyse... $progress%",
+                            progressPercent = progress
+                        )
+                    }
+                )
+            }
+            if (decoded == null) {
+                finishFailure(sourcePath, "Analyse impossible: le décodage audio a échoué.")
+                return
+            }
+
+            publishRunningState(sourcePath, displayName, "Décodage et analyse... 99%", 99)
+            val analysis = withContext(Dispatchers.Default) {
+                analyzeSignalWindows(
+                    info = decoded.info,
+                    windows = decoded.windows,
+                    silenceThresholdDb = silenceThresholdDb,
+                    silenceDurationSec = silenceDurationSec
+                )
+            }
+            if (analysis == null) {
+                finishFailure(sourcePath, "Analyse impossible: le signal audio n'a pas pu être interprété.")
+                return
+            }
+
+            finishSuccess(sourcePath, null, analysis, displayName)
+            return
+        }
+
+        val cachedWorkingFile = cachedWorkingFilePath?.let(::File)?.takeIf { it.exists() }
+        val workingFile = if (cachedWorkingFile != null) {
+            publishRunningState(sourcePath, displayName, "WAV préparé réutilisé... 35%", 35)
+            cachedWorkingFile
+        } else {
             withContext(Dispatchers.IO) {
                 normalizeImportedAudio(
                     context = applicationContext,

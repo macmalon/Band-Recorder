@@ -45,10 +45,13 @@ internal data class ImportedAudioSource(
 )
 
 internal data class DirectDecodedAudioExportResult(
-    val displayNames: List<String>
+    val displayNames: List<String>,
+    val requestedCount: Int
 )
 
 private const val DIRECT_WAV_EXPORT_BUFFER_BYTES = 256 * 1024
+private const val PREVIEW_ANALYSIS_SPACE_MARGIN_BYTES = 64L * 1024L * 1024L
+private const val PREVIEW_ANALYSIS_FALLBACK_MULTIPLIER = 8L
 
 internal fun detectImportedAudioKind(displayName: String?, mimeType: String?): ImportedAudioKind {
     val normalizedName = displayName?.lowercase(Locale.ROOT).orEmpty()
@@ -180,8 +183,10 @@ private fun probeImportedAudioMetadata(
         }
         ImportedAudioKind.M4A -> {
             val extractor = MediaExtractor()
+            var extractorSource: ConfiguredExtractorSource? = null
             try {
-                configureExtractorDataSource(extractor, context, file, uri) ?: return ImportedAudioMetadata(0L, null, null)
+                extractorSource = configureExtractorDataSource(extractor, context, file, uri)
+                    ?: return ImportedAudioMetadata(0L, null, null)
                 val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
                     extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
                 } ?: return ImportedAudioMetadata(0L, null, null)
@@ -195,6 +200,7 @@ private fun probeImportedAudioMetadata(
             } catch (_: Throwable) {
                 ImportedAudioMetadata(0L, null, null)
             } finally {
+                runCatching { extractorSource?.assetFileDescriptor?.close() }
                 runCatching { extractor.release() }
             }
         }
@@ -214,27 +220,66 @@ internal fun buildImportPreflightMessage(
     sampleRateHzHint: Int?,
     channelsHint: Int?
 ): String? {
-    val tempDir = File(context.cacheDir, "post_process_imports").apply { mkdirs() }
     val requiredBytes = when (kind) {
-        ImportedAudioKind.WAV -> if (sourceFile != null) {
-            sourceFile.length().coerceAtLeast(0L)
-        } else {
-            querySourceLength(context, sourceUri).coerceAtLeast(0L)
-        }
-        ImportedAudioKind.M4A -> estimateDecodedWavBytes(
-            durationMs = durationMsHint,
-            sampleRateHz = sampleRateHzHint,
-            channels = channelsHint
+        ImportedAudioKind.WAV -> null
+        ImportedAudioKind.M4A -> estimateRequiredDecodedAudioBytes(
+            context = context,
+            sourceFile = sourceFile,
+            sourceUri = sourceUri,
+            durationMsHint = durationMsHint,
+            sampleRateHzHint = sampleRateHzHint,
+            channelsHint = channelsHint
         )
         ImportedAudioKind.UNSUPPORTED -> return "Import impossible: format audio non supporté."
-    }
+    } ?: return null
     if (requiredBytes <= 0L) return null
-    val safetyMargin = 64L * 1024L * 1024L
-    val available = tempDir.usableSpace.coerceAtLeast(0L)
-    if (available >= requiredBytes + safetyMargin) return null
-    val requiredLabel = formatBytes(requiredBytes + safetyMargin)
+    val available = queryExportUsableSpace(context)
+    if (available >= requiredBytes + PREVIEW_ANALYSIS_SPACE_MARGIN_BYTES) return null
+    val requiredLabel = formatBytes(requiredBytes + PREVIEW_ANALYSIS_SPACE_MARGIN_BYTES)
     val availableLabel = formatBytes(available)
-    return "Espace insuffisant pour préparer \"$displayName\". Requis: $requiredLabel, dispo: $availableLabel."
+    return "Espace insuffisant pour analyser puis exporter \"$displayName\". Requis: $requiredLabel, dispo: $availableLabel."
+}
+
+private fun estimateRequiredDecodedAudioBytes(
+    context: Context,
+    sourceFile: File?,
+    sourceUri: Uri?,
+    durationMsHint: Long?,
+    sampleRateHzHint: Int?,
+    channelsHint: Int?
+): Long {
+    val hintedDurationMs = durationMsHint?.takeIf { it > 0L }
+    val hintedSampleRateHz = sampleRateHzHint?.takeIf { it > 0 }
+    val hintedChannels = channelsHint?.takeIf { it > 0 }
+    val metadata = if (hintedDurationMs != null && hintedSampleRateHz != null && hintedChannels != null) {
+        null
+    } else {
+        probeImportedAudioMetadata(context, sourceFile, sourceUri, ImportedAudioKind.M4A)
+    }
+    val durationMs = hintedDurationMs ?: metadata?.durationMs?.takeIf { it > 0L }
+    val sampleRateHz = hintedSampleRateHz ?: metadata?.sampleRateHz ?: 48_000
+    val channels = hintedChannels ?: metadata?.channels ?: 2
+    val decodedEstimate = estimateDecodedWavBytes(durationMs, sampleRateHz, channels)
+    if (decodedEstimate > 0L) return decodedEstimate
+    val sourceLength = sourceFile?.length()?.coerceAtLeast(0L) ?: querySourceLength(context, sourceUri).coerceAtLeast(0L)
+    if (sourceLength <= 0L) return 0L
+    return (sourceLength * PREVIEW_ANALYSIS_FALLBACK_MULTIPLIER).coerceAtLeast(sourceLength)
+}
+
+private fun queryExportUsableSpace(context: Context): Long {
+    val appDownloads = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+        ?.usableSpace
+        ?.coerceAtLeast(0L)
+        ?: -1L
+    if (appDownloads >= 0L) return appDownloads
+    val publicDownloads = runCatching {
+        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            ?.usableSpace
+            ?.coerceAtLeast(0L)
+            ?: -1L
+    }.getOrDefault(-1L)
+    if (publicDownloads >= 0L) return publicDownloads
+    return context.cacheDir.usableSpace.coerceAtLeast(0L)
 }
 
 private fun publishDecodeProgress(
@@ -326,6 +371,7 @@ private fun decodeAudioFileToWav(
     onProgress: ((Int) -> Unit)? = null
 ): File? {
     val extractor = MediaExtractor()
+    var extractorSource: ConfiguredExtractorSource? = null
     var codec: MediaCodec? = null
     var outputSampleRate = 0
     var outputChannels = 0
@@ -336,7 +382,7 @@ private fun decodeAudioFileToWav(
     var decodedFrames = 0L
     val pcmChunkBuffer = ReusablePcmChunkBuffer()
     try {
-        configureExtractorDataSource(extractor, context, sourceFile, sourceUri) ?: return null
+        extractorSource = configureExtractorDataSource(extractor, context, sourceFile, sourceUri) ?: return null
         val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
             extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
         } ?: return null
@@ -452,6 +498,7 @@ private fun decodeAudioFileToWav(
         runCatching { target.delete() }
         return null
     } finally {
+        runCatching { extractorSource?.assetFileDescriptor?.close() }
         runCatching { codec?.stop() }
         runCatching { codec?.release() }
         runCatching { extractor.release() }
@@ -459,10 +506,13 @@ private fun decodeAudioFileToWav(
 }
 
 internal fun decodeAudioFileToAnalysisCache(
-    sourceFile: File,
+    context: Context,
+    sourceFile: File?,
+    sourceUri: Uri?,
     onProgress: ((Int) -> Unit)? = null
 ): DecodedAudioAnalysisCacheEntry? {
     val extractor = MediaExtractor()
+    var extractorSource: ConfiguredExtractorSource? = null
     var codec: MediaCodec? = null
     var outputSampleRate = 0
     var outputChannels = 0
@@ -507,7 +557,7 @@ internal fun decodeAudioFileToAnalysisCache(
     }
 
     try {
-        extractor.setDataSource(sourceFile.absolutePath)
+        extractorSource = configureExtractorDataSource(extractor, context, sourceFile, sourceUri) ?: return null
         val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
             extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
         } ?: return null
@@ -622,6 +672,7 @@ internal fun decodeAudioFileToAnalysisCache(
     } catch (_: Throwable) {
         return null
     } finally {
+        runCatching { extractorSource?.assetFileDescriptor?.close() }
         runCatching { codec?.stop() }
         runCatching { codec?.release() }
         runCatching { extractor.release() }
@@ -687,16 +738,20 @@ private fun readImportedWavInfo(context: Context, file: File?, uri: Uri?): WavIn
     }
 }
 
+private data class ConfiguredExtractorSource(
+    val assetFileDescriptor: AssetFileDescriptor?
+)
+
 private fun configureExtractorDataSource(
     extractor: MediaExtractor,
     context: Context,
     sourceFile: File?,
     sourceUri: Uri?
-): AssetFileDescriptor? {
+): ConfiguredExtractorSource? {
     return when {
         sourceFile != null -> {
             extractor.setDataSource(sourceFile.absolutePath)
-            null
+            ConfiguredExtractorSource(assetFileDescriptor = null)
         }
         sourceUri != null -> {
             val afd = context.contentResolver.openAssetFileDescriptor(sourceUri, "r") ?: return null
@@ -705,7 +760,7 @@ private fun configureExtractorDataSource(
             } else {
                 extractor.setDataSource(afd.fileDescriptor)
             }
-            afd
+            ConfiguredExtractorSource(assetFileDescriptor = afd)
         }
         else -> null
     }
@@ -856,6 +911,10 @@ private fun publishPendingMediaStoreWav(context: Context, uri: Uri): Boolean {
         put(MediaStore.MediaColumns.IS_PENDING, 0)
     }
     return resolver.update(uri, values, null, null) > 0
+}
+
+private fun discardPendingMediaStoreWav(context: Context, uri: Uri) {
+    runCatching { context.contentResolver.delete(uri, null, null) }
 }
 
 internal fun exportDecodedAudioSelectionToTempWavs(
@@ -1077,88 +1136,205 @@ internal fun exportDecodedAudioSelectionToTempWavs(
 
 internal fun exportDecodedAudioSelectionToDownloads(
     context: Context,
-    sourceFile: File,
+    sourceFile: File?,
+    sourceUri: Uri?,
     analysis: WavAnalysisResult,
     mode: PostProcessMode,
     relativePath: String,
     baseName: String,
     onProgress: ((Int) -> Unit)? = null
 ): DirectDecodedAudioExportResult? {
-    if (analysis.segments.isEmpty()) return DirectDecodedAudioExportResult(emptyList())
+    val sortedSegments = analysis.segments.sortedBy { it.startFrame }
+    if (sortedSegments.isEmpty()) return DirectDecodedAudioExportResult(emptyList(), requestedCount = 0)
+    if (sortedSegments.any { it.endFrame <= it.startFrame }) return null
+
+    return when (mode) {
+        PostProcessMode.CLEAN_SINGLE_FILE -> exportDecodedCleanSelectionToDownloads(
+            context = context,
+            sourceFile = sourceFile,
+            sourceUri = sourceUri,
+            analysis = analysis,
+            segments = sortedSegments,
+            relativePath = relativePath,
+            baseName = baseName,
+            onProgress = onProgress
+        )
+        PostProcessMode.SPLIT_MULTIPLE_TRACKS -> exportDecodedSplitSegmentsToDownloads(
+            context = context,
+            sourceFile = sourceFile,
+            sourceUri = sourceUri,
+            analysis = analysis,
+            segments = sortedSegments,
+            relativePath = relativePath,
+            baseName = baseName,
+            onProgress = onProgress
+        )
+    }
+}
+
+private fun exportDecodedCleanSelectionToDownloads(
+    context: Context,
+    sourceFile: File?,
+    sourceUri: Uri?,
+    analysis: WavAnalysisResult,
+    segments: List<WavFrameSegment>,
+    relativePath: String,
+    baseName: String,
+    onProgress: ((Int) -> Unit)? = null
+): DirectDecodedAudioExportResult? {
+    val bytesPerFrame = analysis.info.channels * 2L
+    val totalOutputBytes = segments.sumOf {
+        ((it.endFrame - it.startFrame) * bytesPerFrame).coerceAtLeast(0L)
+    }
+    if (totalOutputBytes <= 0L) return null
+    val pending = createPendingMediaStoreWav(
+        context = context,
+        displayName = "${baseName}_cleaned.wav",
+        relativePath = relativePath,
+        expectedDataBytes = totalOutputBytes,
+        sampleRate = analysis.info.sampleRate,
+        channels = analysis.info.channels
+    ) ?: return null
+
+    val completed = runCatching {
+        decodeAudioSelectionToPendingWav(
+            context = context,
+            sourceFile = sourceFile,
+            sourceUri = sourceUri,
+            analysis = analysis,
+            segments = segments,
+            pending = pending
+        ) { writtenBytes, expectedBytes ->
+            val progress = if (expectedBytes <= 0L) 0 else ((writtenBytes * 100L) / expectedBytes).toInt()
+            onProgress?.invoke(progress.coerceIn(0, 100))
+        }
+    }.getOrDefault(false)
+    if (!completed) {
+        runCatching { pending.stream.close() }
+        discardPendingMediaStoreWav(context, pending.uri)
+        return null
+    }
+    onProgress?.invoke(100)
+    return DirectDecodedAudioExportResult(
+        displayNames = listOf(pending.displayName),
+        requestedCount = 1
+    )
+}
+
+private fun exportDecodedSplitSegmentsToDownloads(
+    context: Context,
+    sourceFile: File?,
+    sourceUri: Uri?,
+    analysis: WavAnalysisResult,
+    segments: List<WavFrameSegment>,
+    relativePath: String,
+    baseName: String,
+    onProgress: ((Int) -> Unit)? = null
+): DirectDecodedAudioExportResult? {
+    val bytesPerFrame = analysis.info.channels * 2L
+    val requestedCount = segments.size
+    val totalExpectedBytes = segments.sumOf {
+        ((it.endFrame - it.startFrame) * bytesPerFrame).coerceAtLeast(0L)
+    }.coerceAtLeast(1L)
+    var completedBytes = 0L
+    val exportedNames = mutableListOf<String>()
+
+    segments.forEachIndexed { index, segment ->
+        val expectedBytes = ((segment.endFrame - segment.startFrame) * bytesPerFrame).coerceAtLeast(0L)
+        if (expectedBytes <= 0L) return@forEachIndexed
+        val pending = createPendingMediaStoreWav(
+            context = context,
+            displayName = "${baseName}_track_${"%02d".format(Locale.US, index + 1)}.wav",
+            relativePath = relativePath,
+            expectedDataBytes = expectedBytes,
+            sampleRate = analysis.info.sampleRate,
+            channels = analysis.info.channels
+        ) ?: return if (exportedNames.isEmpty()) null else DirectDecodedAudioExportResult(exportedNames.toList(), requestedCount)
+
+        val completed = runCatching {
+            decodeAudioSelectionToPendingWav(
+                context = context,
+                sourceFile = sourceFile,
+                sourceUri = sourceUri,
+                analysis = analysis,
+                segments = listOf(segment),
+                pending = pending,
+                seekStartFrame = segment.startFrame
+            ) { writtenBytes, _ ->
+                val overallBytes = (completedBytes + writtenBytes).coerceAtMost(totalExpectedBytes)
+                val progress = ((overallBytes * 100L) / totalExpectedBytes).toInt().coerceIn(0, 100)
+                onProgress?.invoke(progress)
+            }
+        }.getOrDefault(false)
+
+        if (!completed) {
+            runCatching { pending.stream.close() }
+            discardPendingMediaStoreWav(context, pending.uri)
+            return if (exportedNames.isEmpty()) null else DirectDecodedAudioExportResult(exportedNames.toList(), requestedCount)
+        }
+
+        completedBytes += expectedBytes
+        exportedNames += pending.displayName
+    }
+
+    onProgress?.invoke(100)
+    return DirectDecodedAudioExportResult(
+        displayNames = exportedNames,
+        requestedCount = requestedCount
+    )
+}
+
+private fun decodeAudioSelectionToPendingWav(
+    context: Context,
+    sourceFile: File?,
+    sourceUri: Uri?,
+    analysis: WavAnalysisResult,
+    segments: List<WavFrameSegment>,
+    pending: PendingMediaStoreWav,
+    seekStartFrame: Long? = null,
+    onProgress: ((writtenBytes: Long, expectedBytes: Long) -> Unit)? = null
+): Boolean {
+    if (segments.isEmpty()) return false
+    val sortedSegments = segments.sortedBy { it.startFrame }
+    if (sortedSegments.any { it.endFrame <= it.startFrame }) return false
+
     val extractor = MediaExtractor()
+    var extractorSource: ConfiguredExtractorSource? = null
     var codec: MediaCodec? = null
     var outputSampleRate = 0
     var outputChannels = 0
     var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
-    var durationUs = 0L
-    var lastProgress = -1
     val pcmChunkBuffer = ReusablePcmChunkBuffer()
     val bytesPerFrame = analysis.info.channels * 2L
-    val sortedSegments = analysis.segments.sortedBy { it.startFrame }
-    if (sortedSegments.any { it.endFrame <= it.startFrame }) return null
-
-    data class OutputHandle(
-        val pending: PendingMediaStoreWav
-    )
-
-    val handles = mutableListOf<OutputHandle>()
+    var runningFrameCursor = seekStartFrame ?: 0L
+    var inputDone = false
+    var outputDone = false
+    var firstMatchingSegmentIndex = 0
     var completedSuccessfully = false
 
     try {
-        fun createHandle(displayName: String, expectedDataBytes: Long): OutputHandle? {
-            val pending = createPendingMediaStoreWav(
-                context = context,
-                displayName = displayName,
-                relativePath = relativePath,
-                expectedDataBytes = expectedDataBytes,
-                sampleRate = analysis.info.sampleRate,
-                channels = analysis.info.channels
-            ) ?: return null
-            return OutputHandle(pending).also { handles += it }
-        }
-
-        when (mode) {
-            PostProcessMode.CLEAN_SINGLE_FILE -> {
-                val totalOutputBytes = sortedSegments.sumOf {
-                    ((it.endFrame - it.startFrame) * bytesPerFrame).coerceAtLeast(0L)
-                }
-                createHandle("${baseName}_cleaned.wav", totalOutputBytes) ?: return null
-            }
-            PostProcessMode.SPLIT_MULTIPLE_TRACKS -> {
-                sortedSegments.forEachIndexed { index, segment ->
-                    val displayName = "${baseName}_track_${"%02d".format(Locale.US, index + 1)}.wav"
-                    val expectedDataBytes = ((segment.endFrame - segment.startFrame) * bytesPerFrame).coerceAtLeast(0L)
-                    createHandle(displayName, expectedDataBytes) ?: return null
-                }
-            }
-        }
-
-        extractor.setDataSource(sourceFile.absolutePath)
+        extractorSource = configureExtractorDataSource(extractor, context, sourceFile, sourceUri) ?: return false
         val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
             extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
-        } ?: return null
+        } ?: return false
         extractor.selectTrack(trackIndex)
-        val inputFormat = extractor.getTrackFormat(trackIndex)
-        durationUs = if (inputFormat.containsKey(MediaFormat.KEY_DURATION)) {
-            inputFormat.getLong(MediaFormat.KEY_DURATION).coerceAtLeast(0L)
-        } else {
-            0L
+        if (seekStartFrame != null && analysis.info.sampleRate > 0) {
+            val seekUs = ((seekStartFrame * 1_000_000L) / analysis.info.sampleRate.toLong()).coerceAtLeast(0L)
+            extractor.seekTo(seekUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
         }
-        val mimeType = inputFormat.getString(MediaFormat.KEY_MIME) ?: return null
+        val inputFormat = extractor.getTrackFormat(trackIndex)
+        val mimeType = inputFormat.getString(MediaFormat.KEY_MIME) ?: return false
         codec = MediaCodec.createDecoderByType(mimeType)
         codec.configure(inputFormat, null, null, 0)
         codec.start()
 
         val bufferInfo = MediaCodec.BufferInfo()
-        var inputDone = false
-        var outputDone = false
-        var chunkStartFrame = 0L
-        var firstMatchingSegmentIndex = 0
+        val lastSegmentEndFrame = sortedSegments.last().endFrame
         while (!outputDone) {
             if (!inputDone) {
                 val inputBufferIndex = codec.dequeueInputBuffer(10_000)
                 if (inputBufferIndex >= 0) {
-                    val inputBuffer = codec.getInputBuffer(inputBufferIndex) ?: return null
+                    val inputBuffer = codec.getInputBuffer(inputBufferIndex) ?: return false
                     val sampleSize = extractor.readSampleData(inputBuffer, 0)
                     if (sampleSize < 0) {
                         codec.queueInputBuffer(inputBufferIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
@@ -1188,103 +1364,96 @@ internal fun exportDecodedAudioSelectionToDownloads(
                         AudioFormat.ENCODING_PCM_16BIT
                     }
                     if (outputSampleRate != analysis.info.sampleRate || outputChannels != analysis.info.channels) {
-                        return null
+                        return false
                     }
                 }
                 MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> Unit
                 else -> {
-                    if (outputIndex >= 0) {
-                        val outputBuffer = codec.getOutputBuffer(outputIndex)
-                        if (outputBuffer != null && bufferInfo.size > 0) {
-                            if (outputSampleRate <= 0 || outputChannels <= 0) {
-                                val format = codec.outputFormat
-                                outputSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                                outputChannels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                                if (outputSampleRate != analysis.info.sampleRate || outputChannels != analysis.info.channels) {
-                                    return null
-                                }
+                    if (outputIndex < 0) continue
+                    val outputBuffer = codec.getOutputBuffer(outputIndex)
+                    if (outputBuffer != null && bufferInfo.size > 0) {
+                        if (outputSampleRate <= 0 || outputChannels <= 0) {
+                            val format = codec.outputFormat
+                            outputSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                            outputChannels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                            if (outputSampleRate != analysis.info.sampleRate || outputChannels != analysis.info.channels) {
+                                return false
                             }
-                            val chunk = pcmChunkBuffer.decode(outputBuffer, bufferInfo, pcmEncoding) ?: return null
-                            val chunkSize = when (pcmEncoding) {
-                                AudioFormat.ENCODING_PCM_16BIT -> bufferInfo.size
-                                AudioFormat.ENCODING_PCM_FLOAT -> (bufferInfo.size / 4) * 2
-                                else -> return null
-                            }
-                            val framesInChunk = chunkSize / (outputChannels * 2)
-                            val chunkEndFrame = chunkStartFrame + framesInChunk
-
-                            while (
-                                firstMatchingSegmentIndex < sortedSegments.size &&
-                                sortedSegments[firstMatchingSegmentIndex].endFrame <= chunkStartFrame
-                            ) {
-                                firstMatchingSegmentIndex += 1
-                            }
-
-                            var segmentIndex = firstMatchingSegmentIndex
-                            while (segmentIndex < sortedSegments.size) {
-                                val segment = sortedSegments[segmentIndex]
-                                if (segment.startFrame >= chunkEndFrame) break
-                                val overlapStart = maxOf(chunkStartFrame, segment.startFrame)
-                                val overlapEnd = minOf(chunkEndFrame, segment.endFrame)
-                                if (overlapEnd > overlapStart) {
-                                    val startByte = ((overlapStart - chunkStartFrame) * bytesPerFrame).toInt()
-                                    val endByte = ((overlapEnd - chunkStartFrame) * bytesPerFrame).toInt()
-                                    val handle = when (mode) {
-                                        PostProcessMode.CLEAN_SINGLE_FILE -> handles.first()
-                                        PostProcessMode.SPLIT_MULTIPLE_TRACKS -> handles[segmentIndex]
-                                    }
-                                    handle.pending.stream.write(chunk, startByte, endByte - startByte)
-                                    handle.pending.writtenDataBytes += (endByte - startByte)
-                                }
-                                if (segment.endFrame <= chunkEndFrame) {
-                                    segmentIndex += 1
-                                } else {
-                                    break
-                                }
-                            }
-
-                            chunkStartFrame = chunkEndFrame
-                            lastProgress = publishDecodeProgress(
-                                durationUs = durationUs,
-                                presentationTimeUs = bufferInfo.presentationTimeUs,
-                                decodedFrames = chunkEndFrame,
-                                sampleRate = outputSampleRate,
-                                lastProgress = lastProgress,
-                                onProgress = onProgress
-                            )
                         }
-                        codec.releaseOutputBuffer(outputIndex, false)
-                        if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        val chunk = pcmChunkBuffer.decode(outputBuffer, bufferInfo, pcmEncoding) ?: return false
+                        val chunkSize = when (pcmEncoding) {
+                            AudioFormat.ENCODING_PCM_16BIT -> bufferInfo.size
+                            AudioFormat.ENCODING_PCM_FLOAT -> (bufferInfo.size / 4) * 2
+                            else -> return false
+                        }
+                        val framesInChunk = chunkSize / (outputChannels * 2)
+                        val ptsFrame = if (bufferInfo.presentationTimeUs >= 0L && outputSampleRate > 0) {
+                            ((bufferInfo.presentationTimeUs * outputSampleRate.toLong()) / 1_000_000L).coerceAtLeast(0L)
+                        } else {
+                            runningFrameCursor
+                        }
+                        val chunkStartFrame = ptsFrame
+                        val chunkEndFrame = chunkStartFrame + framesInChunk
+                        runningFrameCursor = chunkEndFrame
+
+                        while (
+                            firstMatchingSegmentIndex < sortedSegments.size &&
+                            sortedSegments[firstMatchingSegmentIndex].endFrame <= chunkStartFrame
+                        ) {
+                            firstMatchingSegmentIndex += 1
+                        }
+
+                        var segmentIndex = firstMatchingSegmentIndex
+                        while (segmentIndex < sortedSegments.size) {
+                            val segment = sortedSegments[segmentIndex]
+                            if (segment.startFrame >= chunkEndFrame) break
+                            val overlapStart = maxOf(chunkStartFrame, segment.startFrame)
+                            val overlapEnd = minOf(chunkEndFrame, segment.endFrame)
+                            if (overlapEnd > overlapStart) {
+                                val startByte = ((overlapStart - chunkStartFrame) * bytesPerFrame).toInt()
+                                val endByte = ((overlapEnd - chunkStartFrame) * bytesPerFrame).toInt()
+                                pending.stream.write(chunk, startByte, endByte - startByte)
+                                pending.writtenDataBytes += (endByte - startByte)
+                                onProgress?.invoke(pending.writtenDataBytes.toLong(), pending.expectedDataBytes.toLong())
+                            }
+                            if (segment.endFrame <= chunkEndFrame) {
+                                segmentIndex += 1
+                            } else {
+                                break
+                            }
+                        }
+                        firstMatchingSegmentIndex = maxOf(firstMatchingSegmentIndex, segmentIndex)
+                        if (chunkEndFrame >= lastSegmentEndFrame && firstMatchingSegmentIndex >= sortedSegments.size) {
                             outputDone = true
                         }
+                    }
+                    codec.releaseOutputBuffer(outputIndex, false)
+                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        outputDone = true
                     }
                 }
             }
         }
 
-        for (handle in handles) {
-            handle.pending.stream.flush()
-            handle.pending.stream.close()
-            if (handle.pending.writtenDataBytes <= 0 || handle.pending.writtenDataBytes != handle.pending.expectedDataBytes) {
-                return null
-            }
-            if (!publishPendingMediaStoreWav(context, handle.pending.uri)) {
-                return null
-            }
+        pending.stream.flush()
+        pending.stream.close()
+        if (pending.writtenDataBytes <= 0 || pending.writtenDataBytes != pending.expectedDataBytes) {
+            return false
         }
-        onProgress?.invoke(100)
+        if (!publishPendingMediaStoreWav(context, pending.uri)) {
+            return false
+        }
         completedSuccessfully = true
-        return DirectDecodedAudioExportResult(handles.map { it.pending.displayName })
+        return true
     } catch (_: Throwable) {
-        return null
+        return false
     } finally {
-        handles.forEach { handle -> runCatching { handle.pending.stream.close() } }
+        if (!completedSuccessfully) {
+            runCatching { pending.stream.close() }
+        }
+        runCatching { extractorSource?.assetFileDescriptor?.close() }
         runCatching { codec?.stop() }
         runCatching { codec?.release() }
         runCatching { extractor.release() }
-        if (!completedSuccessfully) {
-            val resolver = context.contentResolver
-            handles.forEach { handle -> runCatching { resolver.delete(handle.pending.uri, null, null) } }
-        }
     }
 }

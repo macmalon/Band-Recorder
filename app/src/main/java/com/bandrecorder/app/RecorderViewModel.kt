@@ -601,7 +601,9 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             sourceUriString = sourceUri?.toString(),
             displayName = _uiState.value.postProcessSourceName ?: sourceFile?.name ?: "audio_importe",
             sourceKind = postProcessSourceKind,
-            cachedWorkingFilePath = postProcessWorkingFile?.takeIf { it.exists() }?.absolutePath,
+            cachedWorkingFilePath = postProcessWorkingFile
+                ?.takeIf { it.exists() && postProcessSourceKind == ImportedAudioKind.WAV }
+                ?.absolutePath,
             sourceDurationMs = _uiState.value.postProcessSourceDurationMs,
             sourceSampleRateHz = _uiState.value.postProcessSourceSampleRateHz,
             sourceChannels = _uiState.value.postProcessSourceChannels,
@@ -623,7 +625,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun runPostProcessExport() {
-        val sourceFile = postProcessWorkingFile
+        val workingFile = postProcessWorkingFile
         val analysis = postProcessAnalysis
         if (analysis == null || analysis.segments.isEmpty()) {
             _uiState.update { it.copy(postProcessStatusMessage = "Analyse d'abord le fichier avant l'export.") }
@@ -632,7 +634,10 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
         viewModelScope.launch {
             val app = getApplication<Application>()
-            val exportDisplayName = _uiState.value.postProcessSourceName ?: sourceFile?.name ?: postProcessSourceFile?.name
+            val exportDisplayName = _uiState.value.postProcessSourceName
+                ?: workingFile?.name
+                ?: postProcessSourceFile?.name
+                ?: "audio_importe"
             var lastPublishedProgress = -1
             _uiState.update {
                 it.copy(
@@ -645,13 +650,16 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             PostProcessExportNotifier.showRunning(app, 0, exportDisplayName)
 
             val exportResult = withContext(Dispatchers.IO) {
-                val exportSourceFile = sourceFile ?: postProcessSourceFile ?: return@withContext null
                 exportPostProcessedFiles(
-                    sourceFile = exportSourceFile,
-                    sourceKind = if (sourceFile != null) ImportedAudioKind.WAV else postProcessSourceKind,
+                    sourceFile = workingFile ?: postProcessSourceFile,
+                    sourceUri = if (workingFile == null) postProcessSourceUri else null,
+                    sourceKind = if (workingFile != null) ImportedAudioKind.WAV else postProcessSourceKind,
                     analysis = analysis,
                     mode = _uiState.value.postProcessMode,
-                    sourceDisplayName = _uiState.value.postProcessSourceName ?: exportSourceFile.name,
+                    sourceDisplayName = _uiState.value.postProcessSourceName
+                        ?: workingFile?.name
+                        ?: postProcessSourceFile?.name
+                        ?: "audio_importe",
                     onProgress = { progress ->
                         val bounded = progress.coerceIn(0, 100)
                         if (bounded != lastPublishedProgress) {
@@ -1839,7 +1847,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun exportPostProcessedFiles(
-        sourceFile: File,
+        sourceFile: File?,
+        sourceUri: Uri?,
         sourceKind: ImportedAudioKind,
         analysis: WavAnalysisResult,
         mode: PostProcessMode,
@@ -1856,6 +1865,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             val exportResult = exportDecodedAudioSelectionToDownloads(
                 context = getApplication(),
                 sourceFile = sourceFile,
+                sourceUri = sourceUri,
                 analysis = analysis,
                 mode = mode,
                 relativePath = editedRelativePath,
@@ -1871,9 +1881,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         null
                     }
                 PostProcessMode.SPLIT_MULTIPLE_TRACKS ->
-                    if (exportResult.displayNames.isNotEmpty()) {
+                    if (exportResult.displayNames.size == exportResult.requestedCount && exportResult.displayNames.isNotEmpty()) {
                         publish(100)
                         "Export traité: ${exportResult.displayNames.size} piste(s)"
+                    } else if (exportResult.displayNames.isNotEmpty()) {
+                        "Export partiel: ${exportResult.displayNames.size}/${exportResult.requestedCount} piste(s) exportée(s)"
                     } else {
                         null
                     }
@@ -1881,8 +1893,10 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             return message
         }
 
+        val wavSourceFile = sourceFile ?: return null
+
         val exportedNames = exportWavSelectionToDownloads(
-            sourceFile = sourceFile,
+            sourceFile = wavSourceFile,
             info = analysis.info,
             segments = analysis.segments,
             mode = mode,
@@ -2265,7 +2279,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     is AnalysisServiceState.Completed -> {
                         if (currentPostProcessSourceKey() != state.sourcePath) return@collectLatest
-                        postProcessWorkingFile = state.workingFilePath?.let(::File) ?: postProcessWorkingFile
+                        postProcessWorkingFile = state.workingFilePath?.let(::File)
                         applyCompletedAnalysis(state.analysis)
                     }
                 }
