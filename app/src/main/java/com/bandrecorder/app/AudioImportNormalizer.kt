@@ -895,6 +895,45 @@ internal data class DecodedChunkDispatch(
     val nextSegmentIndex: Int
 )
 
+private fun findFirstIncompleteSegmentIndex(
+    segmentSpecs: List<DecodedSegmentExportSpec>,
+    pendingHandles: List<PendingMediaStoreWav>
+): Int {
+    val firstIncomplete = segmentSpecs.indices.firstOrNull { index ->
+        pendingHandles.getOrNull(index)?.writtenDataBytes?.toLong() != segmentSpecs[index].expectedDataBytes
+    }
+    return firstIncomplete ?: segmentSpecs.lastIndex
+}
+
+private fun buildDecodedSegmentProgressDetail(
+    segmentSpecs: List<DecodedSegmentExportSpec>,
+    pendingHandles: List<PendingMediaStoreWav>,
+    requestedCount: Int,
+    decodedFrame: Long
+): String {
+    val segmentIndex = findFirstIncompleteSegmentIndex(segmentSpecs, pendingHandles)
+    val spec = segmentSpecs[segmentIndex]
+    val pending = pendingHandles[segmentIndex]
+    val expectedBytes = spec.expectedDataBytes
+    val boundedWrittenBytes = pending.writtenDataBytes.toLong().coerceIn(0L, expectedBytes)
+    val boundedDecodedFrame = decodedFrame.coerceIn(0L, spec.segment.endFrame)
+    val segmentProgress = when {
+        expectedBytes <= 0L -> 0
+        boundedWrittenBytes >= expectedBytes -> 100
+        spec.segment.startFrame <= 0L -> {
+            ((boundedWrittenBytes * 100L) / expectedBytes).toInt().coerceIn(0, 99)
+        }
+        boundedDecodedFrame < spec.segment.startFrame -> {
+            ((boundedDecodedFrame * 90L) / spec.segment.startFrame).toInt().coerceIn(0, 89)
+        }
+        else -> {
+            val writePhaseProgress = ((boundedWrittenBytes * 10L) / expectedBytes).toInt().coerceIn(0, 10)
+            (90 + writePhaseProgress).coerceIn(90, 99)
+        }
+    }
+    return "Segment ${segmentIndex + 1}/$requestedCount - $segmentProgress%"
+}
+
 internal fun buildDecodedSegmentExportSpecs(
     baseName: String,
     segments: List<WavFrameSegment>,
@@ -1002,6 +1041,15 @@ private fun publishPendingMediaStoreWav(context: Context, uri: Uri): Boolean {
 
 private fun discardPendingMediaStoreWav(context: Context, uri: Uri) {
     runCatching { context.contentResolver.delete(uri, null, null) }
+}
+
+private fun writeDecodedChunkToPendingHandle(
+    pending: PendingMediaStoreWav,
+    chunk: ByteArray,
+    write: DecodedChunkSegmentWrite
+) {
+    pending.stream.write(chunk, write.startByte, write.byteCount)
+    pending.writtenDataBytes += write.byteCount
 }
 
 internal fun exportDecodedAudioSelectionToTempWavs(
@@ -1331,29 +1379,8 @@ private fun exportDecodedSplitSegmentsToDownloads(
     var firstMatchingSegmentIndex = 0
     var completedSuccessfully = false
     val pcmChunkBuffer = ReusablePcmChunkBuffer()
-
-    fun currentSegmentDetail(decodedFrame: Long): String {
-        val safeSegmentIndex = firstMatchingSegmentIndex.coerceIn(0, segmentExportSpecs.lastIndex)
-        val spec = segmentExportSpecs[safeSegmentIndex]
-        val pending = pendingHandles[safeSegmentIndex]
-        val expectedBytes = spec.expectedDataBytes
-        val boundedWrittenBytes = pending.writtenDataBytes.toLong().coerceIn(0L, expectedBytes)
-        val boundedDecodedFrame = decodedFrame.coerceIn(0L, spec.segment.endFrame)
-        val segmentProgress = when {
-            expectedBytes <= 0L -> 0
-            spec.segment.startFrame <= 0L -> {
-                ((boundedWrittenBytes * 100L) / expectedBytes).toInt().coerceIn(0, 99)
-            }
-            boundedDecodedFrame < spec.segment.startFrame -> {
-                ((boundedDecodedFrame * 90L) / spec.segment.startFrame).toInt().coerceIn(0, 89)
-            }
-            else -> {
-                val writePhaseProgress = ((boundedWrittenBytes * 10L) / expectedBytes).toInt().coerceIn(0, 10)
-                (90 + writePhaseProgress).coerceIn(90, 99)
-            }
-        }
-        return "Segment ${safeSegmentIndex + 1}/$requestedCount - $segmentProgress%"
-    }
+    var lastProgressPercent = -1
+    var lastDetailMessage: String? = null
 
     try {
         segmentExportSpecs.forEach { spec ->
@@ -1451,8 +1478,7 @@ private fun exportDecodedSplitSegmentsToDownloads(
 
                         dispatch.writes.forEach { write ->
                             val handle = pendingHandles[write.segmentIndex]
-                            handle.stream.write(chunk, write.startByte, write.byteCount)
-                            handle.writtenDataBytes += write.byteCount
+                            writeDecodedChunkToPendingHandle(handle, chunk, write)
                             totalWrittenBytes += write.byteCount
                         }
 
@@ -1460,12 +1486,22 @@ private fun exportDecodedSplitSegmentsToDownloads(
                         chunkStartFrame = chunkEndFrame
 
                         val progress = ((totalWrittenBytes * 100L) / totalExpectedBytes).toInt().coerceIn(0, 100)
-                        onProgress?.invoke(
-                            PostProcessExportProgress(
-                                progressPercent = progress,
-                                detailMessage = currentSegmentDetail(chunkEndFrame)
-                            )
+                        val detail = buildDecodedSegmentProgressDetail(
+                            segmentSpecs = segmentExportSpecs,
+                            pendingHandles = pendingHandles,
+                            requestedCount = requestedCount,
+                            decodedFrame = chunkEndFrame
                         )
+                        if (progress != lastProgressPercent || detail != lastDetailMessage) {
+                            lastProgressPercent = progress
+                            lastDetailMessage = detail
+                            onProgress?.invoke(
+                                PostProcessExportProgress(
+                                    progressPercent = progress,
+                                    detailMessage = detail
+                                )
+                            )
+                        }
                         if (chunkEndFrame >= lastSegmentEndFrame && firstMatchingSegmentIndex >= segments.size) {
                             outputDone = true
                         }
@@ -1614,31 +1650,15 @@ private fun decodeAudioSelectionToPendingWav(
                         val chunkStartFrame = runningFrameCursor
                         val chunkEndFrame = chunkStartFrame + framesInChunk
                         runningFrameCursor = chunkEndFrame
-
-                        while (
-                            firstMatchingSegmentIndex < sortedSegments.size &&
-                            sortedSegments[firstMatchingSegmentIndex].endFrame <= chunkStartFrame
-                        ) {
-                            firstMatchingSegmentIndex += 1
-                        }
-
-                        var segmentIndex = firstMatchingSegmentIndex
-                        while (segmentIndex < sortedSegments.size) {
-                            val segment = sortedSegments[segmentIndex]
-                            if (segment.startFrame >= chunkEndFrame) break
-                            val overlapStart = maxOf(chunkStartFrame, segment.startFrame)
-                            val overlapEnd = minOf(chunkEndFrame, segment.endFrame)
-                            if (overlapEnd > overlapStart) {
-                                val startByte = ((overlapStart - chunkStartFrame) * bytesPerFrame).toInt()
-                                val endByte = ((overlapEnd - chunkStartFrame) * bytesPerFrame).toInt()
-                                pending.stream.write(chunk, startByte, endByte - startByte)
-                                pending.writtenDataBytes += (endByte - startByte)
-                            }
-                            if (segment.endFrame <= chunkEndFrame) {
-                                segmentIndex += 1
-                            } else {
-                                break
-                            }
+                        val dispatch = computeDecodedChunkDispatch(
+                            segments = sortedSegments,
+                            chunkStartFrame = chunkStartFrame,
+                            chunkEndFrame = chunkEndFrame,
+                            bytesPerFrame = bytesPerFrame,
+                            firstMatchingSegmentIndex = firstMatchingSegmentIndex
+                        )
+                        dispatch.writes.forEach { write ->
+                            writeDecodedChunkToPendingHandle(pending, chunk, write)
                         }
                         onProgress?.invoke(
                             pending.writtenDataBytes.toLong(),
@@ -1646,7 +1666,7 @@ private fun decodeAudioSelectionToPendingWav(
                             chunkEndFrame,
                             lastSegmentEndFrame
                         )
-                        firstMatchingSegmentIndex = maxOf(firstMatchingSegmentIndex, segmentIndex)
+                        firstMatchingSegmentIndex = dispatch.nextSegmentIndex
                         if (chunkEndFrame >= lastSegmentEndFrame && firstMatchingSegmentIndex >= sortedSegments.size) {
                             outputDone = true
                         }
