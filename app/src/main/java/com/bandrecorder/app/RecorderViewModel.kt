@@ -218,6 +218,7 @@ data class RecorderUiState(
     val postProcessSourceSampleRateHz: Int? = null,
     val postProcessSourceChannels: Int? = null,
     val postProcessMode: PostProcessMode = PostProcessMode.CLEAN_SINGLE_FILE,
+    val postProcessThresholdOffsetDb: Float = 0f,
     val postProcessIsAnalyzing: Boolean = false,
     val postProcessAnalysisProgressPercent: Int = 0,
     val postProcessIsExporting: Boolean = false,
@@ -520,8 +521,10 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setPostProcessSilenceThresholdDb(value: Float) {
-        setSilenceThresholdDb(value)
+    fun setPostProcessThresholdOffsetDb(value: Float) {
+        val bounded = value.coerceIn(-18f, 18f)
+        if (_uiState.value.postProcessThresholdOffsetDb == bounded) return
+        _uiState.update { it.copy(postProcessThresholdOffsetDb = bounded) }
         recomputePostProcessPreviewFromCache()
     }
 
@@ -564,6 +567,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     postProcessSourceDurationMs = imported.durationMs,
                     postProcessSourceSampleRateHz = imported.sampleRateHz,
                     postProcessSourceChannels = imported.channels,
+                    postProcessThresholdOffsetDb = 0f,
                     postProcessSegments = emptyList(),
                     postProcessCuts = emptyList(),
                     postProcessEnvelope = emptyList(),
@@ -592,6 +596,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 postProcessIsAnalyzing = true,
                 postProcessAnalysisProgressPercent = 0,
                 postProcessStatusMessage = "Analyse en cours...",
+                postProcessThresholdOffsetDb = 0f,
                 postProcessLastExportLabel = null
             )
         }
@@ -607,7 +612,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             sourceDurationMs = _uiState.value.postProcessSourceDurationMs,
             sourceSampleRateHz = _uiState.value.postProcessSourceSampleRateHz,
             sourceChannels = _uiState.value.postProcessSourceChannels,
-            silenceThresholdDb = _uiState.value.silenceThresholdDb,
+            silenceThresholdDb = 0f,
             silenceDurationSec = _uiState.value.silenceDurationSec
         )
     }
@@ -2152,7 +2157,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         }
         val analysis = rebuildAnalysisFromCachedWindows(
             cached = cached,
-            silenceThresholdDb = _uiState.value.silenceThresholdDb,
+            silenceThresholdDb = _uiState.value.postProcessThresholdOffsetDb,
             silenceDurationSec = _uiState.value.silenceDurationSec
         )
         if (analysis == null) {
@@ -2274,6 +2279,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                             it.copy(
                                 postProcessIsAnalyzing = false,
                                 postProcessAnalysisProgressPercent = 0,
+                                postProcessThresholdOffsetDb = 0f,
                                 postProcessSegments = emptyList(),
                                 postProcessCuts = emptyList(),
                                 postProcessEnvelope = emptyList(),
@@ -2330,6 +2336,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 postProcessIsAnalyzing = false,
                 postProcessAnalysisProgressPercent = 100,
                 postProcessSourcePath = postProcessWorkingFile?.absolutePath ?: it.postProcessSourcePath,
+                postProcessThresholdOffsetDb = it.postProcessThresholdOffsetDb.coerceIn(-18f, 18f),
                 postProcessSourceSampleRateHz = analysis.info.sampleRate,
                 postProcessSourceChannels = analysis.info.channels,
                 postProcessSegments = segments,

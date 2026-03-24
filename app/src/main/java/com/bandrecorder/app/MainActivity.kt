@@ -328,7 +328,7 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onExport = vm::runPostProcessExport,
                 onSetMode = vm::setPostProcessMode,
                 onSetSilenceDurationSec = vm::setPostProcessSilenceDurationSec,
-                onSetSilenceThresholdDb = vm::setPostProcessSilenceThresholdDb,
+                onSetThresholdOffsetDb = vm::setPostProcessThresholdOffsetDb,
                 onRefreshRecordings = vm::refreshPlayerRecordings,
                 onSetStatus = vm::setPlayerStatusMessage
             )
@@ -2021,7 +2021,7 @@ private fun PostProcessScreen(
     onExport: () -> Unit,
     onSetMode: (PostProcessMode) -> Unit,
     onSetSilenceDurationSec: (Int) -> Unit,
-    onSetSilenceThresholdDb: (Float) -> Unit,
+    onSetThresholdOffsetDb: (Float) -> Unit,
     onRefreshRecordings: () -> Unit,
     onSetStatus: (String) -> Unit
 ) {
@@ -2030,8 +2030,8 @@ private fun PostProcessScreen(
     var durationDraft by remember(ui.postProcessSourcePath, ui.silenceDurationSec) {
         mutableStateOf(ui.silenceDurationSec.toFloat())
     }
-    var thresholdDraft by remember(ui.postProcessSourcePath, ui.silenceThresholdDb) {
-        mutableStateOf(ui.silenceThresholdDb)
+    var thresholdDraft by remember(ui.postProcessSourcePath, ui.postProcessThresholdOffsetDb) {
+        mutableStateOf(ui.postProcessThresholdOffsetDb)
     }
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -2045,9 +2045,9 @@ private fun PostProcessScreen(
             durationDraft = ui.silenceDurationSec.toFloat()
         }
     }
-    LaunchedEffect(ui.silenceThresholdDb, ui.postProcessIsAnalyzing) {
+    LaunchedEffect(ui.postProcessThresholdOffsetDb, ui.postProcessIsAnalyzing) {
         if (!ui.postProcessIsAnalyzing) {
-            thresholdDraft = ui.silenceThresholdDb
+            thresholdDraft = ui.postProcessThresholdOffsetDb
         }
     }
 
@@ -2110,9 +2110,23 @@ private fun PostProcessScreen(
                 label = "Décalage seuil (dB)",
                 value = thresholdDraft,
                 range = -18f..18f,
+                enabled = !ui.postProcessIsAnalyzing && ui.postProcessEnvelope.isNotEmpty(),
                 onValueChange = { thresholdDraft = it },
-                onValueChangeFinished = { onSetSilenceThresholdDb(thresholdDraft) }
+                onValueChangeFinished = { onSetThresholdOffsetDb(thresholdDraft) }
             )
+            if (ui.postProcessEnvelope.isEmpty()) {
+                Text(
+                    "Le réglage manuel du seuil se débloque après une analyse terminée.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AmpMetalLight
+                )
+            } else if (ui.postProcessIsAnalyzing) {
+                Text(
+                    "Le seuil manuel est verrouillé pendant l'analyse auto.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AmpMetalLight
+                )
+            }
             ui.silenceDetectionSummary?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = AmpMetalLight)
             }
@@ -2131,10 +2145,10 @@ private fun PostProcessScreen(
                 )
             }
             val rmsHint = when {
-                ui.silenceThresholdDb <= -9f -> "Très permissif: l'auto-threshold est abaissé, plus de sons faibles sont gardés."
-                ui.silenceThresholdDb <= -3f -> "Permissif: bon si tu veux garder plus de transitions calmes."
-                ui.silenceThresholdDb <= 3f -> "Normal: l'app suit sa détection auto avec un léger ajustement."
-                ui.silenceThresholdDb <= 9f -> "Agressif: coupe plus facilement le blabla faible."
+                ui.postProcessThresholdOffsetDb <= -9f -> "Très permissif: l'auto-threshold est abaissé, plus de sons faibles sont gardés."
+                ui.postProcessThresholdOffsetDb <= -3f -> "Permissif: bon si tu veux garder plus de transitions calmes."
+                ui.postProcessThresholdOffsetDb <= 3f -> "Normal: l'app suit sa détection auto avec un léger ajustement."
+                ui.postProcessThresholdOffsetDb <= 9f -> "Agressif: coupe plus facilement le blabla faible."
                 else -> "Très agressif: privilégie le fort, risque de couper des reprises calmes."
             }
             Text(rmsHint, style = MaterialTheme.typography.bodySmall, color = AmpMetalLight)
@@ -2873,12 +2887,14 @@ private fun AdvancedConfigSlider(
     label: String,
     value: Float,
     range: ClosedFloatingPointRange<Float>,
+    enabled: Boolean = true,
     onValueChange: (Float) -> Unit
 ) {
     AdvancedConfigSlider(
         label = label,
         value = value,
         range = range,
+        enabled = enabled,
         onValueChange = onValueChange,
         onValueChangeFinished = null
     )
@@ -2889,6 +2905,7 @@ private fun AdvancedConfigSlider(
     label: String,
     value: Float,
     range: ClosedFloatingPointRange<Float>,
+    enabled: Boolean = true,
     onValueChange: (Float) -> Unit,
     onValueChangeFinished: (() -> Unit)? = null
 ) {
@@ -2907,6 +2924,7 @@ private fun AdvancedConfigSlider(
             value = value.coerceIn(range.start, range.endInclusive),
             onValueChange = onValueChange,
             onValueChangeFinished = onValueChangeFinished,
+            enabled = enabled,
             valueRange = range
         )
     }
