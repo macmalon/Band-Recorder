@@ -17,18 +17,22 @@ internal object PostProcessExportNotifier {
     private const val MIN_UPDATE_INTERVAL_MS = 500L
 
     private var lastRunningProgressPercent: Int? = null
+    private var lastRunningDetailMessage: String? = null
     private var lastRunningUpdateAtMs: Long = 0L
 
-    fun showRunning(context: Context, progressPercent: Int, sourceDisplayName: String?) {
+    fun showRunning(context: Context, progressPercent: Int, sourceDisplayName: String?, detailMessage: String? = null) {
         val boundedProgress = progressPercent.coerceIn(0, 100)
         val now = SystemClock.elapsedRealtime()
         val shouldSkip = synchronized(this) {
             val lastProgress = lastRunningProgressPercent
+            val lastDetail = lastRunningDetailMessage
             val progressChanged = lastProgress != boundedProgress
+            val detailChanged = lastDetail != detailMessage
             val enoughTimeElapsed = now - lastRunningUpdateAtMs >= MIN_UPDATE_INTERVAL_MS
-            val shouldEmit = lastProgress == null || boundedProgress >= 100 || progressChanged || enoughTimeElapsed
+            val shouldEmit = lastProgress == null || boundedProgress >= 100 || progressChanged || detailChanged || enoughTimeElapsed
             if (shouldEmit) {
                 lastRunningProgressPercent = boundedProgress
+                lastRunningDetailMessage = detailMessage
                 lastRunningUpdateAtMs = now
             }
             !shouldEmit
@@ -42,7 +46,7 @@ internal object PostProcessExportNotifier {
             NotificationCompat.Builder(context, CHANNEL_ID_RUNNING)
                 .setSmallIcon(android.R.drawable.stat_sys_upload)
                 .setContentTitle("Export audio en cours")
-                .setContentText("Export en cours... $boundedProgress%")
+                .setContentText(detailMessage ?: "Export en cours... $boundedProgress%")
                 .setSubText(sourceDisplayName)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
@@ -57,6 +61,7 @@ internal object PostProcessExportNotifier {
     fun showFinished(context: Context, message: String, sourceDisplayName: String?) {
         synchronized(this) {
             lastRunningProgressPercent = null
+            lastRunningDetailMessage = null
             lastRunningUpdateAtMs = 0L
         }
         val manager = context.getSystemService(NotificationManager::class.java)

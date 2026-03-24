@@ -665,17 +665,22 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         ?: postProcessSourceFile?.name
                         ?: "audio_importe",
                     onProgress = { progress ->
-                        val bounded = progress.coerceIn(0, 100)
+                        val bounded = progress.progressPercent.coerceIn(0, 100)
+                        val detail = progress.detailMessage
                         if (bounded != lastPublishedProgress) {
                             lastPublishedProgress = bounded
                             _uiState.update { state ->
                                 state.copy(
                                     postProcessExportProgressPercent = bounded,
-                                    postProcessStatusMessage = "Export en cours... $bounded%"
+                                    postProcessStatusMessage = detail ?: "Export en cours... $bounded%"
                                 )
                             }
+                        } else if (!detail.isNullOrBlank()) {
+                            _uiState.update { state ->
+                                state.copy(postProcessStatusMessage = detail)
+                            }
                         }
-                        PostProcessExportNotifier.showRunning(app, bounded, exportDisplayName)
+                        PostProcessExportNotifier.showRunning(app, bounded, exportDisplayName, detail)
                     }
                 )
             }
@@ -1857,14 +1862,14 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         analysis: WavAnalysisResult,
         mode: PostProcessMode,
         sourceDisplayName: String,
-        onProgress: ((Int) -> Unit)? = null
+        onProgress: ((PostProcessExportProgress) -> Unit)? = null
     ): String? {
         val baseName = sourceDisplayName.substringBeforeLast('.').replace(Regex("[^A-Za-z0-9_-]"), "_").ifBlank { "processed" }
         val editedRelativePath = "${Environment.DIRECTORY_DOWNLOADS}/Band Recorder/Fichiers édités/$baseName"
-        fun publish(progress: Int) {
-            onProgress?.invoke(progress.coerceIn(0, 100))
+        fun publish(progress: Int, detail: String? = null) {
+            onProgress?.invoke(PostProcessExportProgress(progress.coerceIn(0, 100), detail))
         }
-        publish(0)
+        publish(0, "Export preparation...")
         if (sourceKind == ImportedAudioKind.M4A) {
             val exportResult = exportDecodedAudioSelectionToDownloads(
                 context = getApplication(),
@@ -1874,19 +1879,19 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 mode = mode,
                 relativePath = editedRelativePath,
                 baseName = baseName,
-                onProgress = ::publish
+                onProgress = onProgress
             ) ?: return null
             val message = when (mode) {
                 PostProcessMode.CLEAN_SINGLE_FILE ->
                     if (exportResult.displayNames.size == 1) {
-                        publish(100)
+                        publish(100, "Fichier nettoye 100%")
                         "Export traité: ${exportResult.displayNames.first()}"
                     } else {
                         null
                     }
                 PostProcessMode.SPLIT_MULTIPLE_TRACKS ->
                     if (exportResult.displayNames.size == exportResult.requestedCount && exportResult.displayNames.isNotEmpty()) {
-                        publish(100)
+                        publish(100, "Segments ${exportResult.displayNames.size}/${exportResult.requestedCount}")
                         "Export traité: ${exportResult.displayNames.size} piste(s)"
                     } else if (exportResult.displayNames.isNotEmpty()) {
                         "Export partiel: ${exportResult.displayNames.size}/${exportResult.requestedCount} piste(s) exportée(s)"
@@ -1906,7 +1911,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             mode = mode,
             relativePath = editedRelativePath,
             baseName = baseName,
-            onProgress = ::publish
+            onProgress = { progress -> publish(progress) }
         ) ?: return null
         return when (mode) {
             PostProcessMode.CLEAN_SINGLE_FILE ->
