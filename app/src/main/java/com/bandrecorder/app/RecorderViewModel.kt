@@ -49,6 +49,8 @@ import kotlin.math.ceil
 import kotlin.math.log10
 import kotlin.math.pow
 
+private const val MEDIASTORE_COPY_BUFFER_BYTES = 256 * 1024
+
 data class MicrophoneOption(
     val id: Int,
     val displayName: String,
@@ -617,6 +619,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val app = getApplication<Application>()
             val exportDisplayName = _uiState.value.postProcessSourceName ?: sourceFile?.name ?: postProcessSourceFile?.name
+            var lastPublishedProgress = -1
             _uiState.update {
                 it.copy(
                     postProcessIsExporting = true,
@@ -636,13 +639,17 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     mode = _uiState.value.postProcessMode,
                     sourceDisplayName = _uiState.value.postProcessSourceName ?: exportSourceFile.name,
                     onProgress = { progress ->
-                        _uiState.update { state ->
-                            state.copy(
-                                postProcessExportProgressPercent = progress.coerceIn(0, 100),
-                                postProcessStatusMessage = "Export en cours... ${progress.coerceIn(0, 100)}%"
-                            )
+                        val bounded = progress.coerceIn(0, 100)
+                        if (bounded != lastPublishedProgress) {
+                            lastPublishedProgress = bounded
+                            _uiState.update { state ->
+                                state.copy(
+                                    postProcessExportProgressPercent = bounded,
+                                    postProcessStatusMessage = "Export en cours... $bounded%"
+                                )
+                            }
                         }
-                        PostProcessExportNotifier.showRunning(app, progress.coerceIn(0, 100), exportDisplayName)
+                        PostProcessExportNotifier.showRunning(app, bounded, exportDisplayName)
                     }
                 )
             }
@@ -1764,7 +1771,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             resolver.openOutputStream(uri)?.use { out ->
                 source.inputStream().use { input ->
                     val totalBytes = source.length().coerceAtLeast(0L)
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    val buffer = ByteArray(MEDIASTORE_COPY_BUFFER_BYTES)
                     var copied = 0L
                     while (true) {
                         val read = input.read(buffer)

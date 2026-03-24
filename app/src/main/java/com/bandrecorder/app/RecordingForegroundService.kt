@@ -371,7 +371,7 @@ class RecordingForegroundService : Service() {
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
         return runCatching {
             resolver.openOutputStream(uri)?.use { out ->
-                source.inputStream().use { input -> input.copyTo(out) }
+                source.inputStream().use { input -> input.copyTo(out, 256 * 1024) }
             } ?: error("Cannot open output stream")
             values.clear()
             values.put(MediaStore.MediaColumns.IS_PENDING, 0)
