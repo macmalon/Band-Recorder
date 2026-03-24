@@ -37,6 +37,8 @@ internal data class WavEnvelopeWindow(
 )
 
 private const val MIN_MUSICAL_SEGMENT_SEC = 50
+private const val WAV_COPY_BUFFER_BYTES = 256 * 1024
+private const val WAV_ANALYSIS_BUFFER_BYTES = 256 * 1024
 
 internal fun analyzeWavBySilence(
     sourceFile: File,
@@ -50,26 +52,7 @@ internal fun analyzeWavBySilence(
     val totalFrames = (info.dataSize / frameBytes).coerceAtLeast(0)
     if (totalFrames <= 0) return null
 
-    val windowFrames = (info.sampleRate / 20).coerceAtLeast(1).toLong()
-    val windows = mutableListOf<SignalFeatures>()
-    val totalWindows = ((totalFrames + windowFrames - 1) / windowFrames).coerceAtLeast(1)
-    var lastProgress = -1
-
-    RandomAccessFile(sourceFile, "r").use { raf ->
-        var windowStart = 0L
-        var processedWindows = 0L
-        while (windowStart < totalFrames) {
-            val windowEnd = (windowStart + windowFrames).coerceAtMost(totalFrames)
-            windows += readWindowStats(raf, info, frameBytes, windowStart, windowEnd)
-            processedWindows += 1
-            val progress = ((processedWindows * 100L) / totalWindows.toLong()).toInt().coerceIn(0, 100)
-            if (progress != lastProgress) {
-                lastProgress = progress
-                onProgress?.invoke(progress)
-            }
-            windowStart = windowEnd
-        }
-    }
+    val windows = readSignalWindowsSequentially(sourceFile, info, onProgress) ?: return null
 
     return analyzeSignalWindows(
         info = info,
@@ -185,7 +168,7 @@ internal fun writeWavSegment(
             out.write(buildWavHeader(dataSize.toInt(), info.sampleRate, info.channels))
             val start = info.dataOffset + (segment.startFrame.toLong() * frameBytes.toLong())
             src.seek(start)
-            val buffer = ByteArray(8192)
+            val buffer = ByteArray(WAV_COPY_BUFFER_BYTES)
             var remaining = dataSize
             var written = 0L
             while (remaining > 0) {
@@ -216,7 +199,7 @@ internal fun writeCleanedWav(
     RandomAccessFile(sourceFile, "r").use { src ->
         FileOutputStream(outFile).use { out ->
             out.write(buildWavHeader(dataSize.toInt(), info.sampleRate, info.channels))
-            val buffer = ByteArray(8192)
+            val buffer = ByteArray(WAV_COPY_BUFFER_BYTES)
             var written = 0L
             segments.forEach { segment ->
                 var remaining = ((segment.endFrame - segment.startFrame).coerceAtLeast(0) * frameBytes).coerceAtLeast(0)
@@ -291,32 +274,72 @@ internal fun buildWavHeader(dataSize: Int, sampleRate: Int, channels: Int): Byte
     }
 }
 
-private fun readWindowStats(
-    raf: RandomAccessFile,
+private fun readSignalWindowsSequentially(
+    sourceFile: File,
     info: WavInfo,
-    frameBytes: Int,
-    startFrame: Long,
-    endFrame: Long
-): SignalFeatures {
-    val frameCount = (endFrame - startFrame).coerceAtLeast(0)
-    if (frameCount <= 0) return SignalFeatures(-90f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
-    val bytesToRead = (frameCount * frameBytes).toInt()
-    val buffer = ByteArray(bytesToRead)
-    raf.seek(info.dataOffset + (startFrame.toLong() * frameBytes.toLong()))
-    val read = raf.read(buffer, 0, buffer.size).coerceAtLeast(0)
-    if (read <= 1) return SignalFeatures(-90f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
+    onProgress: ((Int) -> Unit)? = null
+): List<SignalFeatures>? {
+    val frameBytes = info.channels * 2
+    val totalFrames = (info.dataSize / frameBytes).coerceAtLeast(0L)
+    if (totalFrames <= 0L) return null
 
-    val sampleCount = read / 2
-    val samples = ShortArray(sampleCount)
-    var si = 0
-    var i = 0
-    while (i + 1 < read) {
-        val lo = buffer[i].toInt() and 0xFF
-        val hi = buffer[i + 1].toInt()
-        samples[si++] = ((hi shl 8) or lo).toShort()
-        i += 2
+    val windowFrames = (info.sampleRate / 20).coerceAtLeast(1)
+    val windowSampleCapacity = windowFrames * info.channels
+    val readBufferFrames = (WAV_ANALYSIS_BUFFER_BYTES / frameBytes).coerceAtLeast(windowFrames)
+    val readBuffer = ByteArray(readBufferFrames * frameBytes)
+    val windowSamples = ShortArray(windowSampleCapacity)
+    val totalWindows = ((totalFrames + windowFrames - 1L) / windowFrames.toLong()).coerceAtLeast(1L)
+    val windows = ArrayList<SignalFeatures>(totalWindows.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+    var samplesInWindow = 0
+    var processedFrames = 0L
+    var lastProgress = -1
+
+    fun publishProgress() {
+        val progress = ((processedFrames.coerceIn(0L, totalFrames) * 100L) / totalFrames).toInt().coerceIn(0, 100)
+        if (progress != lastProgress) {
+            lastProgress = progress
+            onProgress?.invoke(progress)
+        }
     }
-    return extractSignalFeatures(samples, si, info.channels, info.sampleRate)
+
+    fun flushWindow() {
+        if (samplesInWindow <= 0) return
+        windows += extractSignalFeatures(windowSamples, samplesInWindow, info.channels, info.sampleRate)
+        processedFrames += samplesInWindow / info.channels
+        samplesInWindow = 0
+        publishProgress()
+    }
+
+    RandomAccessFile(sourceFile, "r").use { raf ->
+        raf.seek(info.dataOffset)
+        var remainingFrames = totalFrames
+        while (remainingFrames > 0L) {
+            val framesToRead = minOf(readBufferFrames.toLong(), remainingFrames).toInt()
+            val bytesToRead = framesToRead * frameBytes
+            val read = raf.read(readBuffer, 0, bytesToRead)
+            if (read <= 0) break
+            val safeRead = read - (read % frameBytes)
+            if (safeRead <= 0) break
+
+            var byteIndex = 0
+            while (byteIndex + 1 < safeRead) {
+                val lo = readBuffer[byteIndex].toInt() and 0xFF
+                val hi = readBuffer[byteIndex + 1].toInt()
+                windowSamples[samplesInWindow++] = ((hi shl 8) or lo).toShort()
+                byteIndex += 2
+                if (samplesInWindow == windowSampleCapacity) {
+                    flushWindow()
+                }
+            }
+
+            remainingFrames -= safeRead / frameBytes
+        }
+    }
+
+    flushWindow()
+    if (windows.isEmpty()) return null
+    onProgress?.invoke(100)
+    return windows
 }
 
 private fun readIntLE(buffer: ByteArray, offset: Int): Int {

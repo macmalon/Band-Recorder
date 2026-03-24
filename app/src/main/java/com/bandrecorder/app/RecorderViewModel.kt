@@ -37,6 +37,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.BufferedOutputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.RandomAccessFile
@@ -1825,126 +1826,231 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     ): String? {
         val baseName = sourceDisplayName.substringBeforeLast('.').replace(Regex("[^A-Za-z0-9_-]"), "_").ifBlank { "processed" }
         val editedRelativePath = "${Environment.DIRECTORY_DOWNLOADS}/Band Recorder/Fichiers édités/$baseName"
-        val tempDir = File(getApplication<Application>().cacheDir, "post_process_exports").apply {
-            mkdirs()
-        }
-        val generated = mutableListOf<File>()
         fun publish(progress: Int) {
             onProgress?.invoke(progress.coerceIn(0, 100))
         }
         publish(0)
         if (sourceKind == ImportedAudioKind.M4A) {
-            val generatedFromDecode = exportDecodedAudioSelectionToTempWavs(
+            val exportResult = exportDecodedAudioSelectionToDownloads(
+                context = getApplication(),
                 sourceFile = sourceFile,
                 analysis = analysis,
                 mode = mode,
-                outputDir = tempDir,
+                relativePath = editedRelativePath,
                 baseName = baseName,
-                onProgress = { progress ->
-                    publish(scaledProgress(progress.toLong(), 100L, 0, 70))
-                }
+                onProgress = ::publish
             ) ?: return null
-            generated += generatedFromDecode
-            val totalBytesToCopy = generated.sumOf { it.length().coerceAtLeast(0L) }.coerceAtLeast(1L)
-            var copiedBytes = 0L
-            val exported = generated.count { file ->
-                exportSingleWavToDownloads(file, file.name, editedRelativePath) { copied, total ->
-                    val safeTotal = total.coerceAtLeast(1L)
-                    val aggregateCopied = copiedBytes + copied.coerceAtMost(safeTotal)
-                    publish(scaledProgress(aggregateCopied, totalBytesToCopy, 70, 100))
-                }.also { success ->
-                    if (success) copiedBytes += file.length().coerceAtLeast(0L)
-                }
-            }
             val message = when (mode) {
                 PostProcessMode.CLEAN_SINGLE_FILE ->
-                    if (exported == 1 && generated.size == 1) {
+                    if (exportResult.displayNames.size == 1) {
                         publish(100)
-                        "Export traité: ${generated.first().name}"
+                        "Export traité: ${exportResult.displayNames.first()}"
                     } else {
                         null
                     }
                 PostProcessMode.SPLIT_MULTIPLE_TRACKS ->
-                    if (exported == generated.size && exported > 0) {
+                    if (exportResult.displayNames.isNotEmpty()) {
                         publish(100)
-                        "Export traité: $exported piste(s)"
+                        "Export traité: ${exportResult.displayNames.size} piste(s)"
                     } else {
                         null
                     }
             }
-            generated.forEach { runCatching { it.delete() } }
             return message
         }
 
-        val message = when (mode) {
-            PostProcessMode.CLEAN_SINGLE_FILE -> {
-                val outFile = File(tempDir, "${baseName}_cleaned.wav")
-                com.bandrecorder.app.writeCleanedWav(
-                    sourceFile,
-                    analysis.info,
-                    analysis.segments,
-                    outFile,
-                    onProgress = { writtenBytes, totalBytes ->
-                        val phase = scaledProgress(writtenBytes, totalBytes, 0, 70)
-                        publish(phase)
-                    }
-                )
-                generated += outFile
-                if (exportSingleWavToDownloads(outFile, outFile.name, editedRelativePath) { copied, total ->
-                        publish(scaledProgress(copied, total, 70, 100))
-                    }) {
+        val exportedNames = exportWavSelectionToDownloads(
+            sourceFile = sourceFile,
+            info = analysis.info,
+            segments = analysis.segments,
+            mode = mode,
+            relativePath = editedRelativePath,
+            baseName = baseName,
+            onProgress = ::publish
+        ) ?: return null
+        return when (mode) {
+            PostProcessMode.CLEAN_SINGLE_FILE ->
+                if (exportedNames.size == 1) {
                     publish(100)
-                    "Export traité: ${outFile.name}"
+                    "Export traité: ${exportedNames.first()}"
                 } else {
                     null
+                }
+            PostProcessMode.SPLIT_MULTIPLE_TRACKS ->
+                if (exportedNames.isNotEmpty()) {
+                    publish(100)
+                    "Export traité: ${exportedNames.size} piste(s)"
+                } else {
+                    null
+                }
+        }
+    }
+
+    private fun exportWavSelectionToDownloads(
+        sourceFile: File,
+        info: WavInfo,
+        segments: List<WavFrameSegment>,
+        mode: PostProcessMode,
+        relativePath: String,
+        baseName: String,
+        onProgress: ((Int) -> Unit)? = null
+    ): List<String>? {
+        val frameBytes = info.channels * 2
+        val sortedSegments = segments.sortedBy { it.startFrame }
+        if (sortedSegments.isEmpty()) return emptyList()
+        val totalBytesToWrite = sortedSegments.sumOf {
+            (it.endFrame - it.startFrame).coerceAtLeast(0) * frameBytes
+        }.coerceAtLeast(1L)
+
+        data class PendingDownloadWav(
+            val displayName: String,
+            val uri: Uri,
+            val stream: BufferedOutputStream,
+            val expectedDataBytes: Int,
+            var writtenDataBytes: Int = 0
+        )
+
+        val resolver = getApplication<Application>().contentResolver
+        val handles = mutableListOf<PendingDownloadWav>()
+        var totalWritten = 0L
+        var completedSuccessfully = false
+
+        fun publishBytes() {
+            onProgress?.invoke(scaledProgress(totalWritten, totalBytesToWrite, 0, 100))
+        }
+
+        fun createHandle(displayName: String, expectedDataBytes: Long): PendingDownloadWav? {
+            if (expectedDataBytes <= 0L || expectedDataBytes > Int.MAX_VALUE.toLong()) return null
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                put(MediaStore.MediaColumns.MIME_TYPE, "audio/wav")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+            return runCatching {
+                val rawStream = resolver.openOutputStream(uri) ?: error("Cannot open output stream")
+                val stream = BufferedOutputStream(rawStream, 256 * 1024)
+                stream.write(buildLocalWavHeader(expectedDataBytes.toInt(), info.sampleRate, info.channels))
+                PendingDownloadWav(
+                    displayName = displayName,
+                    uri = uri,
+                    stream = stream,
+                    expectedDataBytes = expectedDataBytes.toInt()
+                ).also { handles += it }
+            }.getOrElse {
+                resolver.delete(uri, null, null)
+                null
+            }
+        }
+
+        try {
+            when (mode) {
+                PostProcessMode.CLEAN_SINGLE_FILE -> {
+                    createHandle(
+                        displayName = "${baseName}_cleaned.wav",
+                        expectedDataBytes = totalBytesToWrite
+                    ) ?: return null
+                }
+                PostProcessMode.SPLIT_MULTIPLE_TRACKS -> {
+                    sortedSegments.forEachIndexed { index, segment ->
+                        createHandle(
+                            displayName = "${baseName}_track_${"%02d".format(Locale.US, index + 1)}.wav",
+                            expectedDataBytes = (segment.endFrame - segment.startFrame).coerceAtLeast(0) * frameBytes
+                        ) ?: return null
+                    }
                 }
             }
 
-            PostProcessMode.SPLIT_MULTIPLE_TRACKS -> {
-                val totalBytesToGenerate = analysis.segments.sumOf {
-                    (it.endFrame - it.startFrame).coerceAtLeast(0) * analysis.info.channels.toLong() * 2L
-                }.coerceAtLeast(1L)
-                var generatedBytes = 0L
-                analysis.segments.forEachIndexed { index, segment ->
-                    val outFile = File(tempDir, "${baseName}_track_${"%02d".format(Locale.US, index + 1)}.wav")
-                    val segmentBytes = (segment.endFrame - segment.startFrame).coerceAtLeast(0) * analysis.info.channels.toLong() * 2L
-                    com.bandrecorder.app.writeWavSegment(
-                        sourceFile,
-                        analysis.info,
-                        segment,
-                        outFile,
-                        onProgress = { writtenBytes, totalBytes ->
-                            val safeTotal = totalBytes.coerceAtLeast(1L)
-                            val aggregateWritten = generatedBytes + writtenBytes.coerceAtMost(safeTotal)
-                            publish(scaledProgress(aggregateWritten, totalBytesToGenerate, 0, 70))
-                        }
-                    )
-                    generatedBytes += segmentBytes
-                    generated += outFile
-                }
-                val totalBytesToCopy = generated.sumOf { it.length().coerceAtLeast(0L) }.coerceAtLeast(1L)
-                var copiedBytes = 0L
-                val exported = generated.count { file ->
-                    exportSingleWavToDownloads(file, file.name, editedRelativePath) { copied, total ->
-                        val safeTotal = total.coerceAtLeast(1L)
-                        val aggregateCopied = copiedBytes + copied.coerceAtMost(safeTotal)
-                        publish(scaledProgress(aggregateCopied, totalBytesToCopy, 70, 100))
-                    }.also { success ->
-                        if (success) {
-                            copiedBytes += file.length().coerceAtLeast(0L)
-                        }
+            RandomAccessFile(sourceFile, "r").use { src ->
+                val buffer = ByteArray(256 * 1024)
+                sortedSegments.forEachIndexed { index, segment ->
+                    var remaining = ((segment.endFrame - segment.startFrame).coerceAtLeast(0) * frameBytes).coerceAtLeast(0)
+                    val start = info.dataOffset + (segment.startFrame * frameBytes.toLong())
+                    val handle = when (mode) {
+                        PostProcessMode.CLEAN_SINGLE_FILE -> handles.first()
+                        PostProcessMode.SPLIT_MULTIPLE_TRACKS -> handles[index]
+                    }
+                    src.seek(start)
+                    while (remaining > 0) {
+                        val toRead = minOf(buffer.size.toLong(), remaining).toInt()
+                        val read = src.read(buffer, 0, toRead)
+                        if (read <= 0) break
+                        handle.stream.write(buffer, 0, read)
+                        remaining -= read
+                        handle.writtenDataBytes += read
+                        totalWritten += read
+                        publishBytes()
                     }
                 }
-                if (exported == generated.size && exported > 0) {
-                    publish(100)
-                    "Export traité: $exported piste(s)"
-                } else {
-                    null
+            }
+
+            handles.forEach { handle ->
+                handle.stream.flush()
+                handle.stream.close()
+                if (handle.writtenDataBytes <= 0 || handle.writtenDataBytes != handle.expectedDataBytes) {
+                    return null
+                }
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                }
+                if (resolver.update(handle.uri, values, null, null) <= 0) {
+                    return null
                 }
             }
+            onProgress?.invoke(100)
+            completedSuccessfully = true
+            return handles.map { it.displayName }
+        } finally {
+            handles.forEach { handle -> runCatching { handle.stream.close() } }
+            if (!completedSuccessfully) {
+                handles.forEach { handle -> runCatching { resolver.delete(handle.uri, null, null) } }
+            }
         }
-        generated.forEach { runCatching { it.delete() } }
-        return message
+    }
+
+    private fun buildLocalWavHeader(dataSize: Int, sampleRate: Int, channels: Int): ByteArray {
+        val byteRate = sampleRate * channels * 16 / 8
+        val totalDataLen = 36 + dataSize
+        return ByteArray(44).apply {
+            this[0] = 'R'.code.toByte()
+            this[1] = 'I'.code.toByte()
+            this[2] = 'F'.code.toByte()
+            this[3] = 'F'.code.toByte()
+            writeLocalIntLE(this, 4, totalDataLen)
+            this[8] = 'W'.code.toByte()
+            this[9] = 'A'.code.toByte()
+            this[10] = 'V'.code.toByte()
+            this[11] = 'E'.code.toByte()
+            this[12] = 'f'.code.toByte()
+            this[13] = 'm'.code.toByte()
+            this[14] = 't'.code.toByte()
+            this[15] = ' '.code.toByte()
+            writeLocalShortLE(this, 20, 1)
+            writeLocalShortLE(this, 22, channels)
+            writeLocalIntLE(this, 16, 16)
+            writeLocalIntLE(this, 24, sampleRate)
+            writeLocalIntLE(this, 28, byteRate)
+            writeLocalShortLE(this, 32, channels * 2)
+            writeLocalShortLE(this, 34, 16)
+            this[36] = 'd'.code.toByte()
+            this[37] = 'a'.code.toByte()
+            this[38] = 't'.code.toByte()
+            this[39] = 'a'.code.toByte()
+            writeLocalIntLE(this, 40, dataSize)
+        }
+    }
+
+    private fun writeLocalIntLE(buffer: ByteArray, offset: Int, value: Int) {
+        buffer[offset] = (value and 0xFF).toByte()
+        buffer[offset + 1] = ((value shr 8) and 0xFF).toByte()
+        buffer[offset + 2] = ((value shr 16) and 0xFF).toByte()
+        buffer[offset + 3] = ((value shr 24) and 0xFF).toByte()
+    }
+
+    private fun writeLocalShortLE(buffer: ByteArray, offset: Int, value: Int) {
+        buffer[offset] = (value and 0xFF).toByte()
+        buffer[offset + 1] = ((value shr 8) and 0xFF).toByte()
     }
 
     private fun scaledProgress(done: Long, total: Long, start: Int, end: Int): Int {
