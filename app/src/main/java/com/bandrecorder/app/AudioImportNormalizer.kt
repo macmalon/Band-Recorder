@@ -210,6 +210,45 @@ private fun publishDecodeProgress(
     return bestProgress
 }
 
+private class ReusablePcmChunkBuffer {
+    private var bytes = ByteArray(0)
+
+    fun decode(
+        outputBuffer: ByteBuffer,
+        bufferInfo: MediaCodec.BufferInfo,
+        pcmEncoding: Int
+    ): ByteArray? {
+        val duplicate = outputBuffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
+        duplicate.position(bufferInfo.offset)
+        duplicate.limit(bufferInfo.offset + bufferInfo.size)
+        return when (pcmEncoding) {
+            AudioFormat.ENCODING_PCM_16BIT -> {
+                ensureCapacity(bufferInfo.size)
+                duplicate.get(bytes, 0, bufferInfo.size)
+                bytes
+            }
+            AudioFormat.ENCODING_PCM_FLOAT -> {
+                val floatBuffer = duplicate.slice().order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+                val outputSize = floatBuffer.remaining() * 2
+                ensureCapacity(outputSize)
+                var byteIndex = 0
+                while (floatBuffer.hasRemaining()) {
+                    val sample = (floatBuffer.get().coerceIn(-1f, 1f) * Short.MAX_VALUE.toFloat()).roundToInt().toShort()
+                    bytes[byteIndex++] = (sample.toInt() and 0xFF).toByte()
+                    bytes[byteIndex++] = ((sample.toInt() shr 8) and 0xFF).toByte()
+                }
+                bytes
+            }
+            else -> null
+        }
+    }
+
+    private fun ensureCapacity(required: Int) {
+        if (bytes.size >= required) return
+        bytes = ByteArray(required)
+    }
+}
+
 private fun copyUriToFile(context: Context, uri: Uri, target: File): File? {
     return runCatching {
         context.contentResolver.openInputStream(uri)?.use { input ->
@@ -236,6 +275,7 @@ private fun decodeAudioFileToWav(
     var durationUs = 0L
     var lastProgress = -1
     var decodedFrames = 0L
+    val pcmChunkBuffer = ReusablePcmChunkBuffer()
     try {
         extractor.setDataSource(sourceFile.absolutePath)
         val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
@@ -308,10 +348,15 @@ private fun decodeAudioFileToWav(
                                     outputSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                                     outputChannels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                                 }
-                                val chunk = extractPcm16Chunk(outputBuffer, bufferInfo, pcmEncoding) ?: return null
-                                output.write(chunk)
-                                dataBytesWritten += chunk.size
-                                decodedFrames += chunk.size / (2L * outputChannels.coerceAtLeast(1))
+                                val chunk = pcmChunkBuffer.decode(outputBuffer, bufferInfo, pcmEncoding) ?: return null
+                                val chunkSize = when (pcmEncoding) {
+                                    AudioFormat.ENCODING_PCM_16BIT -> bufferInfo.size
+                                    AudioFormat.ENCODING_PCM_FLOAT -> (bufferInfo.size / 4) * 2
+                                    else -> return null
+                                }
+                                output.write(chunk, 0, chunkSize)
+                                dataBytesWritten += chunkSize
+                                decodedFrames += chunkSize / (2L * outputChannels.coerceAtLeast(1))
                                 lastProgress = publishDecodeProgress(
                                     durationUs = durationUs,
                                     presentationTimeUs = bufferInfo.presentationTimeUs,
@@ -371,6 +416,7 @@ internal fun decodeAudioFileToAnalysisCache(
     var windowSampleCapacity = 0
     var windowSamples = ShortArray(0)
     var samplesInWindow = 0
+    val pcmChunkBuffer = ReusablePcmChunkBuffer()
 
     fun ensureWindowBuffer(sampleRate: Int, channels: Int) {
         if (windowFrames > 0 && windowSampleCapacity > 0) return
@@ -386,11 +432,11 @@ internal fun decodeAudioFileToAnalysisCache(
         samplesInWindow = 0
     }
 
-    fun processChunk(chunk: ByteArray) {
+    fun processChunk(chunk: ByteArray, chunkSize: Int) {
         if (outputSampleRate <= 0 || outputChannels <= 0) return
         ensureWindowBuffer(outputSampleRate, outputChannels)
         var byteIndex = 0
-        while (byteIndex + 1 < chunk.size) {
+        while (byteIndex + 1 < chunkSize) {
             val lo = chunk[byteIndex].toInt() and 0xFF
             val hi = chunk[byteIndex + 1].toInt()
             windowSamples[samplesInWindow++] = ((hi shl 8) or lo).toShort()
@@ -473,9 +519,14 @@ internal fun decodeAudioFileToAnalysisCache(
                                 outputChannels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                                 ensureWindowBuffer(outputSampleRate, outputChannels)
                             }
-                            val chunk = extractPcm16Chunk(outputBuffer, bufferInfo, pcmEncoding) ?: return null
-                            processChunk(chunk)
-                            totalFrames += chunk.size / (2 * outputChannels)
+                            val chunk = pcmChunkBuffer.decode(outputBuffer, bufferInfo, pcmEncoding) ?: return null
+                            val chunkSize = when (pcmEncoding) {
+                                AudioFormat.ENCODING_PCM_16BIT -> bufferInfo.size
+                                AudioFormat.ENCODING_PCM_FLOAT -> (bufferInfo.size / 4) * 2
+                                else -> return null
+                            }
+                            processChunk(chunk, chunkSize)
+                            totalFrames += chunkSize / (2 * outputChannels)
                             lastProgress = publishDecodeProgress(
                                 durationUs = durationUs,
                                 presentationTimeUs = bufferInfo.presentationTimeUs,
@@ -515,33 +566,6 @@ internal fun decodeAudioFileToAnalysisCache(
         runCatching { codec?.stop() }
         runCatching { codec?.release() }
         runCatching { extractor.release() }
-    }
-}
-
-private fun extractPcm16Chunk(
-    outputBuffer: ByteBuffer,
-    bufferInfo: MediaCodec.BufferInfo,
-    pcmEncoding: Int
-): ByteArray? {
-    val duplicate = outputBuffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
-    duplicate.position(bufferInfo.offset)
-    duplicate.limit(bufferInfo.offset + bufferInfo.size)
-    return when (pcmEncoding) {
-        AudioFormat.ENCODING_PCM_16BIT -> {
-            ByteArray(bufferInfo.size).also { duplicate.get(it) }
-        }
-        AudioFormat.ENCODING_PCM_FLOAT -> {
-            val floatBuffer = duplicate.slice().order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
-            ByteArray(floatBuffer.remaining() * 2).also { bytes ->
-                var byteIndex = 0
-                while (floatBuffer.hasRemaining()) {
-                    val sample = (floatBuffer.get().coerceIn(-1f, 1f) * Short.MAX_VALUE.toFloat()).roundToInt().toShort()
-                    bytes[byteIndex++] = (sample.toInt() and 0xFF).toByte()
-                    bytes[byteIndex++] = ((sample.toInt() shr 8) and 0xFF).toByte()
-                }
-            }
-        }
-        else -> null
     }
 }
 
@@ -695,6 +719,7 @@ internal fun exportDecodedAudioSelectionToTempWavs(
     var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
     var durationUs = 0L
     var lastProgress = -1
+    val pcmChunkBuffer = ReusablePcmChunkBuffer()
     val bytesPerFrame = analysis.info.channels * 2L
     val sortedSegments = analysis.segments.sortedBy { it.startFrame }
     if (sortedSegments.any { it.endFrame <= it.startFrame }) return null
@@ -813,8 +838,13 @@ internal fun exportDecodedAudioSelectionToTempWavs(
                                     return null
                                 }
                             }
-                            val chunk = extractPcm16Chunk(outputBuffer, bufferInfo, pcmEncoding) ?: return null
-                            val framesInChunk = chunk.size / (outputChannels * 2)
+                            val chunk = pcmChunkBuffer.decode(outputBuffer, bufferInfo, pcmEncoding) ?: return null
+                            val chunkSize = when (pcmEncoding) {
+                                AudioFormat.ENCODING_PCM_16BIT -> bufferInfo.size
+                                AudioFormat.ENCODING_PCM_FLOAT -> (bufferInfo.size / 4) * 2
+                                else -> return null
+                            }
+                            val framesInChunk = chunkSize / (outputChannels * 2)
                             val chunkEndFrame = chunkStartFrame + framesInChunk
 
                             while (
@@ -907,6 +937,7 @@ internal fun exportDecodedAudioSelectionToDownloads(
     var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
     var durationUs = 0L
     var lastProgress = -1
+    val pcmChunkBuffer = ReusablePcmChunkBuffer()
     val bytesPerFrame = analysis.info.channels * 2L
     val sortedSegments = analysis.segments.sortedBy { it.startFrame }
     if (sortedSegments.any { it.endFrame <= it.startFrame }) return null
@@ -1018,8 +1049,13 @@ internal fun exportDecodedAudioSelectionToDownloads(
                                     return null
                                 }
                             }
-                            val chunk = extractPcm16Chunk(outputBuffer, bufferInfo, pcmEncoding) ?: return null
-                            val framesInChunk = chunk.size / (outputChannels * 2)
+                            val chunk = pcmChunkBuffer.decode(outputBuffer, bufferInfo, pcmEncoding) ?: return null
+                            val chunkSize = when (pcmEncoding) {
+                                AudioFormat.ENCODING_PCM_16BIT -> bufferInfo.size
+                                AudioFormat.ENCODING_PCM_FLOAT -> (bufferInfo.size / 4) * 2
+                                else -> return null
+                            }
+                            val framesInChunk = chunkSize / (outputChannels * 2)
                             val chunkEndFrame = chunkStartFrame + framesInChunk
 
                             while (
