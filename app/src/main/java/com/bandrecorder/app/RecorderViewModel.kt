@@ -1396,7 +1396,6 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             inputGainDb = _uiState.value.recordingInputGainDb,
             ignoreSilenceEnabled = _uiState.value.ignoreSilenceEnabled,
             splitOnSilenceEnabled = _uiState.value.splitOnSilenceEnabled,
-            silenceThresholdDb = _uiState.value.silenceThresholdDb,
             silenceDurationSec = _uiState.value.silenceDurationSec
         )
         _uiState.update {
@@ -2272,7 +2271,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             crestDb = status.crestDb
         )
         pushLiveFeatures(liveFeatures)
-        val liveThresholds = computeAdaptiveThresholds(liveDetectionHistory.toList(), _uiState.value.silenceThresholdDb)
+        val liveThresholds = computeAdaptiveThresholds(liveDetectionHistory.toList())
         val silenceDecision = evaluateSilence(liveFeatures, liveThresholds, currentlyInSilence = liveDetectorInSilence)
         val thresholdCrossed = silenceDecision.isSilence
         if (!thresholdCrossed) {
@@ -2308,7 +2307,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 status = "Recording",
                 silenceAutoThresholdDb = liveThresholds.autoThresholdDb,
                 silenceEffectiveThresholdDb = liveThresholds.enterThresholdDb,
-                silenceDetectionSummary = "Auto ${"%.1f".format(liveThresholds.autoThresholdDb)} dBFS, réglé ${"%.1f".format(liveThresholds.enterThresholdDb)} dBFS",
+                silenceDetectionSummary = "Détection auto ${"%.1f".format(liveThresholds.autoThresholdDb)} dBFS pendant l'enregistrement",
                 inputSourceLabel = status.inputDiagnostics?.sourceLabel ?: it.inputSourceLabel,
                 inputPreferredDeviceSet = status.inputDiagnostics?.preferredDeviceSet ?: it.inputPreferredDeviceSet,
                 inputRoutedDevice = status.inputDiagnostics?.let { diag ->

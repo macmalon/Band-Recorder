@@ -40,7 +40,6 @@ class RecordingForegroundService : Service() {
     private var uiOutputPath: String? = null
     private var splitOnSilenceEnabled: Boolean = false
     private var ignoreSilenceEnabled: Boolean = false
-    private var silenceThresholdDb: Float = 0f
     private var silenceDurationSec: Int = 8
     private var didFinalizeStop = false
 
@@ -112,7 +111,6 @@ class RecordingForegroundService : Service() {
         val inputGainDb = intent.getFloatExtra(EXTRA_INPUT_GAIN_DB, 0f)
         splitOnSilenceEnabled = intent.getBooleanExtra(EXTRA_SPLIT_ON_SILENCE_ENABLED, false)
         ignoreSilenceEnabled = intent.getBooleanExtra(EXTRA_IGNORE_SILENCE_ENABLED, false)
-        silenceThresholdDb = intent.getFloatExtra(EXTRA_SILENCE_THRESHOLD_DB, 0f)
         silenceDurationSec = intent.getIntExtra(EXTRA_SILENCE_DURATION_SEC, 8)
         val target = when (storageLocation) {
             StorageLocation.DOWNLOADS -> buildTempOutputFile()
@@ -167,7 +165,6 @@ class RecordingForegroundService : Service() {
         private const val EXTRA_INPUT_GAIN_DB = "extra_input_gain_db"
         private const val EXTRA_IGNORE_SILENCE_ENABLED = "extra_ignore_silence_enabled"
         private const val EXTRA_SPLIT_ON_SILENCE_ENABLED = "extra_split_on_silence_enabled"
-        private const val EXTRA_SILENCE_THRESHOLD_DB = "extra_silence_threshold_db"
         private const val EXTRA_SILENCE_DURATION_SEC = "extra_silence_duration_sec"
 
         internal fun start(
@@ -179,7 +176,6 @@ class RecordingForegroundService : Service() {
             inputGainDb: Float,
             ignoreSilenceEnabled: Boolean,
             splitOnSilenceEnabled: Boolean,
-            silenceThresholdDb: Float,
             silenceDurationSec: Int
         ) {
             val intent = Intent(context, RecordingForegroundService::class.java).apply {
@@ -193,7 +189,6 @@ class RecordingForegroundService : Service() {
                 putExtra(EXTRA_INPUT_GAIN_DB, inputGainDb)
                 putExtra(EXTRA_IGNORE_SILENCE_ENABLED, ignoreSilenceEnabled)
                 putExtra(EXTRA_SPLIT_ON_SILENCE_ENABLED, splitOnSilenceEnabled)
-                putExtra(EXTRA_SILENCE_THRESHOLD_DB, silenceThresholdDb)
                 putExtra(EXTRA_SILENCE_DURATION_SEC, silenceDurationSec)
             }
             ContextCompat.startForegroundService(context, intent)
@@ -392,17 +387,16 @@ class RecordingForegroundService : Service() {
         val sourceFile = pendingTempFile ?: return emptyList()
         val currentSession = sessionBaseName ?: return emptyList()
         val outDir = sourceFile.parentFile ?: return emptyList()
-        return splitWavOnSilence(sourceFile, currentSession, outDir, silenceThresholdDb, silenceDurationSec)
+        return splitWavOnSilence(sourceFile, currentSession, outDir, silenceDurationSec)
     }
 
     private fun splitWavOnSilence(
         sourceFile: File,
         sessionBase: String,
         outputDir: File,
-        silenceThresholdDb: Float,
         silenceDurationSec: Int
     ): List<File> {
-        val analysis = analyzeWavBySilence(sourceFile, silenceThresholdDb, silenceDurationSec) ?: return emptyList()
+        val analysis = analyzeWavBySilence(sourceFile, 0f, silenceDurationSec) ?: return emptyList()
         if (analysis.segments.isEmpty()) return emptyList()
         outputDir.mkdirs()
         val created = mutableListOf<File>()

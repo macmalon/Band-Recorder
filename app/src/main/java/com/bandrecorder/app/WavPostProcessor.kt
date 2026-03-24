@@ -2,6 +2,7 @@ package com.bandrecorder.app
 
 import com.bandrecorder.core.audio.AdaptiveSilenceThresholds
 import com.bandrecorder.core.audio.SignalFeatures
+import com.bandrecorder.core.audio.applyThresholdOffset
 import com.bandrecorder.core.audio.computeAdaptiveThresholds
 import com.bandrecorder.core.audio.evaluateSilence
 import com.bandrecorder.core.audio.extractSignalFeatures
@@ -94,7 +95,8 @@ internal fun analyzeSignalWindows(
     val minSegmentFrames = (info.sampleRate.toLong() * MIN_MUSICAL_SEGMENT_SEC).coerceAtLeast(windowFrames)
     val resumeConfirmFrames = (info.sampleRate.toLong() * 4L).coerceAtLeast(windowFrames)
     val resumePrerollFrames = (info.sampleRate.toLong() * 6L).coerceAtLeast(resumeConfirmFrames)
-    val thresholds = computeAdaptiveThresholds(windows, silenceThresholdDb)
+    val autoThresholds = computeAdaptiveThresholds(windows)
+    val thresholds = applyThresholdOffset(autoThresholds, silenceThresholdDb)
     val envelope = mutableListOf<WavEnvelopeWindow>()
 
     val segments = mutableListOf<WavFrameSegment>()

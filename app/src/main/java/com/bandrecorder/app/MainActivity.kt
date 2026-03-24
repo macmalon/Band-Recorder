@@ -295,7 +295,6 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 onToggleIgnoreSilence = vm::setIgnoreSilenceEnabled,
                 onToggleSplitOnSilence = vm::setSplitOnSilenceEnabled,
                 onSetSilenceDurationSec = vm::setSilenceDurationSec,
-                onSetSilenceThresholdDb = vm::setSilenceThresholdDb,
                 onToggleDiagnostic = vm::setDiagnosticMode,
                 onToggleAdvanced = vm::setShowAdvancedInternals,
                 onToggleVintageV2 = vm::setUiVintageV2Enabled
@@ -2921,7 +2920,6 @@ private fun SettingsScreen(
     onToggleIgnoreSilence: (Boolean) -> Unit,
     onToggleSplitOnSilence: (Boolean) -> Unit,
     onSetSilenceDurationSec: (Int) -> Unit,
-    onSetSilenceThresholdDb: (Float) -> Unit,
     onToggleDiagnostic: (Boolean) -> Unit,
     onToggleAdvanced: (Boolean) -> Unit,
     onToggleVintageV2: (Boolean) -> Unit
@@ -2954,12 +2952,6 @@ private fun SettingsScreen(
                     range = 2f..20f,
                     onValueChange = { onSetSilenceDurationSec(it.roundToInt()) }
                 )
-                AdvancedConfigSlider(
-                    label = "Décalage seuil (dB)",
-                    value = ui.silenceThresholdDb,
-                    range = -18f..18f,
-                    onValueChange = onSetSilenceThresholdDb
-                )
                 ui.silenceDetectionSummary?.let {
                     Text(
                         it,
@@ -2968,7 +2960,7 @@ private fun SettingsScreen(
                     )
                 }
                 Text(
-                    "Le moteur calcule un seuil auto puis applique ton décalage. Monte le décalage pour supprimer plus de blabla faible.",
+                    "Le seuil est calculé automatiquement pendant l'enregistrement; seule la durée minimale du blanc est réglable.",
                     style = MaterialTheme.typography.bodySmall,
                     color = AmpMetalLight
                 )

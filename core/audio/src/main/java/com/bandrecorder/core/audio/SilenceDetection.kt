@@ -105,13 +105,11 @@ fun extractSignalFeatures(
 }
 
 fun computeAdaptiveThresholds(
-    windows: List<SignalFeatures>,
-    thresholdOffsetDb: Float
+    windows: List<SignalFeatures>
 ): AdaptiveSilenceThresholds {
     if (windows.isEmpty()) {
         val auto = -42f
-        val enter = (auto + thresholdOffsetDb).coerceIn(-80f, -18f)
-        return AdaptiveSilenceThresholds(auto, enter, (enter + 3f).coerceAtMost(-10f))
+        return AdaptiveSilenceThresholds(auto, auto, (auto + 3f).coerceAtMost(-10f))
     }
 
     val rmsValues = windows.map { it.rmsDb }.sorted()
@@ -125,9 +123,21 @@ fun computeAdaptiveThresholds(
         else -> 4f
     }
     val auto = (noiseFloor + baseLift).coerceIn(-78f, -30f)
-    val enter = (auto + thresholdOffsetDb).coerceIn(-80f, -18f)
+    val enter = auto
     val exit = (enter + 3f).coerceAtMost(-10f)
     return AdaptiveSilenceThresholds(autoThresholdDb = auto, enterThresholdDb = enter, exitThresholdDb = exit)
+}
+
+fun applyThresholdOffset(
+    thresholds: AdaptiveSilenceThresholds,
+    thresholdOffsetDb: Float
+): AdaptiveSilenceThresholds {
+    val enter = (thresholds.autoThresholdDb + thresholdOffsetDb).coerceIn(-80f, -18f)
+    val exit = (enter + 3f).coerceAtMost(-10f)
+    return thresholds.copy(
+        enterThresholdDb = enter,
+        exitThresholdDb = exit
+    )
 }
 
 fun evaluateSilence(
