@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.pm.ServiceInfo
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -47,11 +48,15 @@ class AnalysisForegroundService : Service() {
 
             ACTION_START -> {
                 val sourcePath = intent.getStringExtra(EXTRA_SOURCE_PATH) ?: return START_NOT_STICKY
+                val sourceUriString = intent.getStringExtra(EXTRA_SOURCE_URI)
                 val displayName = intent.getStringExtra(EXTRA_DISPLAY_NAME) ?: File(sourcePath).name
                 val sourceKind = intent.getStringExtra(EXTRA_SOURCE_KIND)
                     ?.let { runCatching { ImportedAudioKind.valueOf(it) }.getOrNull() }
                     ?: ImportedAudioKind.UNSUPPORTED
                 val cachedWorkingFilePath = intent.getStringExtra(EXTRA_CACHED_WORKING_FILE_PATH)
+                val sourceDurationMs = intent.getLongExtra(EXTRA_SOURCE_DURATION_MS, -1L).takeIf { it >= 0L }
+                val sourceSampleRateHz = intent.getIntExtra(EXTRA_SOURCE_SAMPLE_RATE_HZ, -1).takeIf { it > 0 }
+                val sourceChannels = intent.getIntExtra(EXTRA_SOURCE_CHANNELS, -1).takeIf { it > 0 }
                 val silenceThresholdDb = intent.getFloatExtra(EXTRA_THRESHOLD_DB, 0f)
                 val silenceDurationSec = intent.getIntExtra(EXTRA_DURATION_SEC, 8)
                 runningStartedAtMs = System.currentTimeMillis()
@@ -62,9 +67,13 @@ class AnalysisForegroundService : Service() {
                 analysisJob = serviceScope.launch {
                     runAnalysis(
                         sourcePath = sourcePath,
+                        sourceUriString = sourceUriString,
                         displayName = displayName,
                         sourceKind = sourceKind,
                         cachedWorkingFilePath = cachedWorkingFilePath,
+                        sourceDurationMs = sourceDurationMs,
+                        sourceSampleRateHz = sourceSampleRateHz,
+                        sourceChannels = sourceChannels,
                         silenceThresholdDb = silenceThresholdDb,
                         silenceDurationSec = silenceDurationSec
                     )
@@ -85,16 +94,21 @@ class AnalysisForegroundService : Service() {
 
     private suspend fun runAnalysis(
         sourcePath: String,
+        sourceUriString: String?,
         displayName: String,
         sourceKind: ImportedAudioKind,
         cachedWorkingFilePath: String?,
+        sourceDurationMs: Long?,
+        sourceSampleRateHz: Int?,
+        sourceChannels: Int?,
         silenceThresholdDb: Float,
         silenceDurationSec: Int
     ) {
         acquireWakeLock()
         publishRunningState(sourcePath, displayName, "Préparation du fichier...", 0)
-        val sourceFile = File(sourcePath)
-        if (!sourceFile.exists()) {
+        val sourceUri = sourceUriString?.let(Uri::parse)
+        val sourceFile = sourceUri?.let { null } ?: File(sourcePath).takeIf { it.exists() }
+        if (sourceFile == null && sourceUri == null) {
             finishFailure(sourcePath, "Analyse impossible: fichier introuvable.")
             return
         }
@@ -104,10 +118,25 @@ class AnalysisForegroundService : Service() {
             publishRunningState(sourcePath, displayName, "WAV préparé réutilisé... 35%", 35)
             cachedWorkingFile
         } else {
+            val preflightFailure = buildImportPreflightMessage(
+                context = applicationContext,
+                sourceFile = sourceFile,
+                sourceUri = sourceUri,
+                displayName = displayName,
+                kind = sourceKind,
+                durationMsHint = sourceDurationMs,
+                sampleRateHzHint = sourceSampleRateHz,
+                channelsHint = sourceChannels
+            )
+            if (preflightFailure != null) {
+                finishFailure(sourcePath, preflightFailure)
+                return
+            }
             withContext(Dispatchers.IO) {
                 normalizeImportedAudio(
                     context = applicationContext,
                     sourceFile = sourceFile,
+                    sourceUri = sourceUri,
                     displayName = displayName,
                     kind = sourceKind,
                     onProgress = { stepProgress ->
@@ -335,27 +364,39 @@ class AnalysisForegroundService : Service() {
         private const val ACTION_START = "com.bandrecorder.app.action.START_ANALYSIS_FOREGROUND"
         private const val ACTION_STOP = "com.bandrecorder.app.action.STOP_ANALYSIS_FOREGROUND"
         private const val EXTRA_SOURCE_PATH = "extra_source_path"
+        private const val EXTRA_SOURCE_URI = "extra_source_uri"
         private const val EXTRA_DISPLAY_NAME = "extra_display_name"
         private const val EXTRA_SOURCE_KIND = "extra_source_kind"
         private const val EXTRA_CACHED_WORKING_FILE_PATH = "extra_cached_working_file_path"
+        private const val EXTRA_SOURCE_DURATION_MS = "extra_source_duration_ms"
+        private const val EXTRA_SOURCE_SAMPLE_RATE_HZ = "extra_source_sample_rate_hz"
+        private const val EXTRA_SOURCE_CHANNELS = "extra_source_channels"
         private const val EXTRA_THRESHOLD_DB = "extra_threshold_db"
         private const val EXTRA_DURATION_SEC = "extra_duration_sec"
 
         internal fun start(
             context: Context,
             sourcePath: String,
+            sourceUriString: String?,
             displayName: String,
             sourceKind: ImportedAudioKind,
             cachedWorkingFilePath: String?,
+            sourceDurationMs: Long?,
+            sourceSampleRateHz: Int?,
+            sourceChannels: Int?,
             silenceThresholdDb: Float,
             silenceDurationSec: Int
         ) {
             val intent = Intent(context, AnalysisForegroundService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_SOURCE_PATH, sourcePath)
+                putExtra(EXTRA_SOURCE_URI, sourceUriString)
                 putExtra(EXTRA_DISPLAY_NAME, displayName)
                 putExtra(EXTRA_SOURCE_KIND, sourceKind.name)
                 putExtra(EXTRA_CACHED_WORKING_FILE_PATH, cachedWorkingFilePath)
+                putExtra(EXTRA_SOURCE_DURATION_MS, sourceDurationMs)
+                putExtra(EXTRA_SOURCE_SAMPLE_RATE_HZ, sourceSampleRateHz)
+                putExtra(EXTRA_SOURCE_CHANNELS, sourceChannels)
                 putExtra(EXTRA_THRESHOLD_DB, silenceThresholdDb)
                 putExtra(EXTRA_DURATION_SEC, silenceDurationSec)
             }

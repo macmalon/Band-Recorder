@@ -2070,7 +2070,7 @@ private fun PostProcessScreen(
                 onClick = { importLauncher.launch(arrayOf("audio/wav", "audio/x-wav", "audio/mp4", "audio/aac", "audio/*")) },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Importer un WAV ou M4A")
+                Text("Importer un WAV ou audio compatible")
             }
 
             if (ui.postProcessSourceName != null) {
@@ -2149,7 +2149,7 @@ private fun PostProcessScreen(
                     onClick = {
                         if (ui.postProcessIsAnalyzing) onCancelAnalyze() else onAnalyze()
                     },
-                    enabled = ui.postProcessSourcePath != null && !ui.postProcessIsExporting,
+                    enabled = ui.postProcessSourceName != null && !ui.postProcessIsExporting,
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(if (ui.postProcessIsAnalyzing) "Annuler" else "Analyser")

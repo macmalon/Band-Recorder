@@ -18,11 +18,13 @@ class AudioImportNormalizerTest {
         assertEquals(ImportedAudioKind.M4A, detectImportedAudioKind("take.bin", "audio/mp4"))
         assertEquals(ImportedAudioKind.M4A, detectImportedAudioKind("take.bin", "audio/aac"))
         assertEquals(ImportedAudioKind.M4A, detectImportedAudioKind("take.bin", "audio/x-m4a"))
+        assertEquals(ImportedAudioKind.M4A, detectImportedAudioKind("take.flac", "audio/flac"))
+        assertEquals(ImportedAudioKind.M4A, detectImportedAudioKind("take.mp3", "audio/mpeg"))
     }
 
     @Test
     fun `detect import kind rejects unsupported format`() {
-        assertEquals(ImportedAudioKind.UNSUPPORTED, detectImportedAudioKind("take.flac", "audio/flac"))
+        assertEquals(ImportedAudioKind.UNSUPPORTED, detectImportedAudioKind("take.txt", "text/plain"))
         assertEquals(ImportedAudioKind.UNSUPPORTED, detectImportedAudioKind(null, null))
     }
 }

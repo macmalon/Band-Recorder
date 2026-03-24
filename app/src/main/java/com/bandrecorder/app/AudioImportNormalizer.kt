@@ -2,6 +2,7 @@ package com.bandrecorder.app
 
 import android.content.ContentValues
 import android.content.Context
+import android.content.res.AssetFileDescriptor
 import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
@@ -34,7 +35,8 @@ internal data class NormalizedImportedAudio(
 )
 
 internal data class ImportedAudioSource(
-    val file: File,
+    val file: File?,
+    val uri: Uri?,
     val displayName: String,
     val kind: ImportedAudioKind,
     val durationMs: Long,
@@ -55,7 +57,19 @@ internal fun detectImportedAudioKind(displayName: String?, mimeType: String?): I
         normalizedName.endsWith(".wav") ||
             normalizedMime == "audio/wav" ||
             normalizedMime == "audio/x-wav" -> ImportedAudioKind.WAV
+        normalizedMime.startsWith("audio/") ||
         normalizedName.endsWith(".m4a") ||
+            normalizedName.endsWith(".mp3") ||
+            normalizedName.endsWith(".aac") ||
+            normalizedName.endsWith(".flac") ||
+            normalizedName.endsWith(".ogg") ||
+            normalizedName.endsWith(".oga") ||
+            normalizedName.endsWith(".opus") ||
+            normalizedName.endsWith(".mp4") ||
+            normalizedName.endsWith(".3gp") ||
+            normalizedName.endsWith(".amr") ||
+            normalizedName.endsWith(".webm") ||
+            normalizedName.endsWith(".weba") ||
             normalizedMime == "audio/mp4" ||
             normalizedMime == "audio/m4a" ||
             normalizedMime == "audio/aac" ||
@@ -66,22 +80,32 @@ internal fun detectImportedAudioKind(displayName: String?, mimeType: String?): I
 
 internal fun normalizeImportedAudio(
     context: Context,
-    sourceFile: File,
+    sourceFile: File? = null,
+    sourceUri: Uri? = null,
     displayName: String,
     kind: ImportedAudioKind,
     onProgress: ((Int) -> Unit)? = null
 ): NormalizedImportedAudio? {
     val tempDir = File(context.cacheDir, "post_process_imports").apply { mkdirs() }
     val safeName = displayName.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "imported_audio" }
+    val localSourceFile = sourceFile ?: sourceUri?.takeIf { it.scheme.equals("file", ignoreCase = true) }
+        ?.path
+        ?.let(::File)
+        ?.takeIf { it.exists() }
     val normalizedFile = when (kind) {
         ImportedAudioKind.WAV -> {
-            onProgress?.invoke(100)
-            sourceFile
+            if (localSourceFile != null) {
+                onProgress?.invoke(100)
+                localSourceFile
+            } else {
+                val target = File(tempDir, "${System.currentTimeMillis()}_${safeName.substringBeforeLast('.', safeName)}.wav")
+                copyUriToFile(context, sourceUri ?: return null, target) ?: return null
+            }
         }
         ImportedAudioKind.M4A -> {
             val baseName = safeName.substringBeforeLast('.', safeName)
             val target = File(tempDir, "${System.currentTimeMillis()}_${baseName}.wav")
-            decodeAudioFileToWav(sourceFile, target, onProgress) ?: return null
+            decodeAudioFileToWav(context, localSourceFile, sourceUri, target, onProgress) ?: return null
         }
         ImportedAudioKind.UNSUPPORTED -> return null
     }
@@ -114,19 +138,14 @@ internal fun importAudioSource(
 ): ImportedAudioSource? {
     val kind = detectImportedAudioKind(displayName, mimeType)
     if (kind == ImportedAudioKind.UNSUPPORTED) return null
-    val tempDir = File(context.cacheDir, "post_process_imports").apply { mkdirs() }
-    val safeName = displayName.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "imported_audio" }
-    val defaultExtension = when (kind) {
-        ImportedAudioKind.WAV -> ".wav"
-        ImportedAudioKind.M4A -> ".m4a"
-        ImportedAudioKind.UNSUPPORTED -> ""
-    }
-    val fileName = if (safeName.contains('.')) safeName else "$safeName$defaultExtension"
-    val target = File(tempDir, "${System.currentTimeMillis()}_$fileName")
-    val importedFile = copyUriToFile(context, uri, target) ?: return null
-    val metadata = probeImportedAudioMetadata(importedFile, kind)
+    val directFile = uri.takeIf { it.scheme.equals("file", ignoreCase = true) }
+        ?.path
+        ?.let(::File)
+        ?.takeIf { it.exists() }
+    val metadata = probeImportedAudioMetadata(context, directFile, if (directFile == null) uri else null, kind)
     return ImportedAudioSource(
-        file = importedFile,
+        file = directFile,
+        uri = if (directFile == null) uri else null,
         displayName = displayName,
         kind = kind,
         durationMs = metadata.durationMs,
@@ -141,10 +160,15 @@ private data class ImportedAudioMetadata(
     val channels: Int?
 )
 
-private fun probeImportedAudioMetadata(file: File, kind: ImportedAudioKind): ImportedAudioMetadata {
+private fun probeImportedAudioMetadata(
+    context: Context,
+    file: File?,
+    uri: Uri?,
+    kind: ImportedAudioKind
+): ImportedAudioMetadata {
     return when (kind) {
         ImportedAudioKind.WAV -> {
-            val info = readImportedWavInfo(file)
+            val info = readImportedWavInfo(context, file, uri)
             if (info == null) {
                 ImportedAudioMetadata(0L, null, null)
             } else {
@@ -157,7 +181,7 @@ private fun probeImportedAudioMetadata(file: File, kind: ImportedAudioKind): Imp
         ImportedAudioKind.M4A -> {
             val extractor = MediaExtractor()
             try {
-                extractor.setDataSource(file.absolutePath)
+                configureExtractorDataSource(extractor, context, file, uri) ?: return ImportedAudioMetadata(0L, null, null)
                 val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
                     extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
                 } ?: return ImportedAudioMetadata(0L, null, null)
@@ -179,6 +203,39 @@ private fun probeImportedAudioMetadata(file: File, kind: ImportedAudioKind): Imp
 }
 
 private fun MediaFormat.getIntegerOrNull(key: String): Int? = if (containsKey(key)) getInteger(key) else null
+
+internal fun buildImportPreflightMessage(
+    context: Context,
+    sourceFile: File? = null,
+    sourceUri: Uri? = null,
+    displayName: String,
+    kind: ImportedAudioKind,
+    durationMsHint: Long?,
+    sampleRateHzHint: Int?,
+    channelsHint: Int?
+): String? {
+    val tempDir = File(context.cacheDir, "post_process_imports").apply { mkdirs() }
+    val requiredBytes = when (kind) {
+        ImportedAudioKind.WAV -> if (sourceFile != null) {
+            sourceFile.length().coerceAtLeast(0L)
+        } else {
+            querySourceLength(context, sourceUri).coerceAtLeast(0L)
+        }
+        ImportedAudioKind.M4A -> estimateDecodedWavBytes(
+            durationMs = durationMsHint,
+            sampleRateHz = sampleRateHzHint,
+            channels = channelsHint
+        )
+        ImportedAudioKind.UNSUPPORTED -> return "Import impossible: format audio non supporté."
+    }
+    if (requiredBytes <= 0L) return null
+    val safetyMargin = 64L * 1024L * 1024L
+    val available = tempDir.usableSpace.coerceAtLeast(0L)
+    if (available >= requiredBytes + safetyMargin) return null
+    val requiredLabel = formatBytes(requiredBytes + safetyMargin)
+    val availableLabel = formatBytes(available)
+    return "Espace insuffisant pour préparer \"$displayName\". Requis: $requiredLabel, dispo: $availableLabel."
+}
 
 private fun publishDecodeProgress(
     durationUs: Long,
@@ -262,7 +319,9 @@ private fun copyUriToFile(context: Context, uri: Uri, target: File): File? {
 }
 
 private fun decodeAudioFileToWav(
-    sourceFile: File,
+    context: Context,
+    sourceFile: File?,
+    sourceUri: Uri?,
     target: File,
     onProgress: ((Int) -> Unit)? = null
 ): File? {
@@ -277,7 +336,7 @@ private fun decodeAudioFileToWav(
     var decodedFrames = 0L
     val pcmChunkBuffer = ReusablePcmChunkBuffer()
     try {
-        extractor.setDataSource(sourceFile.absolutePath)
+        configureExtractorDataSource(extractor, context, sourceFile, sourceUri) ?: return null
         val trackIndex = (0 until extractor.trackCount).firstOrNull { index ->
             extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
         } ?: return null
@@ -596,6 +655,102 @@ private fun readImportedWavInfo(file: File): WavInfo? {
             dataOffset = 44L,
             dataSize = dataSize
         )
+    }
+}
+
+private fun readImportedWavInfo(context: Context, file: File?, uri: Uri?): WavInfo? {
+    return when {
+        file != null -> readImportedWavInfo(file)
+        uri != null -> {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                val header = ByteArray(44)
+                val read = input.read(header)
+                if (read < 44) return null
+                val sampleRate = readIntLE(header, 24)
+                val channels = readShortLE(header, 22)
+                val bitsPerSample = readShortLE(header, 34)
+                val headerDataSize = readIntLE(header, 40).toLong() and 0xFFFF_FFFFL
+                if (sampleRate <= 0 || channels <= 0 || bitsPerSample <= 0) return null
+                val sourceLength = querySourceLength(context, uri).coerceAtLeast(44L)
+                val fileDataSize = (sourceLength - 44L).coerceAtLeast(0L)
+                val dataSize = headerDataSize.coerceAtMost(fileDataSize).coerceAtLeast(0L)
+                WavInfo(
+                    sampleRate = sampleRate,
+                    channels = channels,
+                    bitsPerSample = bitsPerSample,
+                    dataOffset = 44L,
+                    dataSize = dataSize
+                )
+            }
+        }
+        else -> null
+    }
+}
+
+private fun configureExtractorDataSource(
+    extractor: MediaExtractor,
+    context: Context,
+    sourceFile: File?,
+    sourceUri: Uri?
+): AssetFileDescriptor? {
+    return when {
+        sourceFile != null -> {
+            extractor.setDataSource(sourceFile.absolutePath)
+            null
+        }
+        sourceUri != null -> {
+            val afd = context.contentResolver.openAssetFileDescriptor(sourceUri, "r") ?: return null
+            if (afd.declaredLength >= 0L) {
+                extractor.setDataSource(afd.fileDescriptor, afd.startOffset, afd.declaredLength)
+            } else {
+                extractor.setDataSource(afd.fileDescriptor)
+            }
+            afd
+        }
+        else -> null
+    }
+}
+
+private fun querySourceLength(context: Context, uri: Uri?): Long {
+    uri ?: return -1L
+    val afdLength = runCatching {
+        context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { afd ->
+            if (afd.length >= 0L) afd.length else -1L
+        } ?: -1L
+    }.getOrDefault(-1L)
+    if (afdLength >= 0L) return afdLength
+    val projection = arrayOf(android.provider.OpenableColumns.SIZE)
+    return runCatching {
+        context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+            if (!cursor.moveToFirst()) return@use -1L
+            val index = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+            if (index < 0) return@use -1L
+            cursor.getLong(index)
+        } ?: -1L
+    }.getOrDefault(-1L)
+}
+
+private fun estimateDecodedWavBytes(
+    durationMs: Long?,
+    sampleRateHz: Int?,
+    channels: Int?
+): Long {
+    val safeDurationMs = durationMs?.coerceAtLeast(0L) ?: return 0L
+    val safeSampleRate = sampleRateHz?.takeIf { it > 0 } ?: 48_000
+    val safeChannels = channels?.takeIf { it > 0 } ?: 2
+    return (safeDurationMs * safeSampleRate.toLong() * safeChannels.toLong() * 2L) / 1000L
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes <= 0L) return "0 B"
+    val kb = 1024L
+    val mb = kb * 1024L
+    val gb = mb * 1024L
+    return when {
+        bytes >= gb -> String.format(Locale.US, "%.1f GB", bytes.toDouble() / gb.toDouble())
+        bytes >= mb -> String.format(Locale.US, "%.1f MB", bytes.toDouble() / mb.toDouble())
+        bytes >= kb -> String.format(Locale.US, "%.1f KB", bytes.toDouble() / kb.toDouble())
+        else -> "$bytes B"
     }
 }
 
