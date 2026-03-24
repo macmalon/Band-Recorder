@@ -1,6 +1,10 @@
 package com.bandrecorder.app
 
+import com.bandrecorder.core.audio.SignalFeatures
+import com.bandrecorder.core.audio.applyThresholdOffset
+import com.bandrecorder.core.audio.computeAdaptiveThresholds
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -9,6 +13,66 @@ import java.nio.file.Files
 import kotlin.math.abs
 
 class WavPostProcessorTest {
+
+    @Test
+    fun `auto threshold stays independent from user offset`() {
+        val windows = listOf(
+            feature(-66f),
+            feature(-63f),
+            feature(-61f),
+            feature(-60f),
+            feature(-58f),
+            feature(-52f),
+            feature(-48f),
+            feature(-42f)
+        )
+
+        val auto = computeAdaptiveThresholds(windows)
+        val adjusted = applyThresholdOffset(auto, 6f)
+
+        assertEquals(-55f, auto.autoThresholdDb, 0.01f)
+        assertEquals(-55f, auto.enterThresholdDb, 0.01f)
+        assertEquals(-51f, auto.exitThresholdDb, 0.01f)
+        assertEquals(auto.autoThresholdDb, adjusted.autoThresholdDb, 0.0f)
+        assertEquals(-49f, adjusted.enterThresholdDb, 0.01f)
+        assertEquals(-45f, adjusted.exitThresholdDb, 0.01f)
+    }
+
+    @Test
+    fun `cached window rebuild keeps auto threshold and reapplies offset`() {
+        val windows = listOf(
+            feature(-66f),
+            feature(-63f),
+            feature(-61f),
+            feature(-60f),
+            feature(-58f),
+            feature(-52f),
+            feature(-48f),
+            feature(-42f)
+        )
+        val cached = DecodedAudioAnalysisCacheEntry(
+            info = WavInfo(
+                sampleRate = 1_000,
+                channels = 1,
+                bitsPerSample = 16,
+                dataOffset = 44L,
+                dataSize = windows.size * 50L * 2L
+            ),
+            windows = windows
+        )
+
+        val analysis = rebuildAnalysisFromCachedWindows(
+            cached = cached,
+            silenceThresholdDb = 6f,
+            silenceDurationSec = 1
+        )
+
+        assertNotNull(analysis)
+        analysis!!
+        assertEquals(-55f, analysis.thresholds.autoThresholdDb, 0.01f)
+        assertEquals(-49f, analysis.thresholds.enterThresholdDb, 0.01f)
+        assertEquals(-45f, analysis.thresholds.exitThresholdDb, 0.01f)
+    }
 
     @Test
     fun `analysis keeps single segment when no silence exceeds threshold`() {
@@ -227,6 +291,17 @@ class WavPostProcessorTest {
     }
 
     private fun section(durationSec: Int, amplitude: Int): Section = Section(durationSec, amplitude)
+
+    private fun feature(rmsDb: Float): SignalFeatures = SignalFeatures(
+        rmsDb = rmsDb,
+        peakNorm = 0.18f,
+        lowBandRatio = 0.32f,
+        midBandRatio = 0.44f,
+        highBandRatio = 0.24f,
+        zeroCrossingRate = 0.08f,
+        transientDensity = 0.03f,
+        crestDb = 9f
+    )
 
     private fun ms(info: WavInfo, frame: Long): Long = (frame * 1_000L) / info.sampleRate.toLong()
 

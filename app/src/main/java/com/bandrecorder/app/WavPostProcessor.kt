@@ -151,6 +151,19 @@ internal fun analyzeSignalWindows(
     return WavAnalysisResult(info = info, segments = segments, envelope = envelope, thresholds = thresholds)
 }
 
+internal fun rebuildAnalysisFromCachedWindows(
+    cached: DecodedAudioAnalysisCacheEntry,
+    silenceThresholdDb: Float,
+    silenceDurationSec: Int
+): WavAnalysisResult? {
+    return analyzeSignalWindows(
+        info = cached.info,
+        windows = cached.windows,
+        silenceThresholdDb = silenceThresholdDb,
+        silenceDurationSec = silenceDurationSec
+    )
+}
+
 internal fun writeWavSegment(
     sourceFile: File,
     info: WavInfo,

@@ -29,7 +29,6 @@ import com.bandrecorder.core.audio.computeAdaptiveThresholds
 import com.bandrecorder.core.audio.evaluateSilence
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -244,7 +243,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private var postProcessWorkingFile: File? = null
     private var postProcessSourceKind: ImportedAudioKind = ImportedAudioKind.UNSUPPORTED
     private var postProcessAnalysis: WavAnalysisResult? = null
-    private var postProcessReanalyzeJob: Job? = null
+    private var postProcessPreviewCache: DecodedAudioAnalysisCacheEntry? = null
     private val liveDetectionHistory = ArrayDeque<SignalFeatures>()
     private var liveDetectorInSilence = false
 
@@ -523,8 +522,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setPostProcessSilenceThresholdDb(value: Float) {
         setSilenceThresholdDb(value)
-        markPostProcessPreviewDirty()
-        schedulePostProcessReanalysis()
+        recomputePostProcessPreviewFromCache()
     }
 
     fun importPostProcessSource(uri: Uri) {
@@ -558,6 +556,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             postProcessWorkingFile = null
             postProcessSourceKind = imported.kind
             postProcessAnalysis = null
+            postProcessPreviewCache = null
             _uiState.update {
                 it.copy(
                     postProcessSourceName = imported.displayName,
@@ -587,6 +586,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         postProcessAnalysis = null
+        postProcessPreviewCache = null
         _uiState.update {
             it.copy(
                 postProcessIsAnalyzing = true,
@@ -613,7 +613,6 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun cancelPostProcessAnalysis() {
-        postProcessReanalyzeJob?.cancel()
         AnalysisForegroundService.stop(getApplication())
         _uiState.update {
             it.copy(
@@ -2142,23 +2141,27 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         return (20.0 * log10(safeNorm.toDouble())).toFloat()
     }
 
-    private fun schedulePostProcessReanalysis() {
+    private fun recomputePostProcessPreviewFromCache() {
         if (postProcessSourceFile == null && postProcessSourceUri == null) return
-        postProcessReanalyzeJob?.cancel()
-        postProcessReanalyzeJob = viewModelScope.launch {
-            delay(250)
-            analyzePostProcessSource()
+        val cached = postProcessPreviewCache
+        if (cached == null) {
+            _uiState.update {
+                it.copy(postProcessStatusMessage = "Analyse nécessaire pour recalculer le seuil.")
+            }
+            return
         }
-    }
-
-    private fun markPostProcessPreviewDirty() {
-        if (postProcessSourceFile == null && postProcessSourceUri == null) return
-        _uiState.update {
-            it.copy(
-                postProcessIsAnalyzing = true,
-                postProcessStatusMessage = "Recalcul de l'aperçu..."
-            )
+        val analysis = rebuildAnalysisFromCachedWindows(
+            cached = cached,
+            silenceThresholdDb = _uiState.value.silenceThresholdDb,
+            silenceDurationSec = _uiState.value.silenceDurationSec
+        )
+        if (analysis == null) {
+            _uiState.update {
+                it.copy(postProcessStatusMessage = "Recalcul local du seuil impossible. Relance l'analyse.")
+            }
+            return
         }
+        applyCompletedAnalysis(analysis)
     }
 
     private fun pushLiveFeatures(features: SignalFeatures) {
@@ -2242,7 +2245,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         AnalysisForegroundService.stop(getApplication())
         postProcessSourceFile?.let { runCatching { it.delete() } }
         postProcessWorkingFile?.takeIf { it != postProcessSourceFile }?.let { runCatching { it.delete() } }
-        postProcessReanalyzeJob?.cancel()
+        postProcessPreviewCache = null
         ImportedAudioAnalysisCache.clear()
         RecordingForegroundService.stop(getApplication())
         super.onCleared()
@@ -2266,6 +2269,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     is AnalysisServiceState.Failed -> {
                         if (currentPostProcessSourceKey() != state.sourcePath) return@collectLatest
                         postProcessAnalysis = null
+                        postProcessPreviewCache = null
                         _uiState.update {
                             it.copy(
                                 postProcessIsAnalyzing = false,
@@ -2289,6 +2293,10 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun applyCompletedAnalysis(analysis: WavAnalysisResult) {
         postProcessAnalysis = analysis
+        postProcessPreviewCache = DecodedAudioAnalysisCacheEntry(
+            info = analysis.info,
+            windows = analysis.envelope.map { it.features }
+        )
         val durationMs = framesToMs(analysis.info.sampleRate, analysis.info.dataSize / (analysis.info.channels * 2L))
         val segments = analysis.segments.mapIndexed { index, segment ->
             val startMs = framesToMs(analysis.info.sampleRate, segment.startFrame)

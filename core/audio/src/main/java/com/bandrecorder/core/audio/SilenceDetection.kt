@@ -109,7 +109,7 @@ fun computeAdaptiveThresholds(
 ): AdaptiveSilenceThresholds {
     if (windows.isEmpty()) {
         val auto = -42f
-        return AdaptiveSilenceThresholds(auto, auto, (auto + 3f).coerceAtMost(-10f))
+        return AdaptiveSilenceThresholds(auto, auto, (auto + 4f).coerceAtMost(-10f))
     }
 
     val rmsValues = windows.map { it.rmsDb }.sorted()
@@ -117,14 +117,14 @@ fun computeAdaptiveThresholds(
     val activityFloor = percentile(rmsValues, 0.72f)
     val spread = (activityFloor - noiseFloor).coerceAtLeast(0f)
     val baseLift = when {
-        spread >= 24f -> 7f
-        spread >= 16f -> 6f
-        spread >= 10f -> 5f
-        else -> 4f
+        spread >= 24f -> 12f
+        spread >= 16f -> 10f
+        spread >= 10f -> 8f
+        else -> 6f
     }
     val auto = (noiseFloor + baseLift).coerceIn(-78f, -30f)
     val enter = auto
-    val exit = (enter + 3f).coerceAtMost(-10f)
+    val exit = (enter + 4f).coerceAtMost(-10f)
     return AdaptiveSilenceThresholds(autoThresholdDb = auto, enterThresholdDb = enter, exitThresholdDb = exit)
 }
 
@@ -133,7 +133,7 @@ fun applyThresholdOffset(
     thresholdOffsetDb: Float
 ): AdaptiveSilenceThresholds {
     val enter = (thresholds.autoThresholdDb + thresholdOffsetDb).coerceIn(-80f, -18f)
-    val exit = (enter + 3f).coerceAtMost(-10f)
+    val exit = (enter + 4f).coerceAtMost(-10f)
     return thresholds.copy(
         enterThresholdDb = enter,
         exitThresholdDb = exit
