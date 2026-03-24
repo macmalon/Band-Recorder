@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 
 internal object PostProcessExportNotifier {
@@ -13,8 +14,27 @@ internal object PostProcessExportNotifier {
     private const val CHANNEL_ID_FINISHED = "post_process_export_finished"
     private const val NOTIFICATION_ID_RUNNING = 3101
     private const val NOTIFICATION_ID_FINISHED = 3102
+    private const val MIN_UPDATE_INTERVAL_MS = 500L
+
+    private var lastRunningProgressPercent: Int? = null
+    private var lastRunningUpdateAtMs: Long = 0L
 
     fun showRunning(context: Context, progressPercent: Int, sourceDisplayName: String?) {
+        val boundedProgress = progressPercent.coerceIn(0, 100)
+        val now = SystemClock.elapsedRealtime()
+        val shouldSkip = synchronized(this) {
+            val lastProgress = lastRunningProgressPercent
+            val progressChanged = lastProgress != boundedProgress
+            val enoughTimeElapsed = now - lastRunningUpdateAtMs >= MIN_UPDATE_INTERVAL_MS
+            val shouldEmit = lastProgress == null || boundedProgress >= 100 || progressChanged || enoughTimeElapsed
+            if (shouldEmit) {
+                lastRunningProgressPercent = boundedProgress
+                lastRunningUpdateAtMs = now
+            }
+            !shouldEmit
+        }
+        if (shouldSkip) return
+
         val manager = context.getSystemService(NotificationManager::class.java)
         ensureChannels(manager)
         manager.notify(
@@ -22,19 +42,23 @@ internal object PostProcessExportNotifier {
             NotificationCompat.Builder(context, CHANNEL_ID_RUNNING)
                 .setSmallIcon(android.R.drawable.stat_sys_upload)
                 .setContentTitle("Export audio en cours")
-                .setContentText("Export en cours... ${progressPercent.coerceIn(0, 100)}%")
+                .setContentText("Export en cours... $boundedProgress%")
                 .setSubText(sourceDisplayName)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setCategory(NotificationCompat.CATEGORY_PROGRESS)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                .setProgress(100, progressPercent.coerceIn(0, 100), false)
+                .setProgress(100, boundedProgress, false)
                 .setContentIntent(mainActivityPendingIntent(context))
                 .build()
         )
     }
 
     fun showFinished(context: Context, message: String, sourceDisplayName: String?) {
+        synchronized(this) {
+            lastRunningProgressPercent = null
+            lastRunningUpdateAtMs = 0L
+        }
         val manager = context.getSystemService(NotificationManager::class.java)
         ensureChannels(manager)
         manager.cancel(NOTIFICATION_ID_RUNNING)
