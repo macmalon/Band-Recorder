@@ -1209,7 +1209,7 @@ private fun exportDecodedCleanSelectionToDownloads(
             analysis = analysis,
             segments = segments,
             pending = pending
-        ) { writtenBytes, expectedBytes ->
+        ) { writtenBytes, expectedBytes, _, _ ->
             val progress = if (expectedBytes <= 0L) 0 else ((writtenBytes * 100L) / expectedBytes).toInt()
             onProgress?.invoke(
                 PostProcessExportProgress(
@@ -1275,10 +1275,24 @@ private fun exportDecodedSplitSegmentsToDownloads(
                 analysis = analysis,
                 segments = listOf(segment),
                 pending = pending
-            ) { writtenBytes, _ ->
+            ) { writtenBytes, _, decodedFrame, _ ->
                 val overallBytes = (completedBytes + writtenBytes).coerceAtMost(totalExpectedBytes)
                 val progress = ((overallBytes * 100L) / totalExpectedBytes).toInt().coerceIn(0, 100)
-                val segmentProgress = ((writtenBytes * 100L) / expectedBytes).toInt().coerceIn(0, 100)
+                val boundedWrittenBytes = writtenBytes.coerceIn(0L, expectedBytes)
+                val boundedDecodedFrame = decodedFrame.coerceIn(0L, segment.endFrame)
+                val segmentProgress = when {
+                    expectedBytes <= 0L -> 0
+                    segment.startFrame <= 0L -> {
+                        ((boundedWrittenBytes * 100L) / expectedBytes).toInt().coerceIn(0, 99)
+                    }
+                    boundedDecodedFrame < segment.startFrame -> {
+                        ((boundedDecodedFrame * 90L) / segment.startFrame).toInt().coerceIn(0, 89)
+                    }
+                    else -> {
+                        val writePhaseProgress = ((boundedWrittenBytes * 10L) / expectedBytes).toInt().coerceIn(0, 10)
+                        (90 + writePhaseProgress).coerceIn(90, 99)
+                    }
+                }
                 onProgress?.invoke(
                     PostProcessExportProgress(
                         progressPercent = progress,
@@ -1312,7 +1326,7 @@ private fun decodeAudioSelectionToPendingWav(
     analysis: WavAnalysisResult,
     segments: List<WavFrameSegment>,
     pending: PendingMediaStoreWav,
-    onProgress: ((writtenBytes: Long, expectedBytes: Long) -> Unit)? = null
+    onProgress: ((writtenBytes: Long, expectedBytes: Long, decodedFrame: Long, targetFrame: Long) -> Unit)? = null
 ): Boolean {
     if (segments.isEmpty()) return false
     val sortedSegments = segments.sortedBy { it.startFrame }
@@ -1425,7 +1439,6 @@ private fun decodeAudioSelectionToPendingWav(
                                 val endByte = ((overlapEnd - chunkStartFrame) * bytesPerFrame).toInt()
                                 pending.stream.write(chunk, startByte, endByte - startByte)
                                 pending.writtenDataBytes += (endByte - startByte)
-                                onProgress?.invoke(pending.writtenDataBytes.toLong(), pending.expectedDataBytes.toLong())
                             }
                             if (segment.endFrame <= chunkEndFrame) {
                                 segmentIndex += 1
@@ -1433,6 +1446,12 @@ private fun decodeAudioSelectionToPendingWav(
                                 break
                             }
                         }
+                        onProgress?.invoke(
+                            pending.writtenDataBytes.toLong(),
+                            pending.expectedDataBytes.toLong(),
+                            chunkEndFrame,
+                            lastSegmentEndFrame
+                        )
                         firstMatchingSegmentIndex = maxOf(firstMatchingSegmentIndex, segmentIndex)
                         if (chunkEndFrame >= lastSegmentEndFrame && firstMatchingSegmentIndex >= sortedSegments.size) {
                             outputDone = true
