@@ -24,7 +24,6 @@ import java.io.RandomAccessFile
 import kotlin.math.abs
 import kotlin.math.log10
 import kotlin.math.max
-import kotlin.math.pow
 import kotlin.math.sqrt
 
 data class CalibrationResult(
@@ -108,7 +107,6 @@ class WavRecorderEngine {
     private var sampleRateHz: Int = 48_000
     private var channelCount: Int = 1
     private var swapStereoChannels: Boolean = false
-    private var inputGainLinear: Double = 1.0
     private var inputDiagnostics: InputDiagnostics? = null
 
     private data class AudioRecordInit(
@@ -400,7 +398,8 @@ class WavRecorderEngine {
         preferredDevice: AudioDeviceInfo? = null,
         requestedChannelCount: Int = 1,
         swapStereoChannels: Boolean = false,
-        inputGainDb: Float = 0f
+        inputGainDb: Float = 0f,
+        recordingProcessingConfig: RecordingProcessingConfig = RecordingProcessingConfig()
     ) {
         if (recordJob != null) return
 
@@ -422,7 +421,6 @@ class WavRecorderEngine {
         sampleRateHz = sampleRate
         channelCount = channels
         this.swapStereoChannels = swapStereoChannels
-        inputGainLinear = 10.0.pow(inputGainDb.coerceIn(-24f, 24f) / 20.0)
         dataBytesWritten = 0
         inputDiagnostics = buildInputDiagnostics(
             record = record,
@@ -443,28 +441,29 @@ class WavRecorderEngine {
             leftPeakDb = -90f,
             rightPeakDb = -90f,
             inputDiagnostics = inputDiagnostics,
-            dspAvailable = false,
-            dspOutputMode = DspOutputMode.MONITORING_ONLY
+            dspAvailable = true,
+            dspOutputMode = DspOutputMode.MONITORING_AND_RECORDING
         )
 
         recordJob = scope.launch {
             val rawShorts = ShortArray(bufferSize / 2)
+            val processedShorts = ShortArray(bufferSize / 2)
             val bytes = ByteArray(rawShorts.size * 2)
+            val captureDsp = RecordingCaptureDsp(
+                sampleRateHz = sampleRateHz,
+                channelCount = channelCount,
+                inputGainDb = inputGainDb,
+                config = recordingProcessingConfig
+            )
 
             try {
                 while (isActive) {
                     val read = record.read(rawShorts, 0, rawShorts.size)
                     if (read <= 0) continue
 
-                    if (inputGainLinear != 1.0) {
-                        for (i in 0 until read) {
-                            val scaled = (rawShorts[i].toInt() * inputGainLinear).toInt()
-                            rawShorts[i] = scaled.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
-                        }
-                    }
-
-                    val features = extractSignalFeatures(rawShorts, read, channelCount, sampleRateHz)
-                    val channelPeaks = analyzeChannelPeaks(rawShorts, read, channelCount)
+                    val dspStats = captureDsp.processInterleaved(rawShorts, read, processedShorts)
+                    val features = extractSignalFeatures(processedShorts, read, channelCount, sampleRateHz)
+                    val channelPeaks = analyzeChannelPeaks(processedShorts, read, channelCount)
                     val elapsed = System.currentTimeMillis() - startMs
                     status.value = RecordingStatus(
                         isRecording = true,
@@ -476,14 +475,14 @@ class WavRecorderEngine {
                         elapsedMs = elapsed,
                         outputPath = output.absolutePath,
                         inputDiagnostics = inputDiagnostics,
-                        dspAvailable = false,
-                        dspRunning = false,
+                        dspAvailable = true,
+                        dspRunning = dspStats.active,
                         dspCpuGuardActive = false,
-                        dspOutputMode = DspOutputMode.MONITORING_ONLY,
+                        dspOutputMode = DspOutputMode.MONITORING_AND_RECORDING,
                         dspCompGainReductionDb = 0f,
                         dspDeEsserGainReductionDb = 0f,
-                        dspLimiterHits = 0,
-                        dspStatusMessage = "Bypass",
+                        dspLimiterHits = dspStats.limiterHits,
+                        dspStatusMessage = dspStats.statusMessage,
                         lowBandRatio = features.lowBandRatio,
                         midBandRatio = features.midBandRatio,
                         highBandRatio = features.highBandRatio,
@@ -497,8 +496,8 @@ class WavRecorderEngine {
                         val usable = read - (read % 2)
                         var i = 0
                         while (i < usable) {
-                            val left = rawShorts[i].toInt()
-                            val right = rawShorts[i + 1].toInt()
+                            val left = processedShorts[i].toInt()
+                            val right = processedShorts[i + 1].toInt()
                             // Write R then L to swap output channels.
                             bytes[bi++] = (right and 0xFF).toByte()
                             bytes[bi++] = ((right shr 8) and 0xFF).toByte()
@@ -508,7 +507,7 @@ class WavRecorderEngine {
                         }
                     } else {
                         for (i in 0 until read) {
-                            val s = rawShorts[i].toInt()
+                            val s = processedShorts[i].toInt()
                             bytes[bi++] = (s and 0xFF).toByte()
                             bytes[bi++] = ((s shr 8) and 0xFF).toByte()
                         }
@@ -534,14 +533,14 @@ class WavRecorderEngine {
                     elapsedMs = status.value.elapsedMs,
                     outputPath = output.absolutePath,
                     inputDiagnostics = inputDiagnostics,
-                    dspAvailable = false,
+                    dspAvailable = true,
                     dspRunning = false,
                     dspCpuGuardActive = false,
-                    dspOutputMode = DspOutputMode.MONITORING_ONLY,
+                    dspOutputMode = DspOutputMode.MONITORING_AND_RECORDING,
                     dspCompGainReductionDb = 0f,
                     dspDeEsserGainReductionDb = 0f,
-                    dspLimiterHits = 0,
-                    dspStatusMessage = "Bypass"
+                    dspLimiterHits = status.value.dspLimiterHits,
+                    dspStatusMessage = status.value.dspStatusMessage
                 )
             }
         }

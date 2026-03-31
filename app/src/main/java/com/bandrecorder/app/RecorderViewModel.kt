@@ -162,6 +162,8 @@ data class RecorderUiState(
     val storageLocation: StorageLocation = StorageLocation.DOWNLOADS,
     val ignoreSilenceEnabled: Boolean = false,
     val splitOnSilenceEnabled: Boolean = false,
+    val recordingLimiterEnabled: Boolean = true,
+    val recordingHpfEnabled: Boolean = true,
     val silenceThresholdDb: Float = 0f,
     val silenceDurationSec: Int = 8,
     val silenceAutoThresholdDb: Float? = null,
@@ -260,6 +262,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 storageLocation = settings.storageLocation,
                 ignoreSilenceEnabled = settings.ignoreSilenceEnabled,
                 splitOnSilenceEnabled = settings.splitOnSilenceEnabled,
+                recordingLimiterEnabled = settings.recordingProcessingSettings.limiterEnabled,
+                recordingHpfEnabled = settings.recordingProcessingSettings.hpfEnabled,
                 silenceThresholdDb = settings.silenceThresholdDb,
                 silenceDurationSec = settings.silenceDurationSec,
                 recordingInputGainDb = settings.recordingInputGainDb,
@@ -307,6 +311,16 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         val finalValue = enabled && canEnable
         settingsStore.setSplitOnSilenceEnabled(finalValue)
         _uiState.update { it.copy(splitOnSilenceEnabled = finalValue) }
+    }
+
+    fun setRecordingLimiterEnabled(enabled: Boolean) {
+        settingsStore.setRecordingLimiterEnabled(enabled)
+        _uiState.update { it.copy(recordingLimiterEnabled = enabled) }
+    }
+
+    fun setRecordingHpfEnabled(enabled: Boolean) {
+        settingsStore.setRecordingHpfEnabled(enabled)
+        _uiState.update { it.copy(recordingHpfEnabled = enabled) }
     }
 
     fun setSilenceThresholdDb(value: Float) {
@@ -1433,6 +1447,10 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             requestedChannels = channels,
             swapStereoChannels = _uiState.value.stereoChannelsSwapped,
             inputGainDb = _uiState.value.recordingInputGainDb,
+            recordingProcessingSettings = RecordingProcessingSettings(
+                limiterEnabled = _uiState.value.recordingLimiterEnabled,
+                hpfEnabled = _uiState.value.recordingHpfEnabled
+            ),
             ignoreSilenceEnabled = _uiState.value.ignoreSilenceEnabled,
             splitOnSilenceEnabled = _uiState.value.splitOnSilenceEnabled,
             silenceDurationSec = _uiState.value.silenceDurationSec

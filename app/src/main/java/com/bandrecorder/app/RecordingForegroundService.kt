@@ -109,6 +109,8 @@ class RecordingForegroundService : Service() {
         val requestedChannels = intent.getIntExtra(EXTRA_REQUESTED_CHANNELS, 1)
         val swapStereoChannels = intent.getBooleanExtra(EXTRA_SWAP_STEREO_CHANNELS, false)
         val inputGainDb = intent.getFloatExtra(EXTRA_INPUT_GAIN_DB, 0f)
+        val recordingLimiterEnabled = intent.getBooleanExtra(EXTRA_RECORDING_LIMITER_ENABLED, true)
+        val recordingHpfEnabled = intent.getBooleanExtra(EXTRA_RECORDING_HPF_ENABLED, true)
         splitOnSilenceEnabled = intent.getBooleanExtra(EXTRA_SPLIT_ON_SILENCE_ENABLED, false)
         ignoreSilenceEnabled = intent.getBooleanExtra(EXTRA_IGNORE_SILENCE_ENABLED, false)
         silenceDurationSec = intent.getIntExtra(EXTRA_SILENCE_DURATION_SEC, 8)
@@ -133,7 +135,11 @@ class RecordingForegroundService : Service() {
             preferredDevice = preferredDevice,
             requestedChannelCount = requestedChannels,
             swapStereoChannels = swapStereoChannels,
-            inputGainDb = inputGainDb
+            inputGainDb = inputGainDb,
+            recordingProcessingConfig = RecordingProcessingSettings(
+                limiterEnabled = recordingLimiterEnabled,
+                hpfEnabled = recordingHpfEnabled
+            ).toCoreConfig()
         )
         if (!engine.statusFlow().value.isRecording) {
             releaseRecordingWakeLock()
@@ -163,6 +169,8 @@ class RecordingForegroundService : Service() {
         private const val EXTRA_REQUESTED_CHANNELS = "extra_requested_channels"
         private const val EXTRA_SWAP_STEREO_CHANNELS = "extra_swap_stereo_channels"
         private const val EXTRA_INPUT_GAIN_DB = "extra_input_gain_db"
+        private const val EXTRA_RECORDING_LIMITER_ENABLED = "extra_recording_limiter_enabled"
+        private const val EXTRA_RECORDING_HPF_ENABLED = "extra_recording_hpf_enabled"
         private const val EXTRA_IGNORE_SILENCE_ENABLED = "extra_ignore_silence_enabled"
         private const val EXTRA_SPLIT_ON_SILENCE_ENABLED = "extra_split_on_silence_enabled"
         private const val EXTRA_SILENCE_DURATION_SEC = "extra_silence_duration_sec"
@@ -174,6 +182,7 @@ class RecordingForegroundService : Service() {
             requestedChannels: Int,
             swapStereoChannels: Boolean,
             inputGainDb: Float,
+            recordingProcessingSettings: RecordingProcessingSettings,
             ignoreSilenceEnabled: Boolean,
             splitOnSilenceEnabled: Boolean,
             silenceDurationSec: Int
@@ -187,6 +196,8 @@ class RecordingForegroundService : Service() {
                 putExtra(EXTRA_REQUESTED_CHANNELS, requestedChannels)
                 putExtra(EXTRA_SWAP_STEREO_CHANNELS, swapStereoChannels)
                 putExtra(EXTRA_INPUT_GAIN_DB, inputGainDb)
+                putExtra(EXTRA_RECORDING_LIMITER_ENABLED, recordingProcessingSettings.limiterEnabled)
+                putExtra(EXTRA_RECORDING_HPF_ENABLED, recordingProcessingSettings.hpfEnabled)
                 putExtra(EXTRA_IGNORE_SILENCE_ENABLED, ignoreSilenceEnabled)
                 putExtra(EXTRA_SPLIT_ON_SILENCE_ENABLED, splitOnSilenceEnabled)
                 putExtra(EXTRA_SILENCE_DURATION_SEC, silenceDurationSec)

@@ -15,6 +15,7 @@ data class AppSettings(
     val storageLocation: StorageLocation = StorageLocation.DOWNLOADS,
     val ignoreSilenceEnabled: Boolean = false,
     val splitOnSilenceEnabled: Boolean = false,
+    val recordingProcessingSettings: RecordingProcessingSettings = RecordingProcessingSettings(),
     val silenceThresholdDb: Float = 0f,
     val silenceDurationSec: Int = 8,
     val recordingInputGainDb: Float = 0f,
@@ -40,6 +41,10 @@ class AppSettingsStore(app: Application) {
             .getOrDefault(StorageLocation.DOWNLOADS)
         val ignoreSilenceEnabled = prefs.getBoolean(KEY_IGNORE_SILENCE_ENABLED, false)
         val splitOnSilenceEnabled = prefs.getBoolean(KEY_SPLIT_ON_SILENCE_ENABLED, false) && ignoreSilenceEnabled
+        val recordingProcessingSettings = RecordingProcessingSettings(
+            limiterEnabled = prefs.getBoolean(KEY_RECORDING_LIMITER_ENABLED, true),
+            hpfEnabled = prefs.getBoolean(KEY_RECORDING_HPF_ENABLED, true)
+        )
         val silenceThresholdDb = if (prefs.contains(KEY_SILENCE_THRESHOLD_OFFSET_DB)) {
             prefs.getFloat(KEY_SILENCE_THRESHOLD_OFFSET_DB, 0f).coerceIn(-18f, 18f)
         } else {
@@ -103,6 +108,7 @@ class AppSettingsStore(app: Application) {
             storageLocation = storage,
             ignoreSilenceEnabled = ignoreSilenceEnabled,
             splitOnSilenceEnabled = splitOnSilenceEnabled,
+            recordingProcessingSettings = recordingProcessingSettings,
             silenceThresholdDb = silenceThresholdDb,
             silenceDurationSec = silenceDurationSec,
             recordingInputGainDb = recordingInputGainDb,
@@ -130,6 +136,14 @@ class AppSettingsStore(app: Application) {
 
     fun setSplitOnSilenceEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_SPLIT_ON_SILENCE_ENABLED, enabled).apply()
+    }
+
+    fun setRecordingLimiterEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_RECORDING_LIMITER_ENABLED, enabled).apply()
+    }
+
+    fun setRecordingHpfEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_RECORDING_HPF_ENABLED, enabled).apply()
     }
 
     fun setSilenceThresholdDb(value: Float) {
@@ -225,6 +239,8 @@ class AppSettingsStore(app: Application) {
         const val KEY_STORAGE_LOCATION = "storage_location"
         const val KEY_IGNORE_SILENCE_ENABLED = "ignore_silence_enabled"
         const val KEY_SPLIT_ON_SILENCE_ENABLED = "split_on_silence_enabled"
+        const val KEY_RECORDING_LIMITER_ENABLED = "recording_limiter_enabled"
+        const val KEY_RECORDING_HPF_ENABLED = "recording_hpf_enabled"
         const val KEY_SILENCE_THRESHOLD_OFFSET_DB = "silence_threshold_offset_db"
         const val KEY_SILENCE_DURATION_SEC = "silence_duration_sec"
         const val KEY_RECORDING_INPUT_GAIN_DB = "recording_input_gain_db"

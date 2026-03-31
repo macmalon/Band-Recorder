@@ -292,6 +292,8 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
                 ui = ui,
                 onBack = { navController.popBackStack() },
                 onStorageChange = vm::setStorageLocation,
+                onToggleRecordingLimiter = vm::setRecordingLimiterEnabled,
+                onToggleRecordingHpf = vm::setRecordingHpfEnabled,
                 onToggleIgnoreSilence = vm::setIgnoreSilenceEnabled,
                 onToggleSplitOnSilence = vm::setSplitOnSilenceEnabled,
                 onSetSilenceDurationSec = vm::setSilenceDurationSec,
@@ -2935,6 +2937,8 @@ private fun SettingsScreen(
     ui: RecorderUiState,
     onBack: () -> Unit,
     onStorageChange: (StorageLocation) -> Unit,
+    onToggleRecordingLimiter: (Boolean) -> Unit,
+    onToggleRecordingHpf: (Boolean) -> Unit,
     onToggleIgnoreSilence: (Boolean) -> Unit,
     onToggleSplitOnSilence: (Boolean) -> Unit,
     onSetSilenceDurationSec: (Int) -> Unit,
@@ -2947,6 +2951,21 @@ private fun SettingsScreen(
             androidx.compose.material3.LocalTextStyle provides TextStyle(fontSize = 12.sp)
         ) {
             Text("Paramètres d'enregistrement", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            SettingToggleRow(
+                label = "Limiteur léger anti-crêtes",
+                checked = ui.recordingLimiterEnabled,
+                onCheckedChange = onToggleRecordingLimiter
+            )
+            SettingToggleRow(
+                label = "Filtre coupe-bas (HPF)",
+                checked = ui.recordingHpfEnabled,
+                onCheckedChange = onToggleRecordingHpf
+            )
+            Text(
+                "Appliqués pendant la captation et écrits dans le WAV. Par défaut: HPF pour le rumble et limiteur léger uniquement sur les crêtes qui clipperaient.",
+                style = MaterialTheme.typography.bodySmall,
+                color = AmpMetalLight
+            )
             SettingToggleRow(
                 label = "Supprimer les blancs",
                 checked = ui.ignoreSilenceEnabled,
