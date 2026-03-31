@@ -17,6 +17,7 @@ import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.bandrecorder.core.audio.WavRecorderEngine
+import com.bandrecorder.core.network.LinkRole
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,6 +43,16 @@ class RecordingForegroundService : Service() {
     private var ignoreSilenceEnabled: Boolean = false
     private var silenceDurationSec: Int = 8
     private var didFinalizeStop = false
+    private var linkSessionId: String? = null
+    private var linkTakeId: String? = null
+    private var linkDeviceId: String? = null
+    private var linkDeviceName: String? = null
+    private var linkRole: LinkRole? = null
+    private var linkEstimatedLatencyMs: Int? = null
+    private var linkScheduledStartEpochMs: Long? = null
+    private var actualRecordingStartEpochMs: Long? = null
+    private var actualChannelCount: Int = 1
+    private var activeStorageLocation: StorageLocation = StorageLocation.DOWNLOADS
 
     override fun onCreate() {
         super.onCreate()
@@ -114,6 +125,22 @@ class RecordingForegroundService : Service() {
         splitOnSilenceEnabled = intent.getBooleanExtra(EXTRA_SPLIT_ON_SILENCE_ENABLED, false)
         ignoreSilenceEnabled = intent.getBooleanExtra(EXTRA_IGNORE_SILENCE_ENABLED, false)
         silenceDurationSec = intent.getIntExtra(EXTRA_SILENCE_DURATION_SEC, 8)
+        linkSessionId = intent.getStringExtra(EXTRA_LINK_SESSION_ID)
+        linkTakeId = intent.getStringExtra(EXTRA_LINK_TAKE_ID)
+        linkDeviceId = intent.getStringExtra(EXTRA_LINK_DEVICE_ID)
+        linkDeviceName = intent.getStringExtra(EXTRA_LINK_DEVICE_NAME)
+        linkRole = intent.getStringExtra(EXTRA_LINK_ROLE)?.let { runCatching { LinkRole.valueOf(it) }.getOrNull() }
+        linkEstimatedLatencyMs = if (intent.hasExtra(EXTRA_LINK_ESTIMATED_LATENCY_MS)) {
+            intent.getIntExtra(EXTRA_LINK_ESTIMATED_LATENCY_MS, 0)
+        } else {
+            null
+        }
+        linkScheduledStartEpochMs = if (intent.hasExtra(EXTRA_LINK_SCHEDULED_START_EPOCH_MS)) {
+            intent.getLongExtra(EXTRA_LINK_SCHEDULED_START_EPOCH_MS, 0L)
+        } else {
+            null
+        }
+        activeStorageLocation = storageLocation
         val target = when (storageLocation) {
             StorageLocation.DOWNLOADS -> buildTempOutputFile()
             StorageLocation.APP_PRIVATE -> buildAppPrivateOutputFile()
@@ -127,6 +154,8 @@ class RecordingForegroundService : Service() {
             target.file.absolutePath
         }
         didFinalizeStop = false
+        actualRecordingStartEpochMs = System.currentTimeMillis()
+        actualChannelCount = requestedChannels
         acquireRecordingWakeLock()
         startForegroundNotification("Enregistrement en cours")
         val preferredDevice = resolvePreferredMic(preferredMicId)
@@ -174,6 +203,13 @@ class RecordingForegroundService : Service() {
         private const val EXTRA_IGNORE_SILENCE_ENABLED = "extra_ignore_silence_enabled"
         private const val EXTRA_SPLIT_ON_SILENCE_ENABLED = "extra_split_on_silence_enabled"
         private const val EXTRA_SILENCE_DURATION_SEC = "extra_silence_duration_sec"
+        private const val EXTRA_LINK_SESSION_ID = "extra_link_session_id"
+        private const val EXTRA_LINK_TAKE_ID = "extra_link_take_id"
+        private const val EXTRA_LINK_DEVICE_ID = "extra_link_device_id"
+        private const val EXTRA_LINK_DEVICE_NAME = "extra_link_device_name"
+        private const val EXTRA_LINK_ROLE = "extra_link_role"
+        private const val EXTRA_LINK_ESTIMATED_LATENCY_MS = "extra_link_estimated_latency_ms"
+        private const val EXTRA_LINK_SCHEDULED_START_EPOCH_MS = "extra_link_scheduled_start_epoch_ms"
 
         internal fun start(
             context: Context,
@@ -185,7 +221,14 @@ class RecordingForegroundService : Service() {
             recordingProcessingSettings: RecordingProcessingSettings,
             ignoreSilenceEnabled: Boolean,
             splitOnSilenceEnabled: Boolean,
-            silenceDurationSec: Int
+            silenceDurationSec: Int,
+            linkSessionId: String?,
+            linkTakeId: String?,
+            linkDeviceId: String?,
+            linkDeviceName: String?,
+            linkRole: LinkRole?,
+            linkEstimatedLatencyMs: Int?,
+            linkScheduledStartEpochMs: Long?
         ) {
             val intent = Intent(context, RecordingForegroundService::class.java).apply {
                 action = ACTION_START
@@ -201,6 +244,17 @@ class RecordingForegroundService : Service() {
                 putExtra(EXTRA_IGNORE_SILENCE_ENABLED, ignoreSilenceEnabled)
                 putExtra(EXTRA_SPLIT_ON_SILENCE_ENABLED, splitOnSilenceEnabled)
                 putExtra(EXTRA_SILENCE_DURATION_SEC, silenceDurationSec)
+                putExtra(EXTRA_LINK_SESSION_ID, linkSessionId)
+                putExtra(EXTRA_LINK_TAKE_ID, linkTakeId)
+                putExtra(EXTRA_LINK_DEVICE_ID, linkDeviceId)
+                putExtra(EXTRA_LINK_DEVICE_NAME, linkDeviceName)
+                putExtra(EXTRA_LINK_ROLE, linkRole?.name)
+                if (linkEstimatedLatencyMs != null) {
+                    putExtra(EXTRA_LINK_ESTIMATED_LATENCY_MS, linkEstimatedLatencyMs)
+                }
+                if (linkScheduledStartEpochMs != null) {
+                    putExtra(EXTRA_LINK_SCHEDULED_START_EPOCH_MS, linkScheduledStartEpochMs)
+                }
             }
             ContextCompat.startForegroundService(context, intent)
         }
@@ -279,6 +333,7 @@ class RecordingForegroundService : Service() {
                 segmentCount = segmentFiles.size
             )
         }
+        persistLinkTakeMetadataIfNeeded(completion.lastOutputPath)
         releaseRecordingWakeLock()
         RecordingCoordinator.publish(
             RecordingServiceState.Completed(
@@ -290,6 +345,34 @@ class RecordingForegroundService : Service() {
         )
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun persistLinkTakeMetadataIfNeeded(lastOutputPath: String?) {
+        val sessionId = linkSessionId ?: return
+        val takeId = linkTakeId ?: return
+        val deviceId = linkDeviceId ?: return
+        val deviceName = linkDeviceName ?: return
+        val role = linkRole ?: return
+        val metadata = SessionTakeMetadata(
+            sessionId = sessionId,
+            takeId = takeId,
+            deviceId = deviceId,
+            deviceName = deviceName,
+            role = role,
+            storageLocation = activeStorageLocation.name,
+            sampleRateHz = 48_000,
+            channelCount = actualChannelCount,
+            estimatedLatencyMs = linkEstimatedLatencyMs,
+            scheduledStartEpochMs = linkScheduledStartEpochMs,
+            actualStartEpochMs = actualRecordingStartEpochMs ?: System.currentTimeMillis(),
+            stoppedAtEpochMs = System.currentTimeMillis(),
+            outputPath = lastOutputPath
+        )
+        val dir = File(filesDir, "link_sessions/$sessionId").apply { mkdirs() }
+        val safeName = "${takeId}_${deviceId}.json"
+        runCatching {
+            File(dir, safeName).writeText(metadata.toJsonString())
+        }
     }
 
     private fun acquireRecordingWakeLock() {

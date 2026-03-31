@@ -1,18 +1,22 @@
 package com.bandrecorder.app
 
+import android.Manifest
 import android.app.Application
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.database.Cursor
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.MediaMetadataRetriever
 import android.media.MicrophoneInfo
-import android.provider.OpenableColumns
+import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
-import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.bandrecorder.core.audio.CalibrationProgress
@@ -27,6 +31,7 @@ import com.bandrecorder.core.audio.StereoWindowMeasurement
 import com.bandrecorder.core.audio.WavRecorderEngine
 import com.bandrecorder.core.audio.computeAdaptiveThresholds
 import com.bandrecorder.core.audio.evaluateSilence
+import com.bandrecorder.core.network.LinkRole
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -229,7 +234,8 @@ data class RecorderUiState(
     val postProcessCuts: List<PostProcessCutPreview> = emptyList(),
     val postProcessEnvelope: List<PostProcessEnvelopePoint> = emptyList(),
     val postProcessStatusMessage: String = "Importe un WAV ou un audio compatible",
-    val postProcessLastExportLabel: String? = null
+    val postProcessLastExportLabel: String? = null,
+    val linkUi: LinkUiModel = LinkUiModel()
 )
 
 class RecorderViewModel(app: Application) : AndroidViewModel(app) {
@@ -247,6 +253,11 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     private var postProcessSourceKind: ImportedAudioKind = ImportedAudioKind.UNSUPPORTED
     private var postProcessAnalysis: WavAnalysisResult? = null
     private var postProcessPreviewCache: DecodedAudioAnalysisCacheEntry? = null
+    private var armedLinkTakeId: String? = null
+    private var armedLinkSessionId: String? = null
+    private var scheduledLinkStartEpochMs: Long? = null
+    private var scheduledLinkJobActive = false
+    private var lastLinkStatusPublishEpochMs = 0L
     private val liveDetectionHistory = ArrayDeque<SignalFeatures>()
     private var liveDetectorInSilence = false
 
@@ -286,6 +297,8 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         refreshPlayerRecordings()
         observeAnalysisService()
         observeRecordingService()
+        observeLinkSession()
+        LinkSessionManager.configureIdentity(Build.MODEL)
     }
 
     fun setStorageLocation(location: StorageLocation) {
@@ -367,6 +380,48 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest || _uiState.value.isRunningStereoGuidedTest || _uiState.value.isRunningLevelBalance) return
 
         val durationSec = _uiState.value.balanceDurationSec
+        runLevelBalanceInternal(durationSec)
+    }
+
+    fun setLinkHostAddress(value: String) {
+        LinkSessionManager.updateHostAddressInput(value)
+    }
+
+    fun createLinkSession() {
+        LinkSessionManager.configureIdentity(Build.MODEL)
+        LinkSessionManager.createSession()
+    }
+
+    fun joinLinkSession() {
+        LinkSessionManager.configureIdentity(Build.MODEL)
+        LinkSessionManager.joinSession()
+    }
+
+    fun disconnectLinkSession() {
+        LinkSessionManager.disconnect()
+    }
+
+    fun startLinkBalance() {
+        LinkSessionManager.startRemoteBalance(_uiState.value.balanceDurationSec)
+    }
+
+    fun stopLinkBalance() {
+        LinkSessionManager.stopRemoteBalance()
+    }
+
+    fun armLinkRecording() {
+        LinkSessionManager.armRemoteRecording()
+    }
+
+    fun startLinkRecording() {
+        LinkSessionManager.startArmedRecording()
+    }
+
+    fun stopLinkRecording() {
+        LinkSessionManager.stopRemoteRecording()
+    }
+
+    private fun runLevelBalanceInternal(durationSec: Int, linkCommandId: String? = null) {
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
@@ -383,6 +438,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 durationSeconds = durationSec,
                 preferredDevice = resolveEffectiveMicDevice(),
                 onProgress = { progress ->
+                    publishLinkBalanceProgress(progress)
                     _uiState.update { st ->
                         st.copy(
                             balanceProgress = progress.progressPercent,
@@ -396,6 +452,14 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             )
 
             if (result == null) {
+                if (_uiState.value.linkUi.isConnected) {
+                    LinkSessionManager.updateLocalDeviceStatus(
+                        isReady = false,
+                        isBalancing = false,
+                        statusText = "Balance impossible",
+                        errorText = "Balance impossible"
+                    )
+                }
                 _uiState.update {
                     it.copy(
                         isRunningLevelBalance = false,
@@ -409,6 +473,16 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             val decision = decisionFromPeak(peak)
             val autoAppliedGainDb = result.recommendedGainDb.coerceIn(-24f, 24f)
             settingsStore.setRecordingInputGainDb(autoAppliedGainDb)
+            if (_uiState.value.linkUi.isConnected) {
+                LinkSessionManager.updateLocalDeviceStatus(
+                    isReady = true,
+                    isBalancing = false,
+                    peakDb = result.peakDb,
+                    rmsDb = result.rmsDb,
+                    seconds = durationSec,
+                    statusText = decision.first
+                )
+            }
             _uiState.update {
                 it.copy(
                     isRunningLevelBalance = false,
@@ -420,6 +494,9 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                     recordingInputGainDb = autoAppliedGainDb,
                     status = "Balance terminée • gain auto ${if (autoAppliedGainDb >= 0f) "+" else ""}${"%.1f".format(autoAppliedGainDb)} dB"
                 )
+            }
+            if (linkCommandId != null) {
+                LinkSessionManager.reportSummary("Balance $linkCommandId terminée • ${decision.first}")
             }
 
             if (_uiState.value.diagnosticModeEnabled) {
@@ -1427,6 +1504,22 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun startRecording() {
+        startRecordingInternal(
+            linkSessionId = null,
+            takeId = null,
+            scheduledStartEpochMs = null,
+            estimatedLatencyMs = null,
+            role = null
+        )
+    }
+
+    private fun startRecordingInternal(
+        linkSessionId: String?,
+        takeId: String?,
+        scheduledStartEpochMs: Long?,
+        estimatedLatencyMs: Int?,
+        role: LinkRole?
+    ) {
         if (_uiState.value.isRecording || _uiState.value.isCalibrating || _uiState.value.isTestingMic || _uiState.value.isRunningABTest || _uiState.value.isRunningStereoGuidedTest) return
 
         val selectedMic = resolveEffectiveMicDevice()
@@ -1453,7 +1546,14 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             ),
             ignoreSilenceEnabled = _uiState.value.ignoreSilenceEnabled,
             splitOnSilenceEnabled = _uiState.value.splitOnSilenceEnabled,
-            silenceDurationSec = _uiState.value.silenceDurationSec
+            silenceDurationSec = _uiState.value.silenceDurationSec,
+            linkSessionId = linkSessionId,
+            linkTakeId = takeId,
+            linkDeviceId = _uiState.value.linkUi.selfDeviceId,
+            linkDeviceName = _uiState.value.linkUi.selfDeviceName,
+            linkRole = role,
+            linkEstimatedLatencyMs = estimatedLatencyMs,
+            linkScheduledStartEpochMs = scheduledStartEpochMs
         )
         _uiState.update {
             it.copy(
@@ -1463,6 +1563,15 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 currentSessionSegments = emptyList()
             )
         }
+        if (linkSessionId != null && takeId != null) {
+            LinkSessionManager.updateLocalDeviceStatus(
+                isReady = true,
+                isBalancing = false,
+                isRecording = true,
+                lastTakeId = takeId,
+                statusText = "Enregistrement local lancé"
+            )
+        }
     }
 
     fun stopRecording() {
@@ -1470,6 +1579,15 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
         silenceStartElapsedMs = null
         _uiState.update { it.copy(status = "Stopping...", isSilenceDetected = false) }
         RecordingForegroundService.stop(getApplication())
+        if (_uiState.value.linkUi.isConnected) {
+            LinkSessionManager.updateLocalDeviceStatus(
+                isReady = false,
+                isBalancing = false,
+                isRecording = false,
+                lastTakeId = armedLinkTakeId,
+                statusText = "Arrêt demandé"
+            )
+        }
     }
 
     private fun resolveEffectiveMicDevice(): AudioDeviceInfo? {
@@ -2383,6 +2501,14 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 when (state) {
                     RecordingServiceState.Idle -> Unit
                     is RecordingServiceState.Failed -> {
+                        LinkSessionManager.updateLocalDeviceStatus(
+                            isReady = false,
+                            isBalancing = false,
+                            isRecording = false,
+                            lastTakeId = armedLinkTakeId,
+                            statusText = state.message,
+                            errorText = state.message
+                        )
                         resetLiveSilenceState()
                         _uiState.update {
                             it.copy(
@@ -2395,6 +2521,13 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                     is RecordingServiceState.Stopping -> {
+                        LinkSessionManager.updateLocalDeviceStatus(
+                            isReady = false,
+                            isBalancing = false,
+                            isRecording = false,
+                            lastTakeId = armedLinkTakeId,
+                            statusText = state.message
+                        )
                         activeSessionBaseName = state.sessionBaseName ?: activeSessionBaseName
                         _uiState.update {
                             it.copy(
@@ -2411,6 +2544,20 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                         applyRecordingStatus(state.status, state.sessionBaseName, state.uiOutputPath)
                     }
                     is RecordingServiceState.Completed -> {
+                        LinkSessionManager.updateLocalDeviceStatus(
+                            isReady = false,
+                            isBalancing = false,
+                            isRecording = false,
+                            lastTakeId = armedLinkTakeId,
+                            statusText = state.message
+                        )
+                        LinkSessionManager.reportSummary(
+                            listOfNotNull(
+                                state.sessionBaseName,
+                                state.lastOutputPath,
+                                "segments=${state.segmentCount}"
+                            ).joinToString(" | ")
+                        )
                         activeSessionBaseName = state.sessionBaseName ?: activeSessionBaseName
                         resetLiveSilenceState()
                         _uiState.update {
@@ -2514,6 +2661,7 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
                 globalBalanceConfig = it.globalBalanceConfig.copy(dspOutputMode = status.dspOutputMode).bounded()
             )
         }
+        publishLinkRecordingStatus(status)
         liveDetectorInSilence = silenceDecision.isSilence
         val shouldAutoStopOnSilence = _uiState.value.ignoreSilenceEnabled &&
             !_uiState.value.splitOnSilenceEnabled &&
@@ -2533,5 +2681,129 @@ class RecorderViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
         lastCpuGuardState = status.dspCpuGuardActive
+    }
+
+    private fun observeLinkSession() {
+        viewModelScope.launch {
+            LinkSessionManager.uiState.collectLatest { linkUi ->
+                _uiState.update { it.copy(linkUi = linkUi) }
+            }
+        }
+        viewModelScope.launch {
+            LinkSessionManager.actions.collectLatest { action ->
+                when (action) {
+                    is LinkAction.ArmRecord -> {
+                        armedLinkSessionId = action.sessionId
+                        armedLinkTakeId = action.takeId
+                        scheduledLinkStartEpochMs = null
+                        LinkSessionManager.updateLocalDeviceStatus(
+                            isReady = true,
+                            isBalancing = false,
+                            isRecording = false,
+                            lastTakeId = action.takeId,
+                            statusText = "Armé en attente"
+                        )
+                    }
+                    is LinkAction.StartBalance -> {
+                        if (!hasRecordAudioPermission()) {
+                            LinkSessionManager.updateLocalDeviceStatus(
+                                statusText = "Permission micro requise",
+                                errorText = "Permission micro requise"
+                            )
+                        } else {
+                            runLevelBalanceInternal(action.durationSec, action.commandId)
+                        }
+                    }
+                    is LinkAction.StartRecord -> {
+                        armedLinkSessionId = action.sessionId
+                        armedLinkTakeId = action.takeId
+                        scheduledLinkStartEpochMs = action.startAtEpochMs
+                        scheduleLinkRecordingStart(action)
+                    }
+                    is LinkAction.StopBalance -> {
+                        LinkSessionManager.updateLocalDeviceStatus(
+                            isReady = false,
+                            isBalancing = false,
+                            statusText = "Balance arrêtée"
+                        )
+                    }
+                    is LinkAction.StopRecord -> {
+                        if (_uiState.value.isRecording) {
+                            stopRecording()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun scheduleLinkRecordingStart(action: LinkAction.StartRecord) {
+        if (scheduledLinkJobActive) return
+        scheduledLinkJobActive = true
+        viewModelScope.launch {
+            if (!hasRecordAudioPermission()) {
+                LinkSessionManager.updateLocalDeviceStatus(
+                    statusText = "Permission micro requise",
+                    errorText = "Permission micro requise"
+                )
+                scheduledLinkJobActive = false
+                return@launch
+            }
+            val waitMs = (action.startAtEpochMs - System.currentTimeMillis()).coerceAtLeast(0L)
+            LinkSessionManager.updateLocalDeviceStatus(
+                isReady = true,
+                isBalancing = false,
+                isRecording = false,
+                lastTakeId = action.takeId,
+                statusText = "Départ dans ${(waitMs / 1000.0).let { "%.1f".format(it) }}s"
+            )
+            delay(waitMs)
+            startRecordingInternal(
+                linkSessionId = action.sessionId,
+                takeId = action.takeId,
+                scheduledStartEpochMs = action.startAtEpochMs,
+                estimatedLatencyMs = _uiState.value.linkUi.devices.firstOrNull { it.isSelf }?.latencyMs,
+                role = if (_uiState.value.linkUi.mode == LinkMode.HOST) LinkRole.MASTER else LinkRole.CLIENT
+            )
+            scheduledLinkJobActive = false
+        }
+    }
+
+    private fun hasRecordAudioPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            getApplication(),
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun publishLinkBalanceProgress(progress: CalibrationProgress) {
+        if (!_uiState.value.linkUi.isConnected) return
+        LinkSessionManager.updateLocalDeviceStatus(
+            isReady = false,
+            isBalancing = true,
+            isRecording = false,
+            peakDb = progress.peakDb,
+            rmsDb = progress.rmsDb,
+            seconds = (progress.progressPercent * _uiState.value.balanceDurationSec) / 100,
+            lastTakeId = armedLinkTakeId,
+            statusText = "Balance ${progress.progressPercent}%"
+        )
+    }
+
+    private fun publishLinkRecordingStatus(status: com.bandrecorder.core.audio.RecordingStatus) {
+        if (!_uiState.value.linkUi.isConnected) return
+        val now = System.currentTimeMillis()
+        if (now - lastLinkStatusPublishEpochMs < 800L) return
+        lastLinkStatusPublishEpochMs = now
+        LinkSessionManager.updateLocalDeviceStatus(
+            isReady = true,
+            isBalancing = false,
+            isRecording = status.isRecording,
+            peakDb = status.peakDb,
+            rmsDb = status.rmsDb,
+            seconds = (status.elapsedMs / 1000L).toInt(),
+            lastTakeId = armedLinkTakeId,
+            statusText = if (status.isRecording) "REC ${(status.elapsedMs / 1000L).toInt()}s" else "Attente"
+        )
     }
 }

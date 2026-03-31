@@ -67,6 +67,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -336,10 +337,18 @@ private fun MainScreen(vm: RecorderViewModel = viewModel()) {
             )
         }
         composable(AppRoute.Link.route) {
-            PlaceholderScreen(
-                title = "Link / WiFi Direct",
-                subtitle = "La connexion multi-appareils et le mode télécommande arrivent prochainement.",
-                navController = navController
+            LinkScreen(
+                ui = ui,
+                onBack = { navController.popBackStack() },
+                onHostAddressChange = vm::setLinkHostAddress,
+                onCreateSession = vm::createLinkSession,
+                onJoinSession = vm::joinLinkSession,
+                onDisconnect = vm::disconnectLinkSession,
+                onStartBalance = vm::startLinkBalance,
+                onStopBalance = vm::stopLinkBalance,
+                onArmRecording = vm::armLinkRecording,
+                onStartRecording = vm::startLinkRecording,
+                onStopRecording = vm::stopLinkRecording
             )
         }
     }
@@ -3090,6 +3099,151 @@ private fun SettingToggleRow(
                 disabledUncheckedTrackColor = Color(0xFF3A3E44).copy(alpha = 0.45f)
             )
         )
+    }
+}
+
+@Composable
+private fun LinkScreen(
+    ui: RecorderUiState,
+    onBack: () -> Unit,
+    onHostAddressChange: (String) -> Unit,
+    onCreateSession: () -> Unit,
+    onJoinSession: () -> Unit,
+    onDisconnect: () -> Unit,
+    onStartBalance: () -> Unit,
+    onStopBalance: () -> Unit,
+    onArmRecording: () -> Unit,
+    onStartRecording: () -> Unit,
+    onStopRecording: () -> Unit
+) {
+    val link = ui.linkUi
+    ScreenScaffold(title = "Mode Link", onBack = onBack) {
+        Text("Transport V1: hotspot / AP du téléphone maître", color = AmpMetalLight)
+        Text(
+            link.sessionStatus,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (link.errorMessage == null) AmpText else Color(0xFFFFB4AB)
+        )
+        link.sessionId?.let {
+            Text("Session: $it", style = MaterialTheme.typography.bodySmall, color = AmpMetalLight)
+        }
+        if (link.mode == LinkMode.IDLE) {
+            OutlinedTextField(
+                value = link.hostAddressInput,
+                onValueChange = onHostAddressChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("IP du maître") },
+                singleLine = true
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(onClick = onCreateSession, modifier = Modifier.weight(1f)) {
+                    Text("Créer")
+                }
+                OutlinedButton(onClick = onJoinSession, modifier = Modifier.weight(1f)) {
+                    Text("Rejoindre")
+                }
+            }
+            Text(
+                "Le maître héberge la session. Les clients rejoignent avec l'adresse IP locale du hotspot.",
+                style = MaterialTheme.typography.bodySmall,
+                color = AmpMetalLight
+            )
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = if (link.phase == LinkPhase.BALANCING) onStopBalance else onStartBalance,
+                    enabled = link.mode == LinkMode.HOST,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(if (link.phase == LinkPhase.BALANCING) "Stop balance" else "Balance")
+                }
+                OutlinedButton(onClick = onDisconnect, modifier = Modifier.weight(1f)) {
+                    Text("Quitter")
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onArmRecording,
+                    enabled = link.canArmRecording,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Armer")
+                }
+                Button(
+                    onClick = onStartRecording,
+                    enabled = link.canStartRecording,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Start")
+                }
+                OutlinedButton(
+                    onClick = onStopRecording,
+                    enabled = link.canStopRecording,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Stop")
+                }
+            }
+            Text("Appareils connectés", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            if (link.devices.isEmpty()) {
+                Text("Aucun appareil visible pour le moment.")
+            } else {
+                link.devices.sortedBy { "${if (it.isSelf) 0 else 1}_${it.deviceName}" }.forEach { device ->
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF2B3036)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                "${device.deviceName}${if (device.isSelf) " • ce téléphone" else ""}",
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                listOfNotNull(
+                                    device.role.name,
+                                    if (device.isReady) "ready" else null,
+                                    if (device.isBalancing) "balance" else null,
+                                    if (device.isRecording) "rec" else null,
+                                    device.latencyMs?.let { "${it}ms" }
+                                ).joinToString(" • "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = AmpMetalLight
+                            )
+                            Text(
+                                listOfNotNull(
+                                    device.statusText,
+                                    device.rmsDb?.let { "RMS ${"%.1f".format(it)} dB" },
+                                    device.peakDb?.let { "Peak ${"%.1f".format(it)} dB" },
+                                    device.seconds?.let { "${it}s" },
+                                    device.lastTakeId
+                                ).joinToString(" • ").ifBlank { "En attente" },
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            device.errorText?.let {
+                                Text(it, style = MaterialTheme.typography.bodySmall, color = Color(0xFFFFB4AB))
+                            }
+                        }
+                    }
+                }
+            }
+            link.lastSummary?.let {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("Résumé", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text(it, style = MaterialTheme.typography.bodySmall, color = AmpMetalLight)
+            }
+        }
     }
 }
 
